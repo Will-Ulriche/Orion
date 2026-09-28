@@ -8,6 +8,7 @@ import Profils from './pages/Profils';
 import Appareils from './pages/Appareils';
 import Licences from './pages/Licences';
 import Audit from './pages/Audit';
+import Settings from './pages/Settings';
 import './App.css';
 
 // Route protégée : redirige vers /login si non connecté
@@ -44,6 +45,7 @@ function AppRoutes() {
         <Route path="/appareils" element={<Appareils />} />
         <Route path="/licences" element={<Licences />} />
         <Route path="/audit" element={<Audit />} />
+        <Route path="/settings" element={<Settings />} />
       </Route>
 
       {/* Fallback */}

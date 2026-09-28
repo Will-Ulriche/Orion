@@ -187,3 +187,26 @@ pub fn get_sync_status(state: State<'_, DbState>) -> Result<SyncStatus, String> 
 
     Ok(SyncStatus { pending, failed, conflict })
 }
+
+// ──────────────────────────────────────────────
+// COMMANDE : Enregistrer les paramètres de l'établissement (Offline-First)
+// ──────────────────────────────────────────────
+#[tauri::command]
+pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données")?;
+    
+    // On insère l'action de mise à jour/création d'établissement dans la file d'attente
+    conn.execute(
+        "INSERT INTO pending_mutations (table_name, action, payload) VALUES (?1, ?2, ?3)",
+        ["schools", "UPSERT", &payload]
+    ).map_err(|e| format!("Erreur SQLite: {}", e))?;
+    
+    // On enregistre également cette action sensible dans l'audit
+    // Dans une version plus avancée, on récupérait l'ID de l'utilisateur actif
+    conn.execute(
+        "INSERT INTO audit_logs (user_id, action, entity, details) VALUES (?1, ?2, ?3, ?4)",
+        ["current_user", "UPDATE_SETTINGS", "schools", &payload]
+    ).unwrap_or(0);
+
+    Ok(())
+}
