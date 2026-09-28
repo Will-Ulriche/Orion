@@ -21,7 +21,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::check_db_status,
             commands::get_device_info,
-            commands::register_device
+            commands::register_device,
+            commands::check_user_role,
+            commands::write_audit_log,
+            commands::get_sync_status
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

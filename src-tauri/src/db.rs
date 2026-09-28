@@ -24,5 +24,8 @@ pub fn init(app: &AppHandle) -> Result<Connection, String> {
     let migration_02 = include_str!("../migrations/02_devices_school_nullable.sql");
     conn.execute_batch(migration_02).map_err(|e| format!("Erreur migration 02: {}", e))?;
     
+    let migration_03 = include_str!("../migrations/03_pending_mutations.sql");
+    conn.execute_batch(migration_03).map_err(|e| format!("Erreur migration 03: {}", e))?;
+    
     Ok(conn)
 }

@@ -1,7 +1,7 @@
 import { useAuth } from '../contexts/AuthContext';
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
-import { LogOut, Database, WifiOff, MonitorSmartphone, CheckCircle, ShieldCheck } from 'lucide-react';
+import { LogOut, Database, Wifi, WifiOff, MonitorSmartphone, CheckCircle, ShieldCheck, RefreshCw, AlertTriangle } from 'lucide-react';
 
 interface DeviceInfo {
   identifier: string;
@@ -9,39 +9,77 @@ interface DeviceInfo {
   platform: string;
 }
 
+interface SyncStatus {
+  pending: number;
+  failed: number;
+  conflict: number;
+}
+
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const [dbStatus, setDbStatus] = useState<string>('Vérification...');
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
   const [deviceRegStatus, setDeviceRegStatus] = useState<string>('Enregistrement...');
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [lastSync] = useState<string>('—');
 
   useEffect(() => {
-    // Vérification de la base locale via Tauri
+    // Détection connexion réseau
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Vérification SQLite
     invoke('check_db_status')
       .then((res) => setDbStatus(res as string))
       .catch((err) => setDbStatus(`Erreur SQLite : ${err}`));
 
-    // Récupération et enregistrement de l'appareil
+    // Infos + enregistrement appareil
     invoke('get_device_info')
       .then((res) => {
-        const info = res as DeviceInfo;
-        setDeviceInfo(info);
-        // Enregistrer l'appareil dans SQLite (school_id null jusqu'à la configuration de l'établissement)
+        setDeviceInfo(res as DeviceInfo);
         return invoke('register_device', { schoolId: null });
       })
       .then((status) => setDeviceRegStatus(status as string))
       .catch((err) => setDeviceRegStatus(`Erreur: ${err}`));
+
+    // État de la file de synchronisation
+    invoke('get_sync_status')
+      .then((res) => setSyncStatus(res as SyncStatus))
+      .catch(console.error);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
+
+  const refreshSync = () => {
+    invoke('get_sync_status')
+      .then((res) => setSyncStatus(res as SyncStatus))
+      .catch(console.error);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0">
+      {/* Header */}
+      <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <div className="bg-indigo-600 text-white p-2 rounded-lg font-bold">O</div>
-          <h1 className="text-xl font-bold text-slate-800">Orion</h1>
+          <div className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-bold text-lg">O</div>
+          <div>
+            <h1 className="text-lg font-bold text-slate-800 leading-none">Orion</h1>
+            <p className="text-xs text-slate-400">Système de gestion scolaire</p>
+          </div>
         </div>
-        
+
         <div className="flex items-center gap-4">
+          {/* Indicateur réseau */}
+          <div className={`flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full ${isOnline ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-orange-700'}`}>
+            {isOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
+            {isOnline ? 'En ligne' : 'Hors ligne'}
+          </div>
           <span className="text-sm text-slate-500">{user?.email}</span>
           <button
             onClick={signOut}
@@ -53,69 +91,99 @@ export default function Dashboard() {
       </header>
 
       <main className="p-8 max-w-5xl mx-auto">
-        <h2 className="text-2xl font-bold text-slate-800 mb-6">Tableau de bord — Socle Session 1</h2>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* SQLite */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold text-slate-800">Tableau de bord</h2>
+          <p className="text-slate-400 text-sm mt-1">Session 1 — Socle technique opérationnel</p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+          {/* Base de données locale */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <div className="flex items-center gap-3 mb-4 text-indigo-600">
-              <Database />
-              <h3 className="text-lg font-semibold text-slate-800">Base de données locale</h3>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="bg-indigo-50 p-2 rounded-lg text-indigo-600"><Database size={20} /></div>
+              <h3 className="text-base font-semibold text-slate-800">Base de données locale</h3>
             </div>
             <div className="flex items-center gap-2 text-green-600 text-sm">
-              <CheckCircle size={16} />
+              <CheckCircle size={15} />
               <span>{dbStatus}</span>
             </div>
           </div>
 
           {/* Appareil */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <div className="flex items-center gap-3 mb-4 text-indigo-600">
-              <MonitorSmartphone />
-              <h3 className="text-lg font-semibold text-slate-800">Appareil</h3>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="bg-indigo-50 p-2 rounded-lg text-indigo-600"><MonitorSmartphone size={20} /></div>
+              <h3 className="text-base font-semibold text-slate-800">Appareil</h3>
             </div>
             {deviceInfo ? (
-              <div className="space-y-2 text-sm">
-                <p><span className="text-slate-500">Nom :</span> <strong>{deviceInfo.name}</strong></p>
-                <p><span className="text-slate-500">Plateforme :</span> {deviceInfo.platform}</p>
-                <div className="bg-slate-100 rounded p-2 font-mono text-xs text-slate-500 break-all mt-2">
+              <div className="space-y-1.5 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Nom</span>
+                  <strong className="text-slate-800">{deviceInfo.name}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Plateforme</span>
+                  <span className="text-slate-700">{deviceInfo.platform}</span>
+                </div>
+                <div className="bg-slate-50 rounded p-2 font-mono text-xs text-slate-400 break-all mt-2">
                   {deviceInfo.identifier}
                 </div>
-                <div className="flex items-center gap-2 text-green-600 pt-1">
-                  <ShieldCheck size={14} />
+                <div className="flex items-center gap-2 text-green-600 text-xs pt-1">
+                  <ShieldCheck size={13} />
                   <span>{deviceRegStatus}</span>
                 </div>
               </div>
             ) : (
-              <p className="text-sm text-slate-400 italic">Récupération des informations...</p>
+              <p className="text-sm text-slate-400 italic">Récupération en cours...</p>
             )}
           </div>
+        </div>
 
-          {/* Synchronisation */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 md:col-span-2">
-            <div className="flex items-center gap-3 mb-4 text-orange-500">
-              <WifiOff />
-              <h3 className="text-lg font-semibold text-slate-800">Centre de synchronisation</h3>
+        {/* Centre de synchronisation */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className={`p-2 rounded-lg ${isOnline ? 'bg-green-50 text-green-600' : 'bg-orange-50 text-orange-500'}`}>
+                {isOnline ? <Wifi size={20} /> : <WifiOff size={20} />}
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-slate-800">Centre de synchronisation</h3>
+                <p className="text-xs text-slate-400">Dernière synchro : {lastSync}</p>
+              </div>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-              <div className="bg-slate-50 rounded-lg p-3 text-center">
-                <p className="text-slate-400 mb-1">Dernière synchro</p>
-                <p className="font-semibold text-slate-700">—</p>
-              </div>
-              <div className="bg-slate-50 rounded-lg p-3 text-center">
-                <p className="text-slate-400 mb-1">À envoyer</p>
-                <p className="font-semibold text-slate-700">0</p>
-              </div>
-              <div className="bg-slate-50 rounded-lg p-3 text-center">
-                <p className="text-slate-400 mb-1">Conflits</p>
-                <p className="font-semibold text-green-600">0</p>
-              </div>
-              <div className="bg-slate-50 rounded-lg p-3 text-center">
-                <p className="text-slate-400 mb-1">Erreurs</p>
-                <p className="font-semibold text-green-600">0</p>
-              </div>
+            <button
+              onClick={refreshSync}
+              className="flex items-center gap-2 text-sm text-slate-600 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <RefreshCw size={14} /> Actualiser
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-slate-50 rounded-xl p-4 text-center">
+              <p className="text-xs text-slate-400 mb-1">En attente d'envoi</p>
+              <p className="text-2xl font-bold text-slate-800">{syncStatus?.pending ?? '—'}</p>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-4 text-center">
+              <p className="text-xs text-slate-400 mb-1">Conflits</p>
+              <p className={`text-2xl font-bold ${(syncStatus?.conflict ?? 0) > 0 ? 'text-orange-500' : 'text-slate-800'}`}>
+                {syncStatus?.conflict ?? '—'}
+              </p>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-4 text-center">
+              <p className="text-xs text-slate-400 mb-1">Erreurs</p>
+              <p className={`text-2xl font-bold ${(syncStatus?.failed ?? 0) > 0 ? 'text-red-500' : 'text-slate-800'}`}>
+                {syncStatus?.failed ?? '—'}
+              </p>
             </div>
           </div>
+
+          {(syncStatus?.failed ?? 0) > 0 && (
+            <div className="flex items-center gap-2 mt-4 bg-red-50 text-red-600 p-3 rounded-lg text-sm">
+              <AlertTriangle size={16} />
+              <span>{syncStatus?.failed} mutation(s) ont échoué. Vérifiez votre connexion et réessayez.</span>
+            </div>
+          )}
         </div>
       </main>
     </div>
