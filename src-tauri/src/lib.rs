@@ -32,7 +32,19 @@ pub fn run() {
             commands::check_user_role,
             commands::write_audit_log,
             commands::get_sync_status,
-            commands::save_school_settings
+            commands::save_school_settings,
+            commands::get_academic_years,
+            commands::create_academic_year,
+            commands::update_academic_year,
+            commands::open_academic_year,
+            commands::close_academic_year,
+            commands::delete_academic_year,
+            commands::sync_local_user,
+            commands::get_classes,
+            commands::create_class,
+            commands::get_students,
+            commands::create_student,
+            commands::migrate_student
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

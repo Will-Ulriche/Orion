@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { YearProvider } from './contexts/YearContext';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
@@ -9,6 +10,8 @@ import Appareils from './pages/Appareils';
 import Licences from './pages/Licences';
 import Audit from './pages/Audit';
 import Settings from './pages/Settings';
+import StudentsMigration from './pages/StudentsMigration';
+import Classes from './pages/Classes';
 import './App.css';
 
 // Route protégée : redirige vers /login si non connecté
@@ -46,6 +49,8 @@ function AppRoutes() {
         <Route path="/licences" element={<Licences />} />
         <Route path="/audit" element={<Audit />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/students" element={<StudentsMigration />} />
+        <Route path="/classes" element={<Classes />} />
       </Route>
 
       {/* Fallback */}
@@ -57,9 +62,11 @@ function AppRoutes() {
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <YearProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </YearProvider>
     </AuthProvider>
   );
 }

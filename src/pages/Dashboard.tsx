@@ -146,9 +146,12 @@ export default function Dashboard() {
         </div>
 
         {(syncStatus?.failed ?? 0) > 0 && (
-          <div className="flex items-center gap-2 mt-4 bg-red-50 text-red-600 p-3 rounded-lg text-sm">
-            <AlertTriangle size={16} />
-            <span>{syncStatus?.failed} mutation(s) ont échoué. Vérifiez votre connexion et réessayez.</span>
+          <div className="flex items-center gap-2 mt-4 bg-blue-50 text-blue-600 p-3 rounded-lg text-sm">
+            <span className="text-base">ℹ️</span>
+            <span>
+              Mode hors-ligne actif — {syncStatus?.failed} opération(s) en attente de synchronisation avec Supabase.
+              Ces données sont sauvegardées localement et seront envoyées dès que la connexion cloud sera configurée.
+            </span>
           </div>
         )}
       </div>

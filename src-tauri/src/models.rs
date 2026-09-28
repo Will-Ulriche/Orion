@@ -1,8 +1,49 @@
 use serde::{Deserialize, Serialize};
 
-// Les modèles seront étoffés dans les étapes suivantes
 #[derive(Debug, Serialize, Deserialize)]
 pub struct School {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AcademicYear {
+    pub id: String,
+    pub school_id: String,
+    pub name: String,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub status: String,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Class {
+    pub id: String,
+    pub school_id: String,
+    pub academic_year_id: String,
+    pub name: String,
+    pub level: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Student {
+    pub id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub birth_date: Option<String>,
+    pub gender: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StudentEnrollment {
+    pub id: String,
+    pub student_id: String,
+    pub class_id: Option<String>,
+    pub enrollment_type: String,
+    pub status: String,
+    // Extra fields joined from Student/Class tables for convenience
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub class_name: Option<String>,
 }

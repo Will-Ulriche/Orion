@@ -2,20 +2,24 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart, Wallet, Calendar, ArrowDownUp, BarChart2,
-  Settings, PanelLeftClose, PanelLeftOpen
+  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap
 } from 'lucide-react';
 import { useState } from 'react';
+import YearSelector from './YearSelector';
 
 // Remplacement des icônes pour coller exactement au style "piqowallet" 
 // tout en gardant vos routes.
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord' },
+  { to: '/classes', icon: GraduationCap, label: 'Classes' },
+  { to: '/students', icon: Users, label: 'Élèves & Inscriptions' },
   { to: '/profils', icon: Wallet, label: 'Profils & Rôles' },
   { to: '/appareils', icon: Calendar, label: 'Appareils' },
   { to: '/licences', icon: ArrowDownUp, label: 'Licence' },
 ];
 
 const settingsItems = [
+  { to: '/settings', icon: Settings, label: "Paramètres" },
   { to: '/audit', icon: Settings, label: "Journal d'audit" },
 ];
 
@@ -62,8 +66,10 @@ export default function Sidebar() {
         )}
       </div>
 
+      <YearSelector collapsed={collapsed} />
+
       {/* Navigation */}
-      <nav className="flex-1 py-4 overflow-y-auto overflow-x-hidden flex flex-col gap-8">
+      <nav className="flex-1 py-4 overflow-y-auto overflow-x-hidden flex flex-col gap-5">
         
         {/* MANAGE Section */}
         <div>
@@ -122,7 +128,7 @@ function NavItem({ item, collapsed }: { item: any; collapsed: boolean }) {
       to={item.to}
       end={item.to === '/'}
       className={({ isActive }) =>
-        `relative flex items-center gap-4 py-3 ${collapsed ? 'justify-center px-0' : 'px-8'} transition-all duration-200 group`
+        `relative flex items-center gap-4 py-2 ${collapsed ? 'justify-center px-0' : 'px-8'} transition-all duration-200 group`
       }
     >
       {({ isActive }) => (
@@ -139,7 +145,7 @@ function NavItem({ item, collapsed }: { item: any; collapsed: boolean }) {
           />
           
           {!collapsed && (
-            <span className={`text-sm truncate ${isActive ? 'text-slate-100 font-medium' : 'text-slate-500 group-hover:text-slate-300'}`}>
+            <span className={`text-sm truncate flex-1 min-w-0 ${isActive ? 'text-slate-100 font-medium' : 'text-slate-500 group-hover:text-slate-300'}`}>
               {item.label}
             </span>
           )}

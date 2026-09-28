@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
+import { invoke } from '@tauri-apps/api/core';
 
 interface AuthContextType {
   session: Session | null;
@@ -15,11 +16,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const syncUserToLocalDb = async (userSession: Session | null) => {
+    if (userSession?.user) {
+      try {
+        const schoolId = localStorage.getItem('current_school_id') || 'school-1';
+        const schoolName = 'École par défaut'; // Dans un cas réel, récupérer depuis la session ou la base
+        await invoke('sync_local_user', {
+          userId: userSession.user.id,
+          email: userSession.user.email || '',
+          schoolId,
+          schoolName
+        });
+      } catch (err) {
+        console.error("Erreur de synchronisation locale de l'utilisateur:", err);
+      }
+    }
+  };
+
   useEffect(() => {
     // Récupérer la session actuelle
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
+      syncUserToLocalDb(session);
       setLoading(false);
     });
 
@@ -27,6 +46,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
+      syncUserToLocalDb(session);
     });
 
     return () => subscription.unsubscribe();

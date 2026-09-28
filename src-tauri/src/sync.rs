@@ -27,19 +27,19 @@ pub fn start_sync_loop(db_path: PathBuf) {
             }
 
             // Récupération des mutations en attente
-            let mutations: Vec<(i32, String, String, String)> = {
+            let mutations: Vec<(String, String, String, String)> = {
                 let db = match Connection::open(&db_path) {
                     Ok(conn) => conn,
                     Err(_) => continue,
                 };
-                let mut stmt = match db.prepare("SELECT id, table_name, action, payload FROM pending_mutations WHERE status = 'PENDING' LIMIT 5") {
+                let mut stmt = match db.prepare("SELECT id, entity_type, operation, payload FROM pending_mutations WHERE status = 'PENDING' LIMIT 5") {
                     Ok(stmt) => stmt,
                     Err(_) => continue,
                 };
                 
                 let iter = stmt.query_map([], |row| {
                     Ok((
-                        row.get::<_, i32>(0)?,
+                        row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
@@ -104,7 +104,7 @@ pub fn start_sync_loop(db_path: PathBuf) {
                             // S'il s'agit d'une erreur 4xx, on la marque comme échouée pour éviter le blocage
                             if response.status().is_client_error() {
                                 if let Ok(db) = Connection::open(&db_path) {
-                                    let _ = db.execute("UPDATE pending_mutations SET status = 'FAILED' WHERE id = ?1", [id]);
+                                    let _ = db.execute("UPDATE pending_mutations SET status = 'FAILED' WHERE id = ?1", rusqlite::params![&id]);
                                 }
                             }
                         }
@@ -117,13 +117,13 @@ pub fn start_sync_loop(db_path: PathBuf) {
                 } else {
                     // Erreur de parsing du payload, on marque comme FAILED
                     if let Ok(db) = Connection::open(&db_path) {
-                        let _ = db.execute("UPDATE pending_mutations SET status = 'FAILED' WHERE id = ?1", [id]);
+                        let _ = db.execute("UPDATE pending_mutations SET status = 'FAILED' WHERE id = ?1", rusqlite::params![&id]);
                     }
                 }
 
                 if success {
                     if let Ok(db) = Connection::open(&db_path) {
-                        let _ = db.execute("UPDATE pending_mutations SET status = 'SYNCED' WHERE id = ?1", [id]);
+                        let _ = db.execute("UPDATE pending_mutations SET status = 'SYNCED' WHERE id = ?1", rusqlite::params![&id]);
                     }
                 }
             }
