@@ -44,6 +44,8 @@ pub fn run() {
             commands::create_class,
             commands::get_students,
             commands::create_student,
+            commands::get_student_details,
+            commands::update_student,
             commands::migrate_student
         ])
         .run(tauri::generate_context!())

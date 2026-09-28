@@ -3,6 +3,7 @@ import { Users, GraduationCap, ArrowRight, UserPlus, Search, Building2, Repeat, 
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { useYear } from '../contexts/YearContext';
+import StudentProfileModal from '../components/StudentProfileModal';
 
 interface StudentEnrollment {
   id: string;
@@ -44,6 +45,9 @@ export default function StudentsMigration() {
   const [migratingStudent, setMigratingStudent] = useState<StudentEnrollment | null>(null);
   const [migrationTargetClass, setMigrationTargetClass] = useState<string>('');
   const [migrationType, setMigrationType] = useState<'PROMOTED' | 'REPEATED'>('PROMOTED');
+
+  // Profile modal
+  const [viewingProfile, setViewingProfile] = useState<{ id: string, className: string | null } | null>(null);
 
   useEffect(() => {
     if (session?.user.school_id && currentYear) {
@@ -240,11 +244,16 @@ export default function StudentsMigration() {
                   <tr key={student.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors group">
                     <td className="py-4 px-6">
                       <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-[#f0f3ff] text-[#4f46e5] flex items-center justify-center font-bold text-[12px]">
-                          {student.first_name[0]}{student.last_name[0]}
+                        <div className="w-8 h-8 rounded-full bg-[#f0f3ff] text-[#4f46e5] flex items-center justify-center font-bold text-[12px] overflow-hidden border border-slate-100">
+                          {student.photo_url ? (
+                            <img src={student.photo_url} alt="Photo" className="w-full h-full object-cover" />
+                          ) : (
+                            `${student.first_name[0]}${student.last_name[0]}`
+                          )}
                         </div>
                         <div>
                           <div className="text-[14px] font-semibold text-slate-800">{student.last_name} {student.first_name}</div>
+                          {student.matricule && <div className="text-[11px] text-slate-400 mt-0.5">Mat: {student.matricule}</div>}
                         </div>
                       </div>
                     </td>
@@ -263,16 +272,22 @@ export default function StudentsMigration() {
                       {student.enrollment_type === 'PROMOTED' && <span className="text-[11px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full">PROMU</span>}
                       {student.enrollment_type === 'REPEATED' && <span className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full">REDOUBLANT</span>}
                     </td>
-                    <td className="py-4 px-6 text-right">
+                    <td className="py-4 px-6 text-right flex justify-end gap-2">
+                      <button 
+                        onClick={() => setViewingProfile({ id: student.student_id, className: student.class_name })}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity text-[12px] font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+                      >
+                        <User size={13} /> Profil
+                      </button>
                       {plannedYear ? (
                         <button 
                           onClick={() => setMigratingStudent(student)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-[12px] font-semibold text-[#4f46e5] hover:text-[#3730a3] bg-[#f0f3ff] px-3 py-1.5 rounded-lg flex items-center gap-1.5 ml-auto"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-[12px] font-semibold text-[#4f46e5] hover:text-[#3730a3] bg-[#f0f3ff] px-3 py-1.5 rounded-lg flex items-center gap-1.5"
                         >
                           Préparer passage <ArrowRight size={13} />
                         </button>
                       ) : (
-                        <span className="text-[11px] text-slate-400">Aucune année planifiée</span>
+                        <span className="text-[11px] text-slate-400 self-center opacity-0 group-hover:opacity-100 transition-opacity">Aucune année planifiée</span>
                       )}
                     </td>
                   </tr>
@@ -329,6 +344,18 @@ export default function StudentsMigration() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Modal Profile */}
+      {viewingProfile && (
+        <StudentProfileModal
+          studentId={viewingProfile.id}
+          className={viewingProfile.className}
+          onClose={() => setViewingProfile(null)}
+          onUpdated={() => {
+            fetchStudents(); // Refresh students to potentially get updated photo/matricule
+          }}
+        />
       )}
     </div>
   );

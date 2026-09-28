@@ -33,6 +33,15 @@ pub struct Student {
     pub last_name: String,
     pub birth_date: Option<String>,
     pub gender: Option<String>,
+    pub photo_url: Option<String>,
+    pub matricule: Option<String>,
+    pub address: Option<String>,
+    pub phone: Option<String>,
+    pub parent_name: Option<String>,
+    pub parent_phone: Option<String>,
+    pub parent_email: Option<String>,
+    pub blood_type: Option<String>,
+    pub medical_notes: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -45,5 +54,7 @@ pub struct StudentEnrollment {
     // Extra fields joined from Student/Class tables for convenience
     pub first_name: Option<String>,
     pub last_name: Option<String>,
+    pub matricule: Option<String>,
+    pub photo_url: Option<String>,
     pub class_name: Option<String>,
 }

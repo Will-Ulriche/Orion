@@ -449,7 +449,7 @@ pub fn get_students(school_id: String, academic_year_id: String, class_id: Optio
     
     let mut query = "
         SELECT e.id, e.student_id, e.class_id, e.enrollment_type, e.status, 
-               s.first_name, s.last_name, c.name as class_name
+               s.first_name, s.last_name, s.matricule, s.photo_url, c.name as class_name
         FROM enrollments e
         JOIN students s ON e.student_id = s.id
         LEFT JOIN classes c ON e.class_id = c.id
@@ -479,7 +479,9 @@ pub fn get_students(school_id: String, academic_year_id: String, class_id: Optio
             status: row.get(4)?,
             first_name: row.get(5)?,
             last_name: row.get(6)?,
-            class_name: row.get(7)?,
+            matricule: row.get(7)?,
+            photo_url: row.get(8)?,
+            class_name: row.get(9)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -524,8 +526,69 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
         status: "ACTIVE".to_string(),
         first_name: Some(first_name),
         last_name: Some(last_name),
+        matricule: None,
+        photo_url: None,
         class_name,
     })
+}
+
+#[tauri::command]
+pub fn get_student_details(student_id: String, state: State<'_, DbState>) -> Result<crate::models::Student, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    
+    let mut stmt = conn.prepare("
+        SELECT id, first_name, last_name, birth_date, gender, photo_url, matricule, 
+               address, phone, parent_name, parent_phone, parent_email, blood_type, medical_notes 
+        FROM students 
+        WHERE id = ?1
+    ").map_err(|e| e.to_string())?;
+    
+    let student = stmt.query_row(rusqlite::params![student_id], |row| {
+        Ok(crate::models::Student {
+            id: row.get(0)?,
+            first_name: row.get(1)?,
+            last_name: row.get(2)?,
+            birth_date: row.get(3)?,
+            gender: row.get(4)?,
+            photo_url: row.get(5)?,
+            matricule: row.get(6)?,
+            address: row.get(7)?,
+            phone: row.get(8)?,
+            parent_name: row.get(9)?,
+            parent_phone: row.get(10)?,
+            parent_email: row.get(11)?,
+            blood_type: row.get(12)?,
+            medical_notes: row.get(13)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    Ok(student)
+}
+
+#[tauri::command]
+pub fn update_student(student: crate::models::Student, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    
+    conn.execute(
+        "UPDATE students SET 
+            first_name = ?1, last_name = ?2, birth_date = ?3, gender = ?4, 
+            photo_url = ?5, matricule = ?6, address = ?7, phone = ?8, 
+            parent_name = ?9, parent_phone = ?10, parent_email = ?11, 
+            blood_type = ?12, medical_notes = ?13
+         WHERE id = ?14",
+        rusqlite::params![
+            student.first_name, student.last_name, student.birth_date, student.gender,
+            student.photo_url, student.matricule, student.address, student.phone,
+            student.parent_name, student.parent_phone, student.parent_email,
+            student.blood_type, student.medical_notes, student.id
+        ],
+    ).map_err(|e| e.to_string())?;
+    
+    // Ajout d'une entrée dans pending_mutations
+    crate::sync::record_mutation(&conn, "students", &student.id, "UPDATE", &student)
+        .map_err(|e| e.to_string())?;
+        
+    Ok(())
 }
 
 #[tauri::command]

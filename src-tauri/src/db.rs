@@ -33,5 +33,8 @@ pub fn init(app: &AppHandle) -> Result<Connection, String> {
     let migration_05 = include_str!("../migrations/05_seed_default.sql");
     conn.execute_batch(migration_05).map_err(|e| format!("Erreur migration 05: {}", e))?;
 
+    let migration_06 = include_str!("../migrations/06_student_details.sql");
+    let _ = conn.execute_batch(migration_06); // Ignorer l'erreur si les colonnes existent déjà
+
     Ok(conn)
 }
