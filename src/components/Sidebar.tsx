@@ -1,203 +1,157 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  LayoutDashboard, Users, Key, Monitor, FileText,
-  LogOut, Wifi, WifiOff, ChevronLeft, ChevronRight,
-  Settings, Bell
+  PieChart, Wallet, Calendar, ArrowDownUp, BarChart2,
+  Settings, PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
+// Remplacement des icônes pour coller exactement au style "piqowallet" 
+// tout en gardant vos routes.
 const manageItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Tableau de bord' },
-  { to: '/profils', icon: Users, label: 'Profils & Rôles' },
-  { to: '/appareils', icon: Monitor, label: 'Appareils' },
-  { to: '/licences', icon: Key, label: 'Licence' },
+  { to: '/', icon: PieChart, label: 'Tableau de bord' },
+  { to: '/profils', icon: Wallet, label: 'Profils & Rôles' },
+  { to: '/appareils', icon: Calendar, label: 'Appareils' },
+  { to: '/licences', icon: ArrowDownUp, label: 'Licence' },
 ];
 
 const settingsItems = [
-  { to: '/audit', icon: FileText, label: "Journal d'audit" },
-  { to: '/notifications', icon: Bell, label: 'Notifications' },
-  { to: '/settings', icon: Settings, label: 'Paramètres' },
+  { to: '/audit', icon: Settings, label: "Journal d'audit" },
 ];
 
 export default function Sidebar() {
-  const { user, signOut } = useAuth();
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const { user } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
 
-  useEffect(() => {
-    const on = () => setIsOnline(true);
-    const off = () => setIsOnline(false);
-    window.addEventListener('online', on);
-    window.addEventListener('offline', off);
-    return () => {
-      window.removeEventListener('online', on);
-      window.removeEventListener('offline', off);
-    };
-  }, []);
-
-  const avatarLetter = user?.email?.[0]?.toUpperCase() ?? 'U';
-  const displayName = user?.email?.split('@')[0] ?? 'Utilisateur';
+  const displayName = user?.email?.split('@')[0] ?? 'Direction';
+  const email = user?.email ?? 'direction@orion.com';
 
   return (
     <aside
-      className="relative flex flex-col min-h-screen transition-all duration-300"
+      className="flex flex-col transition-all duration-300 ease-in-out m-4 rounded-3xl relative overflow-hidden"
       style={{
-        width: collapsed ? '72px' : '240px',
-        background: 'linear-gradient(160deg, #1e1e2e 0%, #16161f 100%)',
-        borderRight: '1px solid rgba(255,255,255,0.06)',
+        width: collapsed ? '90px' : '280px',
+        backgroundColor: '#2b2a33', // Couleur gris sombre unie caractéristique
+        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
       }}
     >
-      {/* Collapse toggle */}
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="absolute -right-3 top-6 z-50 flex items-center justify-center w-6 h-6 rounded-full text-slate-400 hover:text-white transition-colors"
-        style={{ background: '#2a2a3d', border: '1px solid rgba(255,255,255,0.1)' }}
-      >
-        {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
-      </button>
+      {/* MacOS Window Controls & Collapse Button */}
+      <div className="flex items-center justify-between px-6 pt-6 pb-2">
+        <div className="flex gap-2">
+          <div className="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
+          <div className="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
+          <div className="w-3 h-3 rounded-full bg-[#27c93f]"></div>
+        </div>
+        <button 
+          onClick={() => setCollapsed(!collapsed)}
+          className="w-6 h-6 border border-[#44434c] rounded-md flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-[#383742] transition-colors"
+        >
+          {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
+        </button>
+      </div>
 
       {/* Logo */}
-      <div className="flex items-center gap-3 px-4 py-5" style={{ minHeight: 64 }}>
-        <div
-          className="flex items-center justify-center rounded-xl font-bold text-white text-base flex-shrink-0"
-          style={{ width: 36, height: 36, background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-        >
+      <div className={`flex items-center gap-3 px-6 py-6 ${collapsed ? 'justify-center px-0' : ''}`}>
+        <div className="w-8 h-8 rounded-full bg-[#3b82f6] flex items-center justify-center text-white font-bold text-xl flex-shrink-0">
           O
         </div>
         {!collapsed && (
-          <div className="overflow-hidden">
-            <p className="font-bold text-white text-sm leading-none tracking-wide">Orion</p>
-            <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>
-              {isOnline ? (
-                <span className="flex items-center gap-1 text-emerald-400"><Wifi size={9} /> En ligne</span>
-              ) : (
-                <span className="flex items-center gap-1 text-orange-400"><WifiOff size={9} /> Hors ligne</span>
-              )}
-            </p>
-          </div>
+          <span className="text-xl text-slate-200 font-medium tracking-wide">
+            orion<span className="font-light">erp</span>
+          </span>
         )}
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 px-3 space-y-5 overflow-hidden">
-        {/* Section MANAGE */}
+      {/* Navigation */}
+      <nav className="flex-1 py-4 overflow-y-auto overflow-x-hidden flex flex-col gap-8">
+        
+        {/* MANAGE Section */}
         <div>
-          {!collapsed && (
-            <p className="text-xs font-semibold px-2 mb-2 tracking-widest" style={{ color: 'rgba(255,255,255,0.25)' }}>
-              GESTION
-            </p>
-          )}
-          <div className="space-y-0.5">
-            {manageItems.map(({ to, icon: Icon, label }) => (
-              <NavLink
-                key={to}
-                to={to}
-                end={to === '/'}
-                title={collapsed ? label : undefined}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-2.5 py-2.5 rounded-xl text-sm transition-all duration-150 group ${
-                    isActive
-                      ? 'text-white font-medium'
-                      : 'text-slate-500 hover:text-slate-200'
-                  }`
-                }
-                style={({ isActive }) =>
-                  isActive
-                    ? { background: 'rgba(99,102,241,0.18)', boxShadow: 'inset 0 0 0 1px rgba(99,102,241,0.25)' }
-                    : {}
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    <Icon
-                      size={17}
-                      className="flex-shrink-0"
-                      style={{ color: isActive ? '#818cf8' : undefined }}
-                    />
-                    {!collapsed && <span className="truncate">{label}</span>}
-                  </>
-                )}
-              </NavLink>
+          <p 
+            className={`text-[10px] font-bold text-slate-500 tracking-[0.2em] mb-4 ${collapsed ? 'text-center' : 'px-8'}`}
+          >
+            MANAGE
+          </p>
+          <div className="flex flex-col gap-1 relative">
+            {manageItems.map((item) => (
+              <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
           </div>
         </div>
 
-        {/* Section SETTINGS */}
+        {/* SETTINGS Section */}
         <div>
-          {!collapsed && (
-            <p className="text-xs font-semibold px-2 mb-2 tracking-widest" style={{ color: 'rgba(255,255,255,0.25)' }}>
-              PARAMÈTRES
-            </p>
-          )}
-          <div className="space-y-0.5">
-            {settingsItems.map(({ to, icon: Icon, label }) => (
-              <NavLink
-                key={to}
-                to={to}
-                title={collapsed ? label : undefined}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-2.5 py-2.5 rounded-xl text-sm transition-all duration-150 ${
-                    isActive
-                      ? 'text-white font-medium'
-                      : 'text-slate-500 hover:text-slate-200'
-                  }`
-                }
-                style={({ isActive }) =>
-                  isActive
-                    ? { background: 'rgba(99,102,241,0.18)', boxShadow: 'inset 0 0 0 1px rgba(99,102,241,0.25)' }
-                    : {}
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    <Icon
-                      size={17}
-                      className="flex-shrink-0"
-                      style={{ color: isActive ? '#818cf8' : undefined }}
-                    />
-                    {!collapsed && <span className="truncate">{label}</span>}
-                  </>
-                )}
-              </NavLink>
+          <p 
+            className={`text-[10px] font-bold text-slate-500 tracking-[0.2em] mb-4 ${collapsed ? 'text-center' : 'px-8'}`}
+          >
+            SETTINGS
+          </p>
+          <div className="flex flex-col gap-1 relative">
+            {settingsItems.map((item) => (
+              <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
           </div>
         </div>
+
       </nav>
 
-      {/* User footer */}
-      <div
-        className="mx-3 mb-4 p-3 rounded-xl flex items-center gap-3 cursor-default"
-        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}
-      >
-        {/* Avatar */}
-        <div
-          className="flex-shrink-0 flex items-center justify-center rounded-full text-white font-bold text-sm"
-          style={{
-            width: 34, height: 34,
-            background: 'linear-gradient(135deg, #6366f1, #a855f7)',
-          }}
-        >
-          {avatarLetter}
+      {/* User Profile */}
+      <div className={`mt-auto px-6 py-8 flex items-center gap-4 ${collapsed ? 'justify-center px-0' : ''}`}>
+        <div className="w-10 h-10 rounded-full bg-slate-600 flex-shrink-0 overflow-hidden border border-slate-500">
+          <img 
+            src={`https://api.dicebear.com/7.x/notionists/svg?seed=${displayName}&backgroundColor=e2e8f0`} 
+            alt="avatar" 
+            className="w-full h-full object-cover"
+          />
         </div>
-
         {!collapsed && (
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-white truncate capitalize">{displayName}</p>
-            <p className="text-xs truncate" style={{ color: 'rgba(255,255,255,0.35)' }}>{user?.email}</p>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-slate-200 truncate capitalize">{displayName}</p>
+            <p className="text-[11px] text-slate-500 truncate">{email}</p>
           </div>
-        )}
-
-        {!collapsed && (
-          <button
-            onClick={signOut}
-            title="Déconnexion"
-            className="flex-shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-red-400 transition-colors"
-          >
-            <LogOut size={14} />
-          </button>
         )}
       </div>
     </aside>
+  );
+}
+
+// Sous-composant pour un élément de navigation
+function NavItem({ item, collapsed }: { item: any; collapsed: boolean }) {
+  return (
+    <NavLink
+      to={item.to}
+      end={item.to === '/'}
+      className={({ isActive }) =>
+        `relative flex items-center gap-4 py-3 ${collapsed ? 'justify-center px-0' : 'px-8'} transition-all duration-200 group`
+      }
+    >
+      {({ isActive }) => (
+        <>
+          {/* L'indicateur blanc sur le bord gauche */}
+          {isActive && (
+            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-6 bg-white rounded-r-full" />
+          )}
+          
+          <item.icon 
+            size={18} 
+            strokeWidth={isActive ? 2.5 : 2}
+            className={`flex-shrink-0 ${isActive ? 'text-slate-100' : 'text-slate-500 group-hover:text-slate-300'}`} 
+          />
+          
+          {!collapsed && (
+            <span className={`text-sm truncate ${isActive ? 'text-slate-100 font-medium' : 'text-slate-500 group-hover:text-slate-300'}`}>
+              {item.label}
+            </span>
+          )}
+
+          {/* Badge */}
+          {!collapsed && item.badge && (
+            <div className="ml-auto bg-[#3b82f6] text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full">
+              {item.badge}
+            </div>
+          )}
+        </>
+      )}
+    </NavLink>
   );
 }
