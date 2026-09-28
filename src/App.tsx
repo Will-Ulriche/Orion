@@ -1,63 +1,52 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import Layout from './components/Layout';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
 import Setup from './pages/Setup';
+import Dashboard from './pages/Dashboard';
+import Profils from './pages/Profils';
+import Appareils from './pages/Appareils';
+import Licences from './pages/Licences';
+import Audit from './pages/Audit';
 import './App.css';
 
-// Composant pour protéger les routes qui nécessitent une authentification
+// Route protégée : redirige vers /login si non connecté
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { session } = useAuth();
-  
-  if (!session) {
-    return <Navigate to="/login" />;
-  }
-  
+  if (!session) return <Navigate to="/login" />;
   return <>{children}</>;
 };
 
-// Composant pour rediriger les utilisateurs déjà connectés
+// Route publique : redirige vers / si déjà connecté
 const PublicRoute = ({ children }: { children: React.ReactNode }) => {
   const { session } = useAuth();
-  
-  if (session) {
-    return <Navigate to="/" />;
-  }
-  
+  if (session) return <Navigate to="/" />;
   return <>{children}</>;
 };
 
 function AppRoutes() {
   return (
     <Routes>
-      <Route 
-        path="/login" 
-        element={
-          <PublicRoute>
-            <Login />
-          </PublicRoute>
-        } 
-      />
-      
-      <Route 
-        path="/" 
+      {/* Routes publiques */}
+      <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
+      <Route path="/setup" element={<PublicRoute><Setup /></PublicRoute>} />
+
+      {/* Routes protégées avec layout + sidebar */}
+      <Route
         element={
           <ProtectedRoute>
-            <Dashboard />
+            <Layout />
           </ProtectedRoute>
-        } 
-      />
+        }
+      >
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/profils" element={<Profils />} />
+        <Route path="/appareils" element={<Appareils />} />
+        <Route path="/licences" element={<Licences />} />
+        <Route path="/audit" element={<Audit />} />
+      </Route>
 
-      <Route 
-        path="/setup" 
-        element={
-          <PublicRoute>
-            <Setup />
-          </PublicRoute>
-        } 
-      />
-      
-      {/* Fallback route */}
+      {/* Fallback */}
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
   );

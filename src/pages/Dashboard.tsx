@@ -1,7 +1,7 @@
 import { useAuth } from '../contexts/AuthContext';
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
-import { LogOut, Database, Wifi, WifiOff, MonitorSmartphone, CheckCircle, ShieldCheck, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Database, Wifi, WifiOff, MonitorSmartphone, CheckCircle, ShieldCheck, RefreshCw, AlertTriangle } from 'lucide-react';
 
 interface DeviceInfo {
   identifier: string;
@@ -16,7 +16,6 @@ interface SyncStatus {
 }
 
 export default function Dashboard() {
-  const { user, signOut } = useAuth();
   const [dbStatus, setDbStatus] = useState<string>('Vérification...');
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
   const [deviceRegStatus, setDeviceRegStatus] = useState<string>('Enregistrement...');
@@ -63,38 +62,11 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-bold text-lg">O</div>
-          <div>
-            <h1 className="text-lg font-bold text-slate-800 leading-none">Orion</h1>
-            <p className="text-xs text-slate-400">Système de gestion scolaire</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          {/* Indicateur réseau */}
-          <div className={`flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full ${isOnline ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-orange-700'}`}>
-            {isOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
-            {isOnline ? 'En ligne' : 'Hors ligne'}
-          </div>
-          <span className="text-sm text-slate-500">{user?.email}</span>
-          <button
-            onClick={signOut}
-            className="flex items-center gap-2 text-sm text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors"
-          >
-            <LogOut size={16} /> Déconnexion
-          </button>
-        </div>
-      </header>
-
-      <main className="p-8 max-w-5xl mx-auto">
-        <div className="mb-8">
-          <h2 className="text-2xl font-bold text-slate-800">Tableau de bord</h2>
-          <p className="text-slate-400 text-sm mt-1">Session 1 — Socle technique opérationnel</p>
-        </div>
+    <div className="p-8 max-w-5xl">
+      <div className="mb-8">
+        <h2 className="text-2xl font-bold text-slate-800">Tableau de bord</h2>
+        <p className="text-slate-400 text-sm mt-1">Session 1 — Socle technique opérationnel</p>
+      </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
           {/* Base de données locale */}
