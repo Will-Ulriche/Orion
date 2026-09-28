@@ -26,8 +26,8 @@ export default function Dashboard() {
       .then((res) => {
         const info = res as DeviceInfo;
         setDeviceInfo(info);
-        // Enregistrer l'appareil dans SQLite (school_id provisoire)
-        return invoke('register_device', { schoolId: 'school_placeholder' });
+        // Enregistrer l'appareil dans SQLite (school_id null jusqu'à la configuration de l'établissement)
+        return invoke('register_device', { schoolId: null });
       })
       .then((status) => setDeviceRegStatus(status as string))
       .catch((err) => setDeviceRegStatus(`Erreur: ${err}`));

@@ -17,9 +17,12 @@ pub fn init(app: &AppHandle) -> Result<Connection, String> {
     // Activer les clés étrangères pour garantir l'intégrité des données
     conn.execute("PRAGMA foreign_keys = ON;", []).map_err(|e| e.to_string())?;
     
-    // Exécuter la migration initiale
-    let migration = include_str!("../migrations/01_init.sql");
-    conn.execute_batch(migration).map_err(|e| format!("Erreur lors de la migration: {}", e))?;
+    // Exécuter les migrations dans l'ordre
+    let migration_01 = include_str!("../migrations/01_init.sql");
+    conn.execute_batch(migration_01).map_err(|e| format!("Erreur migration 01: {}", e))?;
+    
+    let migration_02 = include_str!("../migrations/02_devices_school_nullable.sql");
+    conn.execute_batch(migration_02).map_err(|e| format!("Erreur migration 02: {}", e))?;
     
     Ok(conn)
 }

@@ -43,7 +43,7 @@ pub fn get_device_info() -> Result<DeviceInfo, String> {
 }
 
 #[tauri::command]
-pub fn register_device(state: State<'_, DbState>, school_id: String) -> Result<String, String> {
+pub fn register_device(state: State<'_, DbState>, school_id: Option<String>) -> Result<String, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
 
     let uid = machine_uid::get().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
@@ -70,12 +70,12 @@ pub fn register_device(state: State<'_, DbState>, school_id: String) -> Result<S
         return Ok(format!("Appareil déjà enregistré. Mise à jour effectuée."));
     }
 
-    // Enregistrer le nouvel appareil
+    // Enregistrer le nouvel appareil (school_id peut être NULL si pas encore configuré)
     conn.execute(
         "INSERT INTO devices (id, school_id, device_identifier, device_name, platform, status, last_seen_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', CURRENT_TIMESTAMP)",
         rusqlite::params![device_id, school_id, uid, host_name, os_name],
     ).map_err(|e| e.to_string())?;
 
-    Ok(format!("Appareil enregistré avec succès : {} ({})", host_name, uid))
+    Ok(format!("Appareil enregistré : {} ({})", host_name, uid))
 }
