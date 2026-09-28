@@ -41,3 +41,41 @@ pub fn get_device_info() -> Result<DeviceInfo, String> {
         platform: os_name,
     })
 }
+
+#[tauri::command]
+pub fn register_device(state: State<'_, DbState>, school_id: String) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+
+    let uid = machine_uid::get().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let host_name = System::host_name().unwrap_or_else(|| "Unknown PC".to_string());
+    let os_name = System::name().unwrap_or_else(|| "Unknown OS".to_string());
+    let device_id = uuid::Uuid::new_v4().to_string();
+
+    // Vérifier si l'appareil est déjà enregistré
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM devices WHERE device_identifier = ?1",
+            rusqlite::params![uid],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if exists {
+        // Mettre à jour last_seen_at
+        conn.execute(
+            "UPDATE devices SET last_seen_at = CURRENT_TIMESTAMP, status = 'ACTIVE' WHERE device_identifier = ?1",
+            rusqlite::params![uid],
+        ).map_err(|e| e.to_string())?;
+        return Ok(format!("Appareil déjà enregistré. Mise à jour effectuée."));
+    }
+
+    // Enregistrer le nouvel appareil
+    conn.execute(
+        "INSERT INTO devices (id, school_id, device_identifier, device_name, platform, status, last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', CURRENT_TIMESTAMP)",
+        rusqlite::params![device_id, school_id, uid, host_name, os_name],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(format!("Appareil enregistré avec succès : {} ({})", host_name, uid))
+}
