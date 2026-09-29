@@ -734,6 +734,13 @@ Préparer les données pour la synchronisation sans inventer toute la résolutio
 
 Utiliser au minimum deux années scolaires dans les scénarios de test.
 
+## Règle 11 — Répondre en français
+
+Toutes les réponses, explanations, messages d'erreur et libellés destinés au
+développeur ou à l'utilisateur final sont rédigés en français.
+Les identifiants de code (noms de variables, de fonctions, de tables) restent
+en anglais selon la convention du code existant.
+
 ---
 
 # 25. PROTOCOLE DE L'IA

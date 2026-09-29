@@ -6,10 +6,14 @@ import { invoke } from '@tauri-apps/api/core';
 interface AuthContextType {
   session: Session | null;
   user: User | null;
+  schoolId: string;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const getCurrentSchoolId = (): string =>
+  localStorage.getItem('current_school_id') || 'school-1';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -19,7 +23,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const syncUserToLocalDb = async (userSession: Session | null) => {
     if (userSession?.user) {
       try {
-        const schoolId = localStorage.getItem('current_school_id') || 'school-1';
+        const schoolId = getCurrentSchoolId();
         const schoolName = 'École par défaut'; // Dans un cas réel, récupérer depuis la session ou la base
         await invoke('sync_local_user', {
           userId: userSession.user.id,
@@ -65,7 +69,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ session, user, signOut }}>
+    <AuthContext.Provider value={{ session, user, schoolId: getCurrentSchoolId(), signOut }}>
       {children}
     </AuthContext.Provider>
   );

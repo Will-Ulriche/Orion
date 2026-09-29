@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
-import { Database, Wifi, WifiOff, MonitorSmartphone, CheckCircle, ShieldCheck, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Database, Wifi, WifiOff, MonitorSmartphone, CheckCircle, ShieldCheck, RefreshCw } from 'lucide-react';
 
 interface DeviceInfo {
   identifier: string;

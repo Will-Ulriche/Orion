@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useAuth } from './AuthContext'; // On suppose que la session contient le school_id
+import { useAuth } from './AuthContext';
 
 export type AcademicYearStatus = 'PLANNED' | 'ACTIVE' | 'CLOSED' | 'ARCHIVED';
 
@@ -28,15 +28,11 @@ export const YearProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [years, setYears] = useState<AcademicYear[]>([]);
   const [selectedYear, setSelectedYear] = useState<AcademicYear | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const { session } = useAuth();
+  const { session, schoolId } = useAuth();
 
   const refreshYears = async () => {
-    if (!session?.user?.id) return; // Note: L'app réelle devra fournir le school_id actuel
-    
-    // Pour l'instant, on simule l'obtention du school_id à partir de la session
-    // Dans l'implémentation complète, ceci viendra d'un contexte "SchoolContext" ou profil
-    const schoolId = 'school-1';
-    
+    if (!session?.user?.id || !schoolId) return;
+
     setIsLoading(true);
     try {
       const data: AcademicYear[] = await invoke('get_academic_years', { schoolId });
@@ -57,7 +53,7 @@ export const YearProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     refreshYears();
-  }, [session]);
+  }, [session, schoolId]);
 
   return (
     <YearContext.Provider value={{ years, selectedYear, setSelectedYear, refreshYears, isLoading }}>

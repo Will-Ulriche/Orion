@@ -42,8 +42,11 @@ pub fn run() {
             commands::sync_local_user,
             commands::get_classes,
             commands::create_class,
+            commands::update_class,
+            commands::delete_class,
             commands::get_students,
             commands::create_student,
+            commands::delete_enrollment,
             commands::get_student_details,
             commands::update_student,
             commands::migrate_student

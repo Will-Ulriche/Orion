@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useYear, AcademicYearStatus } from '../contexts/YearContext';
-import { Calendar, Plus, Play, Lock, Archive, AlertTriangle, Pencil, X, Check, Trash2, BarChart2, Settings2 } from 'lucide-react';
+import { Calendar, Plus, Play, Lock, Archive, AlertTriangle, Pencil, X, Check, Trash2, BarChart2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 

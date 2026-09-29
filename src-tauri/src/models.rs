@@ -24,6 +24,9 @@ pub struct Class {
     pub academic_year_id: String,
     pub name: String,
     pub level: Option<String>,
+    /// Nombre d'élèves inscrits et actifs dans cette classe pour l'année en cours.
+    /// Calculé à la lecture, jamais stocké.
+    pub student_count: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -32,6 +35,7 @@ pub struct Student {
     pub first_name: String,
     pub last_name: String,
     pub birth_date: Option<String>,
+    pub birth_place: Option<String>,
     pub gender: Option<String>,
     pub photo_url: Option<String>,
     pub matricule: Option<String>,
@@ -57,4 +61,9 @@ pub struct StudentEnrollment {
     pub matricule: Option<String>,
     pub photo_url: Option<String>,
     pub class_name: Option<String>,
+    pub class_level: Option<String>,
+    pub birth_date: Option<String>,
+    pub birth_place: Option<String>,
+    pub gender: Option<String>,
+    pub address: Option<String>,
 }

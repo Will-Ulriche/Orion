@@ -2,6 +2,53 @@ use rusqlite::Connection;
 use std::fs;
 use tauri::{AppHandle, Manager};
 
+/// Migrations appliquées dans l'ordre. L'index dans le tableau + 1 correspond
+/// au numéro de version enregistré dans `PRAGMA user_version`.
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/01_init.sql"),
+    include_str!("../migrations/02_devices_school_nullable.sql"),
+    include_str!("../migrations/03_pending_mutations.sql"),
+    include_str!("../migrations/04_session2_academic_years.sql"),
+    include_str!("../migrations/05_seed_default.sql"),
+    include_str!("../migrations/06_student_details.sql"),
+    include_str!("../migrations/07_student_birth_place.sql"),
+];
+
+fn run_migrations(conn: &Connection) -> Result<(), String> {
+    let current: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|e| format!("Erreur lecture user_version: {}", e))?;
+
+    for (index, sql) in MIGRATIONS.iter().enumerate() {
+        let version = (index + 1) as i64;
+        if version <= current {
+            continue;
+        }
+
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Erreur ouverture transaction migration {:02}: {}", version, e))?;
+        match tx.execute_batch(sql) {
+            Ok(_) => {}
+            Err(e) => {
+                // Une colonne déjà ajoutée par une base créée avant le suivi de
+                // version n'est pas une erreur : la migration reste considérée
+                // comme appliquée.
+                let message = e.to_string();
+                if !message.contains("duplicate column name") {
+                    return Err(format!("Erreur migration {:02}: {}", version, message));
+                }
+            }
+        }
+        tx.pragma_update(None, "user_version", version)
+            .map_err(|e| format!("Erreur mise à jour user_version {:02}: {}", version, e))?;
+        tx.commit()
+            .map_err(|e| format!("Erreur validation migration {:02}: {}", version, e))?;
+    }
+
+    Ok(())
+}
+
 pub fn init(app: &AppHandle) -> Result<Connection, String> {
     // Récupérer le dossier de données de l'application (spécifique à l'OS)
     let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -17,24 +64,8 @@ pub fn init(app: &AppHandle) -> Result<Connection, String> {
     // Activer les clés étrangères pour garantir l'intégrité des données
     conn.execute("PRAGMA foreign_keys = ON;", []).map_err(|e| e.to_string())?;
     
-    // Exécuter les migrations dans l'ordre
-    let migration_01 = include_str!("../migrations/01_init.sql");
-    conn.execute_batch(migration_01).map_err(|e| format!("Erreur migration 01: {}", e))?;
-    
-    let migration_02 = include_str!("../migrations/02_devices_school_nullable.sql");
-    conn.execute_batch(migration_02).map_err(|e| format!("Erreur migration 02: {}", e))?;
-    
-    let migration_03 = include_str!("../migrations/03_pending_mutations.sql");
-    conn.execute_batch(migration_03).map_err(|e| format!("Erreur migration 03: {}", e))?;
-    
-    let migration_04 = include_str!("../migrations/04_session2_academic_years.sql");
-    conn.execute_batch(migration_04).map_err(|e| format!("Erreur migration 04: {}", e))?;
-
-    let migration_05 = include_str!("../migrations/05_seed_default.sql");
-    conn.execute_batch(migration_05).map_err(|e| format!("Erreur migration 05: {}", e))?;
-
-    let migration_06 = include_str!("../migrations/06_student_details.sql");
-    let _ = conn.execute_batch(migration_06); // Ignorer l'erreur si les colonnes existent déjà
+    // Exécuter uniquement les migrations non encore appliquées
+    run_migrations(&conn)?;
 
     Ok(conn)
 }

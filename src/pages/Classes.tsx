@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useYear } from '../contexts/YearContext';
+import { useAuth } from '../contexts/AuthContext';
 import {
   GraduationCap, Plus, Search, Pencil, Trash2,
   Users, ChevronDown, BookOpen, X, Check, AlertCircle
@@ -12,6 +13,7 @@ interface Class {
   academic_year_id: string;
   name: string;
   level: string | null;
+  student_count: number;
 }
 
 const LEVELS = [
@@ -23,10 +25,9 @@ const LEVELS = [
   'CP', 'CE1', 'CE2', 'CM1', 'CM2',
 ];
 
-const SCHOOL_ID = 'school-1';
-
 export default function Classes() {
   const { selectedYear } = useYear();
+  const { schoolId } = useAuth();
   const [classes, setClasses] = useState<Class[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -42,7 +43,7 @@ export default function Classes() {
     setLoading(true);
     try {
       const data: Class[] = await invoke('get_classes', {
-        schoolId: SCHOOL_ID,
+        schoolId,
         academicYearId: selectedYear.id,
       });
       setClasses(data);
@@ -61,13 +62,24 @@ export default function Classes() {
     if (!selectedYear) { setError("Aucune année scolaire sélectionnée."); return; }
 
     try {
-      await invoke('create_class', {
-        schoolId: SCHOOL_ID,
-        academicYearId: selectedYear.id,
-        name: form.name.trim(),
-        level: form.level || null,
-      });
-      setSuccess(`Classe "${form.name}" créée avec succès !`);
+      if (editingClass) {
+        // Mode édition : mise à jour de la classe existante
+        await invoke('update_class', {
+          id: editingClass.id,
+          name: form.name.trim(),
+          level: form.level || null,
+        });
+        setSuccess(`Classe "${form.name}" modifiée avec succès !`);
+      } else {
+        // Mode création : nouvelle classe
+        await invoke('create_class', {
+          schoolId,
+          academicYearId: selectedYear.id,
+          name: form.name.trim(),
+          level: form.level || null,
+        });
+        setSuccess(`Classe "${form.name}" créée avec succès !`);
+      }
       setForm({ name: '', level: '' });
       setShowForm(false);
       setEditingClass(null);
@@ -89,6 +101,18 @@ export default function Classes() {
     setEditingClass(null);
     setForm({ name: '', level: '' });
     setError(null);
+  };
+
+  const handleDelete = async (cls: Class) => {
+    if (!window.confirm(`Supprimer la classe "${cls.name}" ? Cette action est irréversible.`)) return;
+    try {
+      await invoke('delete_class', { id: cls.id });
+      setSuccess(`Classe "${cls.name}" supprimée.`);
+      await loadClasses();
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (e: any) {
+      setError(e.toString());
+    }
   };
 
   const filtered = classes.filter(c =>
@@ -209,6 +233,7 @@ export default function Classes() {
                             <Pencil size={13} />
                           </button>
                           <button
+                            onClick={() => handleDelete(cls)}
                             className="w-7 h-7 rounded-lg bg-slate-50 hover:bg-red-50 hover:text-red-500 text-slate-400 flex items-center justify-center transition-colors"
                             title="Supprimer"
                           >
@@ -219,7 +244,9 @@ export default function Classes() {
                       <p className="font-bold text-slate-800 text-[15px] truncate">{cls.name}</p>
                       <div className="flex items-center gap-1 mt-1 text-slate-400">
                         <Users size={11} />
-                        <span className="text-[11px]">0 élève(s)</span>
+                        <span className="text-[11px]">
+                          {cls.student_count} élève{cls.student_count > 1 ? 's' : ''}
+                        </span>
                       </div>
                     </div>
                   ))}

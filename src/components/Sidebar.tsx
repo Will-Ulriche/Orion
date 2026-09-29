@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  PieChart, Wallet, Calendar, ArrowDownUp, BarChart2,
+  PieChart, Wallet, Calendar, ArrowDownUp,
   Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap
 } from 'lucide-react';
 import { useState } from 'react';
@@ -127,7 +127,7 @@ function NavItem({ item, collapsed }: { item: any; collapsed: boolean }) {
     <NavLink
       to={item.to}
       end={item.to === '/'}
-      className={({ isActive }) =>
+      className={() =>
         `relative flex items-center gap-4 py-2 ${collapsed ? 'justify-center px-0' : 'px-8'} transition-all duration-200 group`
       }
     >

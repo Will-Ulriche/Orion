@@ -7,6 +7,7 @@ export interface Student {
   first_name: string;
   last_name: string;
   birth_date: string | null;
+  birth_place: string | null;
   gender: string | null;
   photo_url: string | null;
   matricule: string | null;
@@ -132,6 +133,10 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Date de naissance</label>
                     <input type="date" name="birth_date" value={student.birth_date || ''} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Lieu de naissance</label>
+                    <input name="birth_place" value={student.birth_place || ''} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Ville, pays..." />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Genre</label>
