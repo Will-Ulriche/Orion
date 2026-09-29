@@ -12,6 +12,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/05_seed_default.sql"),
     include_str!("../migrations/06_student_details.sql"),
     include_str!("../migrations/07_student_birth_place.sql"),
+    include_str!("../migrations/08_school_extended_fields.sql"),
+    include_str!("../migrations/09_sync_engine.sql"),
 ];
 
 fn run_migrations(conn: &Connection) -> Result<(), String> {
@@ -28,18 +30,45 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Erreur ouverture transaction migration {:02}: {}", version, e))?;
-        match tx.execute_batch(sql) {
-            Ok(_) => {}
-            Err(e) => {
-                // Une colonne déjà ajoutée par une base créée avant le suivi de
-                // version n'est pas une erreur : la migration reste considérée
-                // comme appliquée.
-                let message = e.to_string();
-                if !message.contains("duplicate column name") {
-                    return Err(format!("Erreur migration {:02}: {}", version, message));
+        
+        // Exécuter instruction par instruction pour ignorer les doublons de colonne
+        // (cas des bases pré-migration ou des ALTER TABLE multiples dans un batch).
+        // Découper par ";" puis nettoyer chaque instruction :
+        // 1. On supprime les lignes de commentaires (--) en tête du bloc
+        //    pour ne pas éliminer un CREATE TABLE qui suit un commentaire.
+        // 2. On ignore les blocs entièrement vides après nettoyage.
+        let statements: Vec<String> = sql
+            .split(';')
+            .map(|s| {
+                // Supprimer les lignes de commentaires en début de bloc
+                let mut result = s.trim();
+                loop {
+                    if result.starts_with("--") {
+                        // Sauter jusqu'à la fin de la ligne de commentaire
+                        result = result
+                            .splitn(2, '\n')
+                            .nth(1)
+                            .unwrap_or("")
+                            .trim();
+                    } else {
+                        break;
+                    }
                 }
+                result.to_string()
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        
+        for stmt in &statements {
+            if let Err(e) = tx.execute_batch(stmt) {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column name") {
+                    return Err(format!("Erreur migration {:02}: {}", version, msg));
+                }
+                // Colonne déjà existante → on continue
             }
         }
+        
         tx.pragma_update(None, "user_version", version)
             .map_err(|e| format!("Erreur mise à jour user_version {:02}: {}", version, e))?;
         tx.commit()

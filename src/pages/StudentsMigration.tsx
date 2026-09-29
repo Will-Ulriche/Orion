@@ -3,9 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { useYear } from '../contexts/YearContext';
 import StudentProfileModal from '../components/StudentProfileModal';
+import BulkMigrationModal from '../components/BulkMigrationModal';
 import {
-  Search, UserPlus, Eye, Pencil, Trash2,
-  GraduationCap, BookOpen, ChevronDown, ArrowRight,
+  Search, UserPlus, Pencil, Trash2, Users, Eye,
+  GraduationCap, BookOpen, ChevronDown, ArrowRight, ArrowRightLeft,
   GraduationCap as RepeatIcon, X, Check, AlertCircle
 } from 'lucide-react';
 
@@ -89,12 +90,17 @@ export default function StudentsMigration() {
 
   // Modals
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showBulkModal, setShowBulkModal] = useState(false);
   const [newStudent, setNewStudent] = useState({ firstName: '', lastName: '', classId: '' });
   const [viewingProfile, setViewingProfile] = useState<{ id: string; className: string | null } | null>(null);
   const [migratingStudent, setMigratingStudent] = useState<StudentEnrollment | null>(null);
   const [migrationTargetClass, setMigrationTargetClass] = useState('');
   const [migrationType, setMigrationType] = useState<'PROMOTED' | 'REPEATED'>('PROMOTED');
   const [targetClasses, setTargetClasses] = useState<Class[]>([]);
+
+  // Changement de classe (même année)
+  const [transferringStudent, setTransferringStudent] = useState<StudentEnrollment | null>(null);
+  const [transferTargetClass, setTransferTargetClass] = useState('');
 
   useEffect(() => {
     if (currentYear) {
@@ -184,6 +190,23 @@ export default function StudentsMigration() {
     }
   };
 
+  const handleTransferClass = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transferringStudent) return;
+    try {
+      await invoke('transfer_class_within_year', {
+        enrollmentId: transferringStudent.id,
+        newClassId: transferTargetClass || null,
+      });
+      setTransferringStudent(null);
+      setTransferTargetClass('');
+      await fetchStudents();
+      showSuccess(`Changement de classe effectué pour ${transferringStudent.last_name} ${transferringStudent.first_name}.`);
+    } catch (err: any) {
+      setError(err.toString());
+    }
+  };
+
   const showSuccess = (msg: string) => {
     setSuccess(msg);
     setTimeout(() => setSuccess(null), 3000);
@@ -202,6 +225,8 @@ export default function StudentsMigration() {
     const matchClass = !filterClass || s.class_id === filterClass;
     return matchSearch && matchLevel && matchClass;
   });
+
+  const isReadOnly = currentYear?.status === 'CLOSED' || currentYear?.status === 'ARCHIVED';
 
   if (!currentYear) {
     return (
@@ -224,13 +249,28 @@ export default function StudentsMigration() {
             <span> · {students.length} élève(s)</span>
           </p>
         </div>
-        <button
-          onClick={() => setShowAddForm(true)}
-          className="flex items-center gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-[0_4px_14px_0_rgb(79,70,229,0.4)]"
-        >
-          <UserPlus size={16} />
-          Inscrire un élève
-        </button>
+        <div className="flex gap-2">
+          {!isReadOnly && (
+            <>
+              <button
+                onClick={() => setShowAddForm(true)}
+                className="flex items-center gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-[0_4px_14px_0_rgb(79,70,229,0.4)]"
+              >
+                <UserPlus size={16} />
+                Inscrire un élève
+              </button>
+              {plannedYear && (
+                <button
+                  onClick={() => setShowBulkModal(true)}
+                  className="flex items-center gap-2 bg-[#1e293b] hover:bg-[#0f172a] text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-[0_4px_14px_0_rgb(30,41,59,0.4)]"
+                >
+                  <Users size={16} />
+                  Passage en masse
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Alertes */}
@@ -374,40 +414,45 @@ export default function StudentsMigration() {
                     <td className="py-3.5 px-5"><ClassBadge name={s.class_name} /></td>
                     <td className="py-3.5 px-5">
                       <div className="flex items-center justify-end gap-1.5">
-                        {/* Voir profil */}
+                        {/* Modifier / Voir (ouvre le profil) */}
                         <button
                           onClick={() => setViewingProfile({ id: s.student_id, className: s.class_name })}
-                          title="Voir le profil"
-                          className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-[#e0f2fe] hover:text-[#0369a1] text-slate-400 transition-colors"
+                          title={isReadOnly ? "Voir le profil" : "Modifier"}
+                          className={`w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 transition-colors ${isReadOnly ? 'hover:bg-[#e0f2fe] hover:text-[#0369a1] text-slate-400' : 'hover:bg-[#fef9c3] hover:text-[#a16207] text-slate-400'}`}
                         >
-                          <Eye size={14} />
+                          {isReadOnly ? <Eye size={14} /> : <Pencil size={14} />}
                         </button>
-                        {/* Modifier (ouvre le profil en édition) */}
-                        <button
-                          onClick={() => setViewingProfile({ id: s.student_id, className: s.class_name })}
-                          title="Modifier"
-                          className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-[#fef9c3] hover:text-[#a16207] text-slate-400 transition-colors"
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        {/* Passage de classe */}
-                        {plannedYear && (
-                          <button
-                            onClick={() => { setMigratingStudent(s); setMigrationTargetClass(''); }}
-                            title={`Préparer le passage vers ${plannedYear.name}`}
-                            className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-[#ede9fe] hover:text-[#7c3aed] text-slate-400 transition-colors"
-                          >
-                            <ArrowRight size={14} />
-                          </button>
+                        
+                        {!isReadOnly && (
+                          <>
+                            {/* Changement de classe (même année) */}
+                            <button
+                              onClick={() => { setTransferringStudent(s); setTransferTargetClass(s.class_id || ''); }}
+                              title="Changer de classe (même année)"
+                              className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-[#fef9c3] hover:text-[#a16207] text-slate-400 transition-colors"
+                            >
+                              <ArrowRightLeft size={14} />
+                            </button>
+                            {/* Passage année suivante */}
+                            {plannedYear && (
+                              <button
+                                onClick={() => { setMigratingStudent(s); setMigrationTargetClass(''); }}
+                                title={`Préparer le passage vers ${plannedYear.name}`}
+                                className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-[#ede9fe] hover:text-[#7c3aed] text-slate-400 transition-colors"
+                              >
+                                <ArrowRight size={14} />
+                              </button>
+                            )}
+                            {/* Supprimer */}
+                            <button
+                              onClick={() => handleDeleteStudent(s)}
+                              title="Supprimer l'inscription"
+                              className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-red-50 hover:text-red-500 text-slate-400 transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </>
                         )}
-                        {/* Supprimer */}
-                        <button
-                          onClick={() => handleDeleteStudent(s)}
-                          title="Supprimer l'inscription"
-                          className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-red-50 hover:text-red-500 text-slate-400 transition-colors"
-                        >
-                          <Trash2 size={14} />
-                        </button>
                       </div>
                     </td>
                   </tr>
@@ -478,13 +523,73 @@ export default function StudentsMigration() {
         </div>
       )}
 
+      {/* Modal : Changement de classe (même année) */}
+      {transferringStudent && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-lg font-bold text-slate-800">Changer de classe</h3>
+              <button onClick={() => setTransferringStudent(null)} className="text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-full p-1.5 transition-colors">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-slate-500 text-[13px] mb-5">
+              Modifier la classe de <strong className="text-slate-700">{transferringStudent.last_name} {transferringStudent.first_name}</strong> pour l'année scolaire en cours.
+            </p>
+            <form onSubmit={handleTransferClass} className="space-y-4">
+              <div>
+                <label className="block text-[12px] font-semibold text-slate-700 mb-2">Nouvelle classe</label>
+                <select value={transferTargetClass} onChange={e => setTransferTargetClass(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#f59e0b]/20 focus:border-[#f59e0b]">
+                  <option value="">— Retirer de la classe actuelle —</option>
+                  {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={() => setTransferringStudent(null)}
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">
+                  Annuler
+                </button>
+                <button type="submit"
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-[#f59e0b] hover:bg-[#d97706] text-white text-sm font-semibold transition-colors">
+                  Confirmer
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Modal : Profil élève */}
       {viewingProfile && (
         <StudentProfileModal
           studentId={viewingProfile.id}
           className={viewingProfile.className}
+          readOnly={isReadOnly}
           onClose={() => setViewingProfile(null)}
           onUpdated={() => { fetchStudents(); showSuccess('Profil mis à jour.'); }}
+          onMigrateRequest={
+            plannedYear 
+              ? () => {
+                  const s = students.find(x => x.student_id === viewingProfile.id);
+                  if (s) {
+                    setViewingProfile(null);
+                    setMigratingStudent(s);
+                    setMigrationTargetClass('');
+                  }
+                }
+              : undefined
+          }
+        />
+      )}
+
+      {showBulkModal && (
+        <BulkMigrationModal
+          onClose={() => setShowBulkModal(false)}
+          onMigrated={() => {
+            fetchStudents();
+            showSuccess('Passage en masse effectué avec succès.');
+          }}
         />
       )}
     </div>

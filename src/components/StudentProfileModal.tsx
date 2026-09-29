@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check, ArrowRight } from 'lucide-react';
 
 export interface Student {
   id: string;
@@ -25,9 +25,11 @@ interface StudentProfileModalProps {
   className?: string | null;
   onClose: () => void;
   onUpdated: () => void;
+  onMigrateRequest?: () => void;
+  readOnly?: boolean;
 }
 
-export default function StudentProfileModal({ studentId, className, onClose, onUpdated }: StudentProfileModalProps) {
+export default function StudentProfileModal({ studentId, className, onClose, onUpdated, onMigrateRequest, readOnly = false }: StudentProfileModalProps) {
   const [student, setStudent] = useState<Student | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -120,27 +122,27 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                 <div className="space-y-3">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Prénom</label>
-                    <input name="first_name" value={student.first_name} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" />
+                    <input name="first_name" value={student.first_name} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Nom</label>
-                    <input name="last_name" value={student.last_name} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" />
+                    <input name="last_name" value={student.last_name} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Matricule</label>
-                    <input name="matricule" value={student.matricule || ''} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Automatique ou manuel" />
+                    <input name="matricule" value={student.matricule || ''} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Automatique ou manuel" />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Date de naissance</label>
-                    <input type="date" name="birth_date" value={student.birth_date || ''} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" />
+                    <input type="date" name="birth_date" value={student.birth_date || ''} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Lieu de naissance</label>
-                    <input name="birth_place" value={student.birth_place || ''} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Ville, pays..." />
+                    <input name="birth_place" value={student.birth_place || ''} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Ville, pays..." />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Genre</label>
-                    <select name="gender" value={student.gender || ''} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]">
+                    <select name="gender" value={student.gender || ''} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]">
                       <option value="">Sélectionner</option>
                       <option value="M">Masculin</option>
                       <option value="F">Féminin</option>
@@ -160,28 +162,28 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                 <div className="space-y-3">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Téléphone de l'élève</label>
-                    <input name="phone" value={student.phone || ''} onChange={handleChange} className="w-full px-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Optionnel" />
+                    <input name="phone" value={student.phone || ''} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Optionnel" />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Adresse</label>
                     <div className="relative">
                       <div className="absolute top-2.5 left-3 text-slate-400"><MapPin size={14} /></div>
-                      <input name="address" value={student.address || ''} onChange={handleChange} className="w-full pl-9 pr-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Quartier, rue..." />
+                      <input name="address" value={student.address || ''} onChange={handleChange} disabled={readOnly} className="w-full pl-9 pr-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Quartier, rue..." />
                     </div>
                   </div>
                   <div className="pt-3 border-t border-slate-100">
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Tuteur Légal / Parent</label>
-                    <input name="parent_name" value={student.parent_name || ''} onChange={handleChange} className="w-full px-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Nom et prénom" />
+                    <input name="parent_name" value={student.parent_name || ''} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Nom et prénom" />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Téléphone Parent</label>
-                    <input name="parent_phone" value={student.parent_phone || ''} onChange={handleChange} className="w-full px-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Numéro joignable" />
+                    <input name="parent_phone" value={student.parent_phone || ''} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="Numéro joignable" />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Email Parent</label>
                     <div className="relative">
                       <div className="absolute top-2.5 left-3 text-slate-400"><Mail size={14} /></div>
-                      <input type="email" name="parent_email" value={student.parent_email || ''} onChange={handleChange} className="w-full pl-9 pr-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="email@exemple.com" />
+                      <input type="email" name="parent_email" value={student.parent_email || ''} onChange={handleChange} disabled={readOnly} className="w-full pl-9 pr-3 py-2 bg-[#f8f9fc] border border-slate-200 rounded-xl text-[13px] outline-none focus:border-[#4f46e5]" placeholder="email@exemple.com" />
                     </div>
                   </div>
                 </div>
@@ -198,7 +200,7 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                 <div className="space-y-3">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Groupe sanguin</label>
-                    <select name="blood_type" value={student.blood_type || ''} onChange={handleChange} className="w-full px-3 py-2 bg-white border border-red-200 rounded-xl text-[13px] outline-none focus:border-red-400">
+                    <select name="blood_type" value={student.blood_type || ''} onChange={handleChange} disabled={readOnly} className="w-full px-3 py-2 bg-white border border-red-200 rounded-xl text-[13px] outline-none focus:border-red-400">
                       <option value="">Non renseigné</option>
                       <option value="A+">A+</option>
                       <option value="A-">A-</option>
@@ -217,7 +219,7 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                     <textarea 
                       name="medical_notes" 
                       value={student.medical_notes || ''} 
-                      onChange={handleChange} 
+                      onChange={handleChange} disabled={readOnly} 
                       className="w-full px-3 py-2 bg-white border border-red-200 rounded-xl text-[13px] outline-none focus:border-red-400 min-h-[120px] resize-none"
                       placeholder="Asthme, allergie aux arachides, etc..."
                     />
@@ -241,6 +243,15 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
             {success && <span className="text-green-600 text-sm flex items-center gap-1 font-medium"><Check size={16} /> Enregistré !</span>}
           </div>
           <div className="flex gap-3">
+            {!readOnly && onMigrateRequest && (
+              <button 
+                onClick={onMigrateRequest}
+                className="px-5 py-2.5 rounded-xl bg-[#ede9fe] text-[#6d28d9] text-[13px] font-semibold hover:bg-[#ddd6fe] transition-colors flex items-center gap-2"
+              >
+                <ArrowRight size={16} />
+                Transférer
+              </button>
+            )}
             <button onClick={onClose} className="px-5 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-[13px] font-semibold hover:bg-slate-50 transition-colors">
               Fermer
             </button>

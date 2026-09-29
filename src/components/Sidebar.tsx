@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart, Wallet, Calendar, ArrowDownUp,
-  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap
+  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw
 } from 'lucide-react';
 import { useState } from 'react';
 import YearSelector from './YearSelector';
@@ -19,6 +19,7 @@ const manageItems = [
 ];
 
 const settingsItems = [
+  { to: '/sync', icon: RefreshCw, label: 'Synchronisation' },
   { to: '/settings', icon: Settings, label: "Paramètres" },
   { to: '/audit', icon: Settings, label: "Journal d'audit" },
 ];

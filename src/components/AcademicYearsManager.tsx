@@ -105,12 +105,24 @@ export default function AcademicYearsManager() {
     }
   };
 
+  const handleArchive = async (id: string) => {
+    if (!window.confirm('Archiver cette année ? Elle restera consultable mais ne pourra plus être modifiée.')) return;
+    try {
+      setError(null);
+      const schoolId = 'school-1';
+      await invoke('archive_academic_year', { id, schoolId });
+      await refreshYears();
+    } catch (err: any) {
+      setError(err.toString());
+    }
+  };
+
   const getStatusBadge = (status: AcademicYearStatus) => {
     switch (status) {
-      case 'ACTIVE': return <span className="px-3 py-1 bg-green-100 text-green-700 text-[11px] font-bold rounded-full">Active</span>;
-      case 'PLANNED': return <span className="px-3 py-1 bg-yellow-100 text-yellow-700 text-[11px] font-bold rounded-full">Inactive</span>;
-      case 'CLOSED': return <span className="px-3 py-1 bg-red-100 text-red-700 text-[11px] font-bold rounded-full">Clôturée</span>;
-      case 'ARCHIVED': return <span className="px-3 py-1 bg-slate-100 text-slate-700 text-[11px] font-bold rounded-full">Archivée</span>;
+      case 'ACTIVE':   return <span className="px-3 py-1 bg-green-100 text-green-700 text-[11px] font-bold rounded-full">Active</span>;
+      case 'PLANNED':  return <span className="px-3 py-1 bg-yellow-100 text-yellow-700 text-[11px] font-bold rounded-full">Inactive</span>;
+      case 'CLOSED':   return <span className="px-3 py-1 bg-red-100 text-red-700 text-[11px] font-bold rounded-full">Clôturée</span>;
+      case 'ARCHIVED': return <span className="px-3 py-1 bg-slate-100 text-slate-500 text-[11px] font-bold rounded-full">Archivée</span>;
       default: return null;
     }
   };
@@ -336,10 +348,7 @@ export default function AcademicYearsManager() {
                   </button>
 
                   <button 
-                    onClick={() => { 
-                       // handleArchive(configuringYear.id); setConfiguringYear(null);
-                       alert("La fonctionnalité d'archivage sera bientôt disponible.");
-                    }}
+                    onClick={() => { handleArchive(configuringYear.id); setConfiguringYear(null); }}
                     className="w-full flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors bg-white border border-slate-300 text-slate-700 hover:bg-slate-100"
                   >
                     <Archive size={16} /> Archiver l'année

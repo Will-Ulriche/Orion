@@ -32,12 +32,14 @@ pub fn run() {
             commands::check_user_role,
             commands::write_audit_log,
             commands::get_sync_status,
+            commands::get_school_settings,
             commands::save_school_settings,
             commands::get_academic_years,
             commands::create_academic_year,
             commands::update_academic_year,
             commands::open_academic_year,
             commands::close_academic_year,
+            commands::archive_academic_year,
             commands::delete_academic_year,
             commands::sync_local_user,
             commands::get_classes,
@@ -49,7 +51,16 @@ pub fn run() {
             commands::delete_enrollment,
             commands::get_student_details,
             commands::update_student,
-            commands::migrate_student
+            commands::migrate_student,
+            commands::bulk_migrate_students,
+            commands::transfer_class_within_year,
+            // ── Session 3 : Sync Engine ──
+            commands::trigger_sync,
+            commands::retry_failed_mutations,
+            commands::enqueue_full_resync,
+            commands::get_pending_mutations,
+            commands::get_sync_conflicts,
+            commands::resolve_sync_conflict
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

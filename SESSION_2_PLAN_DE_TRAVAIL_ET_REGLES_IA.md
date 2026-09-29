@@ -788,32 +788,32 @@ Après validation et développement :
 La Session 2 ne sera terminée que lorsque :
 
 ```text
-[ ] Cycle de vie des années défini
-[ ] Création d'année
-[ ] Ouverture
-[ ] Année active
-[ ] Sélecteur d'année
-[ ] Changement de contexte
-[ ] Clôture
-[ ] Archivage
-[ ] Verrouillage
-[ ] Promotion
-[ ] Redoublement
-[ ] Transfert
-[ ] Changement de classe
-[ ] Historique
-[ ] Parcours annuel élève
-[ ] Règles de copie entre années
-[ ] Règles de non-copie
-[ ] Contrôle anti-mélange
-[ ] Permissions
-[ ] Audit
-[ ] Offline
-[ ] Préparation Sync
-[ ] BDD validée
-[ ] UI validée
-[ ] Code validé
-[ ] Tests validés
+[x] Cycle de vie des années défini
+[x] Création d'année
+[x] Ouverture
+[x] Année active
+[x] Sélecteur d'année
+[x] Changement de contexte
+[x] Clôture
+[x] Archivage
+[x] Verrouillage
+[x] Promotion
+[x] Redoublement
+[x] Transfert
+[x] Changement de classe
+[x] Historique
+[x] Parcours annuel élève
+[x] Règles de copie entre années
+[x] Règles de non-copie
+[x] Contrôle anti-mélange
+[x] Permissions
+[x] Audit
+[x] Offline
+[x] Préparation Sync
+[x] BDD validée
+[x] UI validée
+[x] Code validé
+[x] Tests validés
 ```
 
 ---
