@@ -46,10 +46,12 @@ const REMOTE_COLUMNS: &[(&str, &[&str])] = &[
     ("classes",        &["id", "school_id", "academic_year_id", "name", "level", "created_at", "updated_at"]),
     ("students",       &["id", "school_id", "first_name", "last_name", "birth_date", "gender", "photo_url", "matricule", "address", "phone", "parent_name", "parent_phone", "parent_email", "blood_type", "medical_notes", "birth_place", "created_at", "updated_at"]),
     ("enrollments",    &["id", "school_id", "academic_year_id", "student_id", "class_id", "enrollment_number", "enrollment_date", "status", "enrollment_type", "previous_class_id", "created_at", "updated_at"]),
+    ("fee_structures", &["id", "school_id", "academic_year_id", "name", "amount", "fee_type", "applies_to", "class_id", "level", "due_date", "is_mandatory", "created_at", "updated_at"]),
+    ("payments",       &["id", "school_id", "academic_year_id", "enrollment_id", "student_id", "fee_structure_id", "amount", "payment_date", "payment_method", "reference", "receipt_number", "notes", "recorded_by", "status", "cancelled_at", "cancel_reason", "created_at", "updated_at"]),
 ];
 
 // Colonnes booléennes : SQLite les range en 0/1, PostgreSQL attend true/false.
-const BOOLEAN_COLUMNS: &[&str] = &["is_current"];
+const BOOLEAN_COLUMNS: &[&str] = &["is_current", "is_mandatory"];
 
 /// Convertit une valeur SQLite en JSON, en honorant le type booléen attendu.
 fn column_to_json(row: &rusqlite::Row, idx: usize, as_bool: bool) -> rusqlite::Result<serde_json::Value> {
@@ -289,6 +291,24 @@ pub fn retry_failed_mutations(app: tauri::AppHandle) -> Result<usize, String> {
 }
 
 // ──────────────────────────────────────────────
+// COMMANDE : Purger les mutations invalides (entity_type inconnu)
+// ──────────────────────────────────────────────
+#[tauri::command]
+pub fn purge_invalid_mutations(state: State<'_, DbState>) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    // Tables valides synchronisables
+    let valid_types = ["academic_years", "classes", "students", "enrollments"];
+    let placeholders = valid_types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "DELETE FROM pending_mutations WHERE entity_type NOT IN ({})",
+        placeholders
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = valid_types.iter().map(|t| t as &dyn rusqlite::ToSql).collect();
+    let deleted = conn.execute(&sql, params.as_slice()).map_err(|e| e.to_string())?;
+    Ok(deleted)
+}
+
+// ──────────────────────────────────────────────
 // COMMANDE : Resynchronisation complète (tout l'état local vers le cloud)
 // Les entités créées localement avant que l'outbox ne les couvre n'y figurent
 // jamais : sans ce rattrapage, leurs enfants restent bloqués par la clé étrangère.
@@ -401,11 +421,8 @@ pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Resul
         ]
     ).map_err(|e| format!("Erreur SQLite UPDATE schools: {}", e))?;
 
-    let mutation_id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![mutation_id, "school", "school-1", "UPSERT", &payload]
-    ).map_err(|e| format!("Erreur SQLite pending_mutations: {}", e))?;
+    // Note : les paramètres de l'école sont locaux uniquement.
+    // La table 'schools' n'est pas synchronisée via l'outbox.
     
     conn.execute(
         "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -717,7 +734,7 @@ pub fn sync_local_user(user_id: String, email: String, school_id: String, school
     // Upsert school
     conn.execute(
         "INSERT INTO schools (id, name) VALUES (?1, ?2) 
-         ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+         ON CONFLICT(id) DO NOTHING",
         rusqlite::params![school_id, school_name],
     ).map_err(|e| format!("Erreur sync école: {}", e))?;
 
@@ -928,11 +945,12 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
     
     let student_id = uuid::Uuid::new_v4().to_string();
     let enrollment_id = uuid::Uuid::new_v4().to_string();
+    let matricule = format!("MAT-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap().to_uppercase());
     
     // Begin transaction conceptually
     conn.execute(
-        "INSERT INTO students (id, school_id, first_name, last_name) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![student_id, school_id, first_name, last_name],
+        "INSERT INTO students (id, school_id, first_name, last_name, matricule) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![student_id, school_id, first_name, last_name, matricule],
     ).map_err(|e| e.to_string())?;
     
     conn.execute(
@@ -955,7 +973,8 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
         "id": student_id,
         "school_id": school_id,
         "first_name": first_name,
-        "last_name": last_name
+        "last_name": last_name,
+        "matricule": matricule
     });
 
     let enrollment = serde_json::json!({
@@ -979,7 +998,7 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
         status: "ACTIVE".to_string(),
         first_name: Some(first_name),
         last_name: Some(last_name),
-        matricule: None,
+        matricule: Some(matricule),
         photo_url: None,
         class_name,
         class_level,
@@ -1145,5 +1164,407 @@ pub fn bulk_migrate_students(
     }
     
     tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ============================================================
+// SESSION 4 : GESTION FINANCIÈRE (Frais scolaires & Paiements)
+// ============================================================
+
+#[tauri::command]
+pub fn get_fee_structures(
+    school_id: String,
+    academic_year_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::FeeStructure>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.school_id, f.academic_year_id, f.name, f.amount, f.fee_type,
+                f.applies_to, f.class_id, f.level, f.due_date, f.is_mandatory,
+                c.name as class_name
+         FROM fee_structures f
+         LEFT JOIN classes c ON f.class_id = c.id
+         WHERE f.school_id = ?1 AND f.academic_year_id = ?2
+         ORDER BY f.created_at DESC"
+    ).map_err(|e| e.to_string())?;
+
+    let iter = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
+        Ok(crate::models::FeeStructure {
+            id: row.get(0)?,
+            school_id: row.get(1)?,
+            academic_year_id: row.get(2)?,
+            name: row.get(3)?,
+            amount: row.get(4)?,
+            fee_type: row.get(5)?,
+            applies_to: row.get(6)?,
+            class_id: row.get(7)?,
+            level: row.get(8)?,
+            due_date: row.get(9)?,
+            is_mandatory: row.get(10)?,
+            class_name: row.get(11)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut res = Vec::new();
+    for item in iter {
+        if let Ok(fs) = item {
+            res.push(fs);
+        }
+    }
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn create_fee_structure(
+    school_id: String,
+    academic_year_id: String,
+    name: String,
+    amount: i64,
+    fee_type: String,
+    applies_to: String,
+    class_id: Option<String>,
+    level: Option<String>,
+    due_date: Option<String>,
+    is_mandatory: bool,
+    state: State<'_, DbState>
+) -> Result<crate::models::FeeStructure, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+        rusqlite::params![
+            id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, now
+        ]
+    ).map_err(|e| format!("Erreur SQL: {}", e))?;
+
+    let payload = serde_json::json!({
+        "id": id,
+        "school_id": school_id,
+        "academic_year_id": academic_year_id,
+        "name": name,
+        "amount": amount,
+        "fee_type": fee_type,
+        "applies_to": applies_to,
+        "class_id": class_id,
+        "level": level,
+        "due_date": due_date,
+        "is_mandatory": is_mandatory,
+        "created_at": now,
+        "updated_at": now
+    });
+    
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, 'fee_structures', ?2, 'INSERT', ?3)",
+        rusqlite::params![mutation_id, id, payload.to_string()]
+    ).unwrap_or(0);
+
+    conn.execute(
+        "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, "CREATE_FEE", "fee_structures", payload.to_string()]
+    ).unwrap_or(0);
+
+    let class_name = if let Some(cid) = &class_id {
+        conn.query_row("SELECT name FROM classes WHERE id = ?1", rusqlite::params![cid], |r| r.get(0)).unwrap_or(None)
+    } else { None };
+
+    Ok(crate::models::FeeStructure {
+        id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, class_name
+    })
+}
+
+#[tauri::command]
+pub fn delete_fee_structure(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM payments WHERE fee_structure_id = ?1 AND status = 'VALID'",
+        rusqlite::params![id],
+        |r| r.get(0)
+    ).unwrap_or(0);
+    if count > 0 {
+        return Err("Impossible de supprimer : des paiements valides y sont attachés.".into());
+    }
+
+    conn.execute("DELETE FROM fee_structures WHERE id = ?1 AND school_id = ?2", rusqlite::params![id, school_id])
+        .map_err(|e| e.to_string())?;
+
+    let payload = serde_json::json!({ "id": id });
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, 'fee_structures', ?2, 'DELETE', ?3)",
+        rusqlite::params![mutation_id, id, payload.to_string()]
+    ).unwrap_or(0);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_fee_structure(
+    id: String,
+    school_id: String,
+    name: String,
+    amount: i64,
+    due_date: Option<String>,
+    is_mandatory: bool,
+    state: State<'_, DbState>
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    conn.execute(
+        "UPDATE fee_structures SET name = ?1, amount = ?2, due_date = ?3, is_mandatory = ?4, updated_at = ?5
+         WHERE id = ?6 AND school_id = ?7",
+        rusqlite::params![name, amount, due_date, is_mandatory, now, id, school_id]
+    ).map_err(|e| e.to_string())?;
+
+    // Create a generic payload to sync the update
+    let payload = serde_json::json!({
+        "id": id,
+        "name": name,
+        "amount": amount,
+        "due_date": due_date,
+        "is_mandatory": is_mandatory,
+        "updated_at": now
+    });
+
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, 'fee_structures', ?2, 'UPDATE', ?3)",
+        rusqlite::params![mutation_id, id, payload.to_string()]
+    ).unwrap_or(0);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_student_payments(
+    school_id: String,
+    academic_year_id: String,
+    student_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::Payment>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.school_id, p.academic_year_id, p.enrollment_id, p.student_id,
+                p.fee_structure_id, p.amount, p.payment_date, p.payment_method, p.reference,
+                p.receipt_number, p.notes, p.recorded_by, p.status, p.cancelled_at, p.cancel_reason,
+                f.name as fee_name
+         FROM payments p
+         LEFT JOIN fee_structures f ON p.fee_structure_id = f.id
+         WHERE p.school_id = ?1 AND p.academic_year_id = ?2 AND p.student_id = ?3
+         ORDER BY p.payment_date DESC, p.created_at DESC"
+    ).map_err(|e| e.to_string())?;
+
+    let iter = stmt.query_map(rusqlite::params![school_id, academic_year_id, student_id], |row| {
+        Ok(crate::models::Payment {
+            id: row.get(0)?,
+            school_id: row.get(1)?,
+            academic_year_id: row.get(2)?,
+            enrollment_id: row.get(3)?,
+            student_id: row.get(4)?,
+            fee_structure_id: row.get(5)?,
+            amount: row.get(6)?,
+            payment_date: row.get(7)?,
+            payment_method: row.get(8)?,
+            reference: row.get(9)?,
+            receipt_number: row.get(10)?,
+            notes: row.get(11)?,
+            recorded_by: row.get(12)?,
+            status: row.get(13)?,
+            cancelled_at: row.get(14)?,
+            cancel_reason: row.get(15)?,
+            fee_name: row.get(16)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut res = Vec::new();
+    for item in iter {
+        if let Ok(p) = item {
+            res.push(p);
+        }
+    }
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn get_student_financial_summary(
+    school_id: String,
+    academic_year_id: String,
+    student_id: String,
+    state: State<'_, DbState>
+) -> Result<crate::models::StudentFinancialSummary, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    // 1. Fetch enrollment and class
+    let (enrollment_id, class_id, first_name, last_name, class_name) = conn.query_row(
+        "SELECT e.id, e.class_id, s.first_name, s.last_name, c.name
+         FROM enrollments e
+         JOIN students s ON e.student_id = s.id
+         JOIN classes c ON e.class_id = c.id
+         WHERE e.school_id = ?1 AND e.academic_year_id = ?2 AND e.student_id = ?3 AND e.status = 'ACTIVE'",
+        rusqlite::params![school_id, academic_year_id, student_id],
+        |row| Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?
+        ))
+    ).map_err(|_| "Inscription active introuvable pour cet élève dans cette année scolaire.".to_string())?;
+
+    // 2. Calculate Total Due
+    let total_due: i64 = conn.query_row(
+        "SELECT SUM(amount) FROM fee_structures 
+         WHERE school_id = ?1 AND academic_year_id = ?2 
+         AND (applies_to = 'ALL' OR (applies_to = 'CLASS' AND class_id = ?3))",
+        rusqlite::params![school_id, academic_year_id, class_id],
+        |row| row.get(0)
+    ).unwrap_or(0);
+
+    // 3. Calculate Total Paid
+    let total_paid: i64 = conn.query_row(
+        "SELECT SUM(amount) FROM payments
+         WHERE school_id = ?1 AND academic_year_id = ?2 AND enrollment_id = ?3 AND status = 'VALID'",
+        rusqlite::params![school_id, academic_year_id, enrollment_id],
+        |row| row.get(0)
+    ).unwrap_or(0);
+
+    let remaining_balance = total_due - total_paid;
+    let status = if remaining_balance <= 0 {
+        "SOLDE"
+    } else if total_paid > 0 {
+        "PARTIEL"
+    } else {
+        "IMPAYE"
+    };
+
+    Ok(crate::models::StudentFinancialSummary {
+        student_id,
+        enrollment_id,
+        first_name,
+        last_name,
+        class_name,
+        total_due,
+        total_paid,
+        remaining_balance,
+        status: status.to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn create_payment(
+    school_id: String,
+    academic_year_id: String,
+    enrollment_id: String,
+    student_id: String,
+    fee_structure_id: Option<String>,
+    amount: i64,
+    payment_method: String,
+    reference: Option<String>,
+    notes: Option<String>,
+    recorded_by: String, // from context
+    state: State<'_, DbState>
+) -> Result<crate::models::Payment, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let payment_date = chrono::Utc::now().naive_local().date().to_string();
+
+    // Generate receipt number (basic version: RECU-YYYYMMDD-ID)
+    let receipt_number = format!("RECU-{}-{}", chrono::Utc::now().format("%Y%m%d"), &id[..6].to_uppercase());
+
+    conn.execute(
+        "INSERT INTO payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'VALID', ?14, ?14)",
+        rusqlite::params![
+            id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, now
+        ]
+    ).map_err(|e| format!("Erreur SQL: {}", e))?;
+
+    let payload = serde_json::json!({
+        "id": id,
+        "school_id": school_id,
+        "academic_year_id": academic_year_id,
+        "enrollment_id": enrollment_id,
+        "student_id": student_id,
+        "fee_structure_id": fee_structure_id,
+        "amount": amount,
+        "payment_date": payment_date,
+        "payment_method": payment_method,
+        "reference": reference,
+        "receipt_number": receipt_number,
+        "notes": notes,
+        "recorded_by": recorded_by,
+        "status": "VALID",
+        "created_at": now,
+        "updated_at": now
+    });
+    
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, 'payments', ?2, 'INSERT', ?3)",
+        rusqlite::params![mutation_id, id, payload.to_string()]
+    ).unwrap_or(0);
+
+    conn.execute(
+        "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, "CREATE_PAYMENT", "payments", payload.to_string()]
+    ).unwrap_or(0);
+
+    let fee_name = if let Some(fid) = &fee_structure_id {
+        conn.query_row("SELECT name FROM fee_structures WHERE id = ?1", rusqlite::params![fid], |r| r.get(0)).unwrap_or(None)
+    } else { None };
+
+    Ok(crate::models::Payment {
+        id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status: "VALID".to_string(), cancelled_at: None, cancel_reason: None, fee_name
+    })
+}
+
+#[tauri::command]
+pub fn cancel_payment(id: String, school_id: String, cancel_reason: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let updated = conn.execute(
+        "UPDATE payments SET status = 'CANCELLED', cancelled_at = ?1, cancel_reason = ?2, updated_at = ?1
+         WHERE id = ?3 AND school_id = ?4 AND status = 'VALID'",
+        rusqlite::params![now, cancel_reason, id, school_id]
+    ).map_err(|e| e.to_string())?;
+
+    if updated == 0 {
+        return Err("Paiement introuvable ou déjà annulé.".to_string());
+    }
+
+    let payload = serde_json::json!({
+        "id": id,
+        "status": "CANCELLED",
+        "cancelled_at": now,
+        "cancel_reason": cancel_reason,
+        "updated_at": now
+    });
+    
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, 'payments', ?2, 'UPDATE', ?3)",
+        rusqlite::params![mutation_id, id, payload.to_string()]
+    ).unwrap_or(0);
+
+    conn.execute(
+        "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, "CANCEL_PAYMENT", "payments", payload.to_string()]
+    ).unwrap_or(0);
+
     Ok(())
 }

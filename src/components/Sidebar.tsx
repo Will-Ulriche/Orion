@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart, Wallet, Calendar, ArrowDownUp,
-  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw
+  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins
 } from 'lucide-react';
 import { useState } from 'react';
 import YearSelector from './YearSelector';
@@ -13,6 +13,7 @@ const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord' },
   { to: '/classes', icon: GraduationCap, label: 'Classes' },
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions' },
+  { to: '/finances', icon: Coins, label: 'Finances & Paiements' },
   { to: '/profils', icon: Wallet, label: 'Profils & Rôles' },
   { to: '/appareils', icon: Calendar, label: 'Appareils' },
   { to: '/licences', icon: ArrowDownUp, label: 'Licence' },
@@ -70,16 +71,16 @@ export default function Sidebar() {
       <YearSelector collapsed={collapsed} />
 
       {/* Navigation */}
-      <nav className="flex-1 py-4 overflow-y-auto overflow-x-hidden flex flex-col gap-5">
+      <nav className="flex-1 py-2 overflow-y-auto overflow-x-hidden flex flex-col gap-3">
         
         {/* MANAGE Section */}
         <div>
           <p 
-            className={`text-[10px] font-bold text-slate-500 tracking-[0.2em] mb-4 ${collapsed ? 'text-center' : 'px-8'}`}
+            className={`text-[10px] font-bold text-slate-500 tracking-[0.2em] mb-2 ${collapsed ? 'text-center' : 'px-8'}`}
           >
             MANAGE
           </p>
-          <div className="flex flex-col gap-1 relative">
+          <div className="flex flex-col gap-0 relative">
             {manageItems.map((item) => (
               <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
@@ -89,11 +90,11 @@ export default function Sidebar() {
         {/* SETTINGS Section */}
         <div>
           <p 
-            className={`text-[10px] font-bold text-slate-500 tracking-[0.2em] mb-4 ${collapsed ? 'text-center' : 'px-8'}`}
+            className={`text-[10px] font-bold text-slate-500 tracking-[0.2em] mb-2 ${collapsed ? 'text-center' : 'px-8'}`}
           >
             SETTINGS
           </p>
-          <div className="flex flex-col gap-1 relative">
+          <div className="flex flex-col gap-0 relative">
             {settingsItems.map((item) => (
               <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
@@ -129,7 +130,7 @@ function NavItem({ item, collapsed }: { item: any; collapsed: boolean }) {
       to={item.to}
       end={item.to === '/'}
       className={() =>
-        `relative flex items-center gap-4 py-2 ${collapsed ? 'justify-center px-0' : 'px-8'} transition-all duration-200 group`
+        `relative flex items-center gap-4 py-1.5 ${collapsed ? 'justify-center px-0' : 'px-8'} transition-all duration-200 group`
       }
     >
       {({ isActive }) => (

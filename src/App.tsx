@@ -13,6 +13,7 @@ import Settings from './pages/Settings';
 import StudentsMigration from './pages/StudentsMigration';
 import Classes from './pages/Classes';
 import SyncCenter from './pages/SyncCenter';
+import Finances from './pages/Finances';
 import './App.css';
 
 // Route protégée : redirige vers /login si non connecté
@@ -52,6 +53,7 @@ function AppRoutes() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/students" element={<StudentsMigration />} />
         <Route path="/classes" element={<Classes />} />
+        <Route path="/finances" element={<Finances />} />
         <Route path="/sync" element={<SyncCenter />} />
       </Route>
 

@@ -600,26 +600,26 @@ Le but est de construire le **moteur de synchronisation réutilisable** par ces 
 # 12. Ordre de développement recommandé
 
 ```text
-01. Architecture Sync Engine
-02. Identité des mutations
-03. Types d'opérations
-04. Outbox
-05. Inbox
-06. Queue / états
-07. SQLite → Supabase
-08. Supabase → SQLite
-09. Synchronisation manuelle
-10. Détection des changements
-11. Multi-appareils
-12. Détection des conflits
-13. Niveaux de conflits
-14. Résolution automatique
-15. Résolution manuelle
-16. Perte de connexion
-17. Reprise
-18. Gestion des erreurs
-19. Centre de synchronisation
-20. Tests + validation finale
+[x] 01. Architecture Sync Engine
+[x] 02. Identité des mutations
+[x] 03. Types d'opérations
+[x] 04. Outbox
+[x] 05. Inbox
+[x] 06. Queue / états
+[x] 07. SQLite → Supabase
+[x] 08. Supabase → SQLite
+[x] 09. Synchronisation manuelle
+[x] 10. Détection des changements
+[x] 11. Multi-appareils
+[x] 12. Détection des conflits
+[x] 13. Niveaux de conflits
+[x] 14. Résolution automatique
+[x] 15. Résolution manuelle
+[x] 16. Perte de connexion
+[x] 17. Reprise
+[x] 18. Gestion des erreurs
+[x] 19. Centre de synchronisation
+[x] 20. Tests + validation finale
 ```
 
 ---

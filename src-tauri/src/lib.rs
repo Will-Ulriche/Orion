@@ -60,7 +60,17 @@ pub fn run() {
             commands::enqueue_full_resync,
             commands::get_pending_mutations,
             commands::get_sync_conflicts,
-            commands::resolve_sync_conflict
+            commands::resolve_sync_conflict,
+            commands::purge_invalid_mutations,
+            // ── Session 4 : Finance ──
+            commands::get_fee_structures,
+            commands::create_fee_structure,
+            commands::update_fee_structure,
+            commands::delete_fee_structure,
+            commands::get_student_payments,
+            commands::get_student_financial_summary,
+            commands::create_payment,
+            commands::cancel_payment
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

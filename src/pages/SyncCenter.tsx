@@ -213,6 +213,22 @@ export default function SyncCenter() {
     await runSync(`${enqueued} entité(s) remise(s) en file.`);
   };
 
+  // Purge les mutations dont l'entity_type n'est pas synchronisable
+  // (ex: anciennes mutations "school" mal nommées)
+  const handlePurge = async () => {
+    setError(null);
+    try {
+      const deleted: number = await invoke('purge_invalid_mutations');
+      await Promise.all([loadStatus(), loadMutations()]);
+      if (deleted > 0) {
+        setNotice(`${deleted} mutation(s) invalide(s) supprimée(s).`);
+        setTimeout(() => setNotice(null), 4000);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   // ── Résolution de conflit ──
 
   const handleResolve = async (conflictId: string, choice: 'LOCAL' | 'REMOTE') => {
@@ -278,6 +294,15 @@ export default function SyncCenter() {
           >
             <Database size={16} />
             Resynchroniser tout
+          </button>
+          <button
+            onClick={handlePurge}
+            disabled={syncing}
+            title="Supprimer les mutations invalides (entity_type non synchronisable)"
+            className="flex items-center gap-2 bg-white border border-red-200 hover:bg-red-50 disabled:opacity-60 text-red-600 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors"
+          >
+            <XCircle size={16} />
+            Purger invalides
           </button>
           <button
             onClick={handleSync}

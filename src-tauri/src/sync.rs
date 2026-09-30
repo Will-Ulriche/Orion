@@ -35,11 +35,13 @@ const SYNC_STATE_ID: &str = "local-device";
 
 /// Tables parentes dont l'insertion doit précéder celle des enfants,
 /// sinon PostgreSQL rejette l'enfant sur une violation de clé étrangère.
-const DEPENDENCY_ORDER: [(&str, u8); 4] = [
-    ("school", 0),
+const DEPENDENCY_ORDER: [(&str, u8); 6] = [
+    ("schools", 0),
     ("academic_years", 1),
     ("classes", 2),
     ("students", 3),
+    ("fee_structures", 4),
+    ("payments", 5),
 ];
 
 // ──────────────────────────────────────────────
@@ -346,12 +348,14 @@ async fn process_inbox(
     // `enrollment_history` n'a pas de `updated_at` côté Supabase : son
     // horodatage est `changed_at`. Utiliser `updated_at` partout produisait
     // une erreur 400 sur cette table.
-    let tables: [(&str, &str); 5] = [
+    let tables: [(&str, &str); 7] = [
         ("academic_years", "updated_at"),
         ("classes", "updated_at"),
         ("students", "updated_at"),
         ("enrollments", "updated_at"),
         ("enrollment_history", "changed_at"),
+        ("fee_structures", "updated_at"),
+        ("payments", "updated_at"),
     ];
 
     let mut degraded: Vec<String> = Vec::new();
