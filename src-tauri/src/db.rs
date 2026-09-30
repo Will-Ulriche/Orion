@@ -14,9 +14,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/07_student_birth_place.sql"),
     include_str!("../migrations/08_school_extended_fields.sql"),
     include_str!("../migrations/09_sync_engine.sql"),
+    include_str!("../migrations/10_financial_module.sql"),
 ];
 
-fn run_migrations(conn: &Connection) -> Result<(), String> {
+pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {
     let current: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| format!("Erreur lecture user_version: {}", e))?;

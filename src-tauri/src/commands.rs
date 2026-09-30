@@ -642,6 +642,29 @@ pub fn delete_academic_year(id: String, school_id: String, state: State<'_, DbSt
         return Err("Impossible de supprimer l'année active. Veuillez d'abord la clôturer.".to_string());
     }
 
+    // Collecter les IDs des entités enfants AVANT de les supprimer,
+    // pour pouvoir enregistrer des mutations DELETE pour chaque.
+    let enrollment_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM enrollments WHERE academic_year_id = ?1"
+        ).map_err(|e| e.to_string())?;
+        let result = stmt.query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        result
+    };
+    let class_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM classes WHERE academic_year_id = ?1"
+        ).map_err(|e| e.to_string())?;
+        let result = stmt.query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        result
+    };
+
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     // Suppression en cascade des données liées (ordre des dépendances)
@@ -663,6 +686,30 @@ pub fn delete_academic_year(id: String, school_id: String, state: State<'_, DbSt
     tx.execute(
         "DELETE FROM academic_years WHERE id = ?1 AND school_id = ?2",
         rusqlite::params![id, school_id],
+    ).map_err(|e| e.to_string())?;
+
+    // Enregistrer les mutations DELETE pour la sync (enfants d'abord, puis parent)
+    for eid in &enrollment_ids {
+        let payload = serde_json::json!({ "id": eid });
+        let mid = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES (?1, ?2, 'enrollments', ?3, 'DELETE', ?4, 'PENDING')",
+            rusqlite::params![mid, school_id, eid, payload.to_string()],
+        ).map_err(|e| e.to_string())?;
+    }
+    for cid in &class_ids {
+        let payload = serde_json::json!({ "id": cid });
+        let mid = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES (?1, ?2, 'classes', ?3, 'DELETE', ?4, 'PENDING')",
+            rusqlite::params![mid, school_id, cid, payload.to_string()],
+        ).map_err(|e| e.to_string())?;
+    }
+    let payload = serde_json::json!({ "id": id });
+    let mid = uuid::Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES (?1, ?2, 'academic_years', ?3, 'DELETE', ?4, 'PENDING')",
+        rusqlite::params![mid, school_id, id, payload.to_string()],
     ).map_err(|e| e.to_string())?;
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -861,6 +908,14 @@ pub fn delete_class(id: String, state: State<'_, DbState>) -> Result<(), String>
         rusqlite::params![id],
     ).map_err(|e| e.to_string())?;
 
+    // Enregistrer la mutation DELETE pour la sync Supabase
+    let payload = serde_json::json!({ "id": id });
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES (?1, ?2, 'classes', ?3, 'DELETE', ?4, 'PENDING')",
+        rusqlite::params![mutation_id, school_id, id, payload.to_string()],
+    ).map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -870,15 +925,65 @@ pub fn delete_class(id: String, state: State<'_, DbState>) -> Result<(), String>
 #[tauri::command]
 pub fn delete_enrollment(id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    let (school_id, academic_year_id): (String, String) = conn.query_row(
-        "SELECT school_id, academic_year_id FROM enrollments WHERE id = ?1",
+    let (school_id, academic_year_id, student_id): (String, String, String) = conn.query_row(
+        "SELECT school_id, academic_year_id, student_id FROM enrollments WHERE id = ?1",
         rusqlite::params![id],
-        |row| Ok((row.get(0)?, row.get(1)?))
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
     ).map_err(|_| "Inscription introuvable".to_string())?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+
+    // Collecter les IDs d'historique liés avant suppression
+    let history_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM enrollment_history WHERE enrollment_id = ?1"
+        ).map_err(|e| e.to_string())?;
+        let result = stmt.query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        result
+    };
+
     // Supprimer d'abord l'historique lié (clé étrangère enrollment_id → enrollments.id)
     conn.execute("DELETE FROM enrollment_history WHERE enrollment_id = ?1", rusqlite::params![id]).map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM enrollments WHERE id = ?1", rusqlite::params![id]).map_err(|e| e.to_string())?;
+
+    // Vérifier si cet étudiant a d'autres inscriptions. Si non, supprimer aussi l'étudiant.
+    let other_enrollments: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM enrollments WHERE student_id = ?1",
+        rusqlite::params![student_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    if other_enrollments == 0 {
+        conn.execute("DELETE FROM students WHERE id = ?1", rusqlite::params![student_id]).map_err(|e| e.to_string())?;
+        // Mutation DELETE pour l'étudiant
+        let payload = serde_json::json!({ "id": student_id });
+        let mid = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES (?1, ?2, 'students', ?3, 'DELETE', ?4, 'PENDING')",
+            rusqlite::params![mid, school_id, student_id, payload.to_string()],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    // Mutations DELETE pour l'historique d'inscription
+    for hid in &history_ids {
+        let payload = serde_json::json!({ "id": hid });
+        let mid = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES (?1, ?2, 'enrollment_history', ?3, 'DELETE', ?4, 'PENDING')",
+            rusqlite::params![mid, school_id, hid, payload.to_string()],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    // Mutation DELETE pour l'inscription elle-même
+    let payload = serde_json::json!({ "id": id });
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES (?1, ?2, 'enrollments', ?3, 'DELETE', ?4, 'PENDING')",
+        rusqlite::params![mutation_id, school_id, id, payload.to_string()],
+    ).map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -1532,6 +1637,174 @@ pub fn create_payment(
 }
 
 #[tauri::command]
+pub fn get_financial_dashboard(
+    school_id: String,
+    academic_year_id: String,
+    state: State<'_, DbState>
+) -> Result<crate::models::FinancialDashboard, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    build_financial_dashboard(&conn, &school_id, &academic_year_id)
+}
+
+fn build_financial_dashboard(
+    conn: &rusqlite::Connection,
+    school_id: &str,
+    academic_year_id: &str
+) -> Result<crate::models::FinancialDashboard, String> {
+    // Solde de chaque inscription active : dû (frais globaux + frais de sa classe)
+    // moins encaissé (paiements VALID rattachés à l'inscription).
+    // La règle de calcul est volontairement identique à get_student_financial_summary.
+    const BALANCES_CTE: &str = "
+        WITH all_fees AS (
+            SELECT COALESCE(SUM(amount), 0) AS amount
+            FROM fee_structures
+            WHERE school_id = ?1 AND academic_year_id = ?2 AND applies_to = 'ALL'
+        ),
+        class_fees AS (
+            SELECT class_id, SUM(amount) AS amount
+            FROM fee_structures
+            WHERE school_id = ?1 AND academic_year_id = ?2
+              AND applies_to IN ('CLASS', 'LEVEL') AND class_id IS NOT NULL
+            GROUP BY class_id
+        ),
+        enrolled AS (
+            SELECT e.id AS enrollment_id, e.student_id, e.class_id,
+                   s.first_name, s.last_name,
+                   COALESCE(c.name, 'Sans classe') AS class_name
+            FROM enrollments e
+            JOIN students s ON s.id = e.student_id
+            LEFT JOIN classes c ON c.id = e.class_id
+            WHERE e.school_id = ?1 AND e.academic_year_id = ?2 AND e.status = 'ACTIVE'
+        ),
+        paid AS (
+            SELECT enrollment_id, SUM(amount) AS amount
+            FROM payments
+            WHERE school_id = ?1 AND academic_year_id = ?2 AND status = 'VALID'
+            GROUP BY enrollment_id
+        ),
+        balances AS (
+            SELECT en.enrollment_id, en.student_id, en.first_name, en.last_name,
+                   en.class_name, en.class_id,
+                   (SELECT amount FROM all_fees)
+                     + COALESCE((SELECT amount FROM class_fees WHERE class_id = en.class_id), 0) AS total_due,
+                   COALESCE(paid.amount, 0) AS total_paid
+            FROM enrolled en
+            LEFT JOIN paid ON paid.enrollment_id = en.enrollment_id
+        )
+    ";
+
+    // 1. Totaux + répartition des situations
+    let (total_due, total_paid, student_count, settled_count, partial_count, unpaid_count): (i64, i64, i64, i64, i64, i64) = conn.query_row(
+        &format!("{} SELECT COALESCE(SUM(total_due), 0), COALESCE(SUM(total_paid), 0), COUNT(*), \
+            COALESCE(SUM(CASE WHEN total_due - total_paid <= 0 THEN 1 ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN total_due - total_paid > 0 AND total_paid > 0 THEN 1 ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN total_paid <= 0 THEN 1 ELSE 0 END), 0) \
+            FROM balances", BALANCES_CTE),
+        rusqlite::params![school_id, academic_year_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+    ).map_err(|e| e.to_string())?;
+
+    // 2. Répartition par classe
+    let mut stmt = conn.prepare(&format!("{} \
+        SELECT class_id, class_name, COUNT(*), \
+               COALESCE(SUM(total_due), 0), COALESCE(SUM(total_paid), 0), \
+               COALESCE(SUM(total_due - total_paid), 0) \
+        FROM balances GROUP BY class_id, class_name \
+        ORDER BY class_name ASC", BALANCES_CTE)).map_err(|e| e.to_string())?;
+
+    let mut by_class = Vec::new();
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
+        Ok(crate::models::ClassFinancialStat {
+            class_id: row.get(0)?,
+            class_name: row.get(1)?,
+            student_count: row.get(2)?,
+            total_due: row.get(3)?,
+            total_paid: row.get(4)?,
+            remaining_balance: row.get(5)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    for r in rows {
+        if let Ok(item) = r { by_class.push(item); }
+    }
+    drop(stmt);
+
+    // 3. Élèves avec reliquat (les plus endettés d'abord)
+    let mut stmt = conn.prepare(&format!("{} \
+        SELECT student_id, enrollment_id, first_name, last_name, class_name, \
+               total_due, total_paid, total_due - total_paid, \
+               CASE WHEN total_due - total_paid <= 0 THEN 'SOLDE' \
+                    WHEN total_paid > 0 THEN 'PARTIEL' ELSE 'IMPAYE' END \
+        FROM balances WHERE total_due - total_paid > 0 \
+        ORDER BY (total_due - total_paid) DESC, last_name ASC \
+        LIMIT 100", BALANCES_CTE)).map_err(|e| e.to_string())?;
+
+    let mut debtors = Vec::new();
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
+        Ok(crate::models::StudentBalance {
+            student_id: row.get(0)?,
+            enrollment_id: row.get(1)?,
+            first_name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            last_name: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            class_name: row.get(4)?,
+            total_due: row.get(5)?,
+            total_paid: row.get(6)?,
+            remaining_balance: row.get(7)?,
+            status: row.get(8)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    for r in rows {
+        if let Ok(item) = r { debtors.push(item); }
+    }
+    drop(stmt);
+
+    // 4. Répartition des encaissements par mode de paiement
+    let mut stmt = conn.prepare(
+        "SELECT payment_method, COALESCE(SUM(amount), 0), COUNT(*) FROM payments \
+         WHERE school_id = ?1 AND academic_year_id = ?2 AND status = 'VALID' \
+         GROUP BY payment_method ORDER BY SUM(amount) DESC"
+    ).map_err(|e| e.to_string())?;
+
+    let mut by_method = Vec::new();
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
+        Ok(crate::models::MethodStat {
+            method: row.get(0)?,
+            amount: row.get(1)?,
+            payment_count: row.get(2)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    for r in rows {
+        if let Ok(item) = r { by_method.push(item); }
+    }
+    drop(stmt);
+
+    // 5. Paiements annulés
+    let cancelled_payment_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM payments WHERE school_id = ?1 AND academic_year_id = ?2 AND status = 'CANCELLED'",
+        rusqlite::params![school_id, academic_year_id],
+        |row| row.get(0)
+    ).unwrap_or(0);
+
+    let recovery_rate = if total_due > 0 {
+        (total_paid as f64 / total_due as f64) * 100.0
+    } else { 0.0 };
+
+    Ok(crate::models::FinancialDashboard {
+        total_due,
+        total_paid,
+        remaining_balance: total_due - total_paid,
+        recovery_rate,
+        student_count,
+        settled_count,
+        partial_count,
+        unpaid_count,
+        cancelled_payment_count,
+        by_class,
+        by_method,
+        debtors,
+    })
+}
+
+#[tauri::command]
 pub fn cancel_payment(id: String, school_id: String, cancel_reason: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
 
@@ -1568,3 +1841,116 @@ pub fn cancel_payment(id: String, school_id: String, cancel_reason: String, stat
 
     Ok(())
 }
+
+#[cfg(test)]
+mod finance_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Base migrée avec 2 classes, 3 élèves actifs, 1 frais global + 1 frais par classe.
+    fn seeded_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO academic_years (id, school_id, name, status, is_current)
+             VALUES ('y1', 'school-1', '2025-2026', 'ACTIVE', 1);
+             INSERT INTO classes (id, school_id, academic_year_id, name, level)
+             VALUES ('c1', 'school-1', 'y1', '6ème A', '6ème'),
+                    ('c2', 'school-1', 'y1', '5ème B', '5ème');
+             INSERT INTO students (id, school_id, first_name, last_name) VALUES
+                    ('s1', 'school-1', 'Ali', 'Koné'),
+                    ('s2', 'school-1', 'Awa', 'Traoré'),
+                    ('s3', 'school-1', 'Yao', 'Mensah');
+             INSERT INTO enrollments (id, school_id, academic_year_id, student_id, class_id, status, enrollment_type)
+             VALUES ('e1', 'school-1', 'y1', 's1', 'c1', 'ACTIVE', 'NEW'),
+                    ('e2', 'school-1', 'y1', 's2', 'c1', 'ACTIVE', 'NEW'),
+                    ('e3', 'school-1', 'y1', 's3', 'c2', 'ACTIVE', 'NEW');",
+        ).unwrap();
+
+        // Frais global 100,00 + 6ème A 50,00 + 5ème B 20,00 (en centimes)
+        insert_fee(&conn, "f_all", "Scolarité", 10_000, "ALL", None);
+        insert_fee(&conn, "f_c1", "Transport", 5_000, "CLASS", Some("c1"));
+        insert_fee(&conn, "f_c2", "Cantine", 2_000, "CLASS", Some("c2"));
+
+        // s1 soldé (150,00) ; s2 partiel (50,00 sur 150,00) ; s3 impayé (120,00)
+        // + un paiement annulé qui ne doit pas compter.
+        insert_payment(&conn, "p1", "e1", "s1", 15_000, "ESPECES", "VALID");
+        insert_payment(&conn, "p2", "e2", "s2", 5_000, "MOBILE_MONEY", "VALID");
+        insert_payment(&conn, "p3", "e3", "s3", 12_000, "ESPECES", "CANCELLED");
+
+        conn
+    }
+
+    fn insert_fee(conn: &Connection, id: &str, name: &str, amount: i64, applies_to: &str, class_id: Option<&str>) {
+        conn.execute(
+            "INSERT INTO fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+             VALUES (?1, 'school-1', 'y1', ?2, ?3, 'SCOLARITE', ?4, ?5, NULL, NULL, 1, '2026-01-01', '2026-01-01')",
+            rusqlite::params![id, name, amount, applies_to, class_id],
+        ).unwrap();
+    }
+
+    fn insert_payment(conn: &Connection, id: &str, enrollment_id: &str, student_id: &str, amount: i64, method: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, receipt_number, recorded_by, status, created_at, updated_at)
+             VALUES (?1, 'school-1', 'y1', ?2, ?3, NULL, ?4, '2026-03-01', ?5, ?6, 'system', ?7, '2026-03-01', '2026-03-01')",
+            rusqlite::params![id, enrollment_id, student_id, amount, method, format!("RECU-{}", id), status],
+        ).unwrap();
+    }
+
+    #[test]
+    fn dashboard_agrège_les_soldes_par_inscription() {
+        let conn = seeded_db();
+        let d = build_financial_dashboard(&conn, "school-1", "y1").unwrap();
+
+        // Dû : (100+50) + (100+50) + (100+20) = 420,00
+        assert_eq!(d.total_due, 42_000);
+        // Payé : 150,00 + 50,00 (le paiement annulé est ignoré)
+        assert_eq!(d.total_paid, 20_000);
+        assert_eq!(d.remaining_balance, 22_000);
+        assert_eq!(d.student_count, 3);
+        assert_eq!(d.settled_count, 1);
+        assert_eq!(d.partial_count, 1);
+        assert_eq!(d.unpaid_count, 1);
+        assert_eq!(d.cancelled_payment_count, 1);
+        assert!((d.recovery_rate - 47.6).abs() < 0.05, "taux = {}", d.recovery_rate);
+    }
+
+    #[test]
+    fn dashboard_detail_par_classe_et_impayes() {
+        let conn = seeded_db();
+        let d = build_financial_dashboard(&conn, "school-1", "y1").unwrap();
+
+        assert_eq!(d.by_class.len(), 2);
+        let c1 = d.by_class.iter().find(|c| c.class_name == "6ème A").unwrap();
+        assert_eq!((c1.student_count, c1.total_due, c1.total_paid, c1.remaining_balance), (2, 30_000, 20_000, 10_000));
+        let c2 = d.by_class.iter().find(|c| c.class_name == "5ème B").unwrap();
+        assert_eq!((c2.student_count, c2.total_due, c2.total_paid, c2.remaining_balance), (1, 12_000, 0, 12_000));
+
+        // Trie des reliquats : le plus gros d'abord (5ème B 120,00 puis 6ème A 100,00)
+        assert_eq!(d.debtors.len(), 2);
+        assert_eq!(d.debtors[0].last_name, "Mensah");
+        assert_eq!(d.debtors[0].status, "IMPAYE");
+        assert_eq!(d.debtors[1].last_name, "Traoré");
+        assert_eq!(d.debtors[1].status, "PARTIEL");
+
+        let methods: Vec<_> = d.by_method.iter().map(|m| (m.method.as_str(), m.amount)).collect();
+        assert_eq!(methods, vec![("ESPECES", 15_000), ("MOBILE_MONEY", 5_000)]);
+    }
+
+    #[test]
+    fn dashboard_ignore_les_autres_annees_et_eleves_inactifs() {
+        let conn = seeded_db();
+        conn.execute("UPDATE enrollments SET status = 'DROPPED' WHERE id = 'e3'", []).unwrap();
+        conn.execute("INSERT INTO academic_years (id, school_id, name, status) VALUES ('y2', 'school-1', '2026-2027', 'PLANNED')", []).unwrap();
+        conn.execute("INSERT INTO payments (id, school_id, academic_year_id, enrollment_id, student_id, amount, payment_date, payment_method, receipt_number, recorded_by, status, created_at, updated_at)
+                      VALUES ('p9', 'school-1', 'y2', 'e1', 's1', 99000, '2026-03-01', 'ESPECES', 'RECU-p9', 'system', 'VALID', '2026-03-01', '2026-03-01')", []).unwrap();
+
+        let d = build_financial_dashboard(&conn, "school-1", "y1").unwrap();
+        assert_eq!(d.student_count, 2);
+        assert_eq!(d.total_due, 30_000);
+        assert_eq!(d.total_paid, 20_000);
+    }
+}
+

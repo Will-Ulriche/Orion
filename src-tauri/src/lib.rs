@@ -69,6 +69,7 @@ pub fn run() {
             commands::delete_fee_structure,
             commands::get_student_payments,
             commands::get_student_financial_summary,
+            commands::get_financial_dashboard,
             commands::create_payment,
             commands::cancel_payment
         ])

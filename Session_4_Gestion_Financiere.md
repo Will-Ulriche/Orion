@@ -158,8 +158,11 @@ Sidebar → FINANCES
 | `get_student_financial_summary` | Situation financière (dû / payé / reliquat) |
 | `create_payment` | Enregistrer un paiement |
 | `cancel_payment` | Annuler un paiement (soft) |
-| `get_financial_dashboard` | Données du tableau de bord |
+| `get_financial_dashboard` | Données du tableau de bord (totaux, recouvrement, par classe, impayés) |
 | `generate_receipt_number` | Génère un numéro de reçu séquentiel unique |
+
+> La migration `10_financial_module.sql` doit être déclarée dans le tableau `MIGRATIONS` de
+> `src-tauri/src/db.rs`, sans quoi les tables `fee_structures` / `payments` ne sont jamais créées.
 
 ---
 
@@ -182,19 +185,39 @@ Migrations Supabase identiques au schéma SQLite local (UUID, school_id, RLS).
 ## 10. Ordre de développement
 
 ```text
-[ ] 01. Migration SQLite (fee_structures + payments)
-[ ] 02. Commandes Rust backend (CRUD fee_structures)
-[ ] 03. Commandes Rust backend (CRUD payments + summary)
-[ ] 04. Enregistrement sync (REMOTE_COLUMNS + DEPENDENCY_ORDER)
-[ ] 05. Page Grille tarifaire (frontend)
-[ ] 06. Page Paiements élève (frontend)
-[ ] 07. Page Tableau de bord financier (frontend)
-[ ] 08. Génération de reçu (numérotation automatique)
-[ ] 09. Impression / export PDF (reçu + rapport)
-[ ] 10. Intégration Sidebar (onglet FINANCES)
+[x] 01. Migration SQLite (fee_structures + payments)
+[x] 02. Commandes Rust backend (CRUD fee_structures)
+[x] 03. Commandes Rust backend (CRUD payments + summary)
+[x] 04. Enregistrement sync (REMOTE_COLUMNS + DEPENDENCY_ORDER)
+[x] 05. Page Grille tarifaire (frontend)
+[x] 06. Page Paiements élève (frontend)
+[x] 07. Page Tableau de bord financier (frontend)
+[x] 08. Génération de reçu (numérotation automatique)
+[x] 09. Impression / export PDF (reçu + rapport)
+[x] 10. Intégration Sidebar (onglet FINANCES)
 [ ] 11. Migration Supabase + RLS
 [ ] 12. Tests offline/online + validation finale
 ```
+
+### Exports PDF
+
+Deux modules TypeScript, sans dépendance native (le download passe par `jsPDF.save()`,
+donc le blob est produit par le WebView — aucun accès disque requis côté Rust).
+
+| Module | Exports | Contenu |
+| --- | --- | --- |
+| `src/lib/receiptPdf.ts` | `buildReceiptPdf`, `saveReceiptPdf`, `amountToFrenchWords`, `formatMoney`, `formatDate` | Reçu A4 une page : en-tête établissement (logo, ministère, localisation), bandeau `REÇU ANNULÉ` le cas échéant, identité élève + mode de règlement, tableau du règlement, montant en lettres, situation de l'élève, observations, 3 signatures, cachet officiel. |
+| `src/lib/financeReportPdf.ts` | `buildFinanceReportPdf`, `saveFinanceReportPdf` | Rapport financier paginé : synthèse (4 KPI), grille tarifaire, recouvrement par classe (avec ligne TOTAL), modes d'encaissement, liste des reliquats (SOUS-TOTAL + mention de troncature à 100 lignes), pagination `Page n / N`. |
+
+Points d'attention :
+
+- `amountToFrenchWords` gère les groupes de 3 chiffres jusqu'au `billion` ; `mille` est
+  invariable (`mille`, et non `un mille`).
+- Les largeurs de colonnes `autoTable` doivent sommer à la largeur utile, sinon la
+  library n'alloue pas la différence et tronque la table.
+- `stamp_url`, `signature_url`, `head_title`, `head_name` et `slogan` sont lus dans les
+  réglages de l'établissement ; le cachet est rendu à 35 % d'opacité.
+- Les observations sont tronquées à 4 lignes pour ne pas empiéter sur les signatures.
 
 ---
 
@@ -212,13 +235,13 @@ Migrations Supabase identiques au schéma SQLite local (UUID, school_id, RLS).
 
 La Session 4 sera considérée terminée lorsque :
 
-- [ ] Les frais scolaires peuvent être configurés par année
-- [ ] Les paiements peuvent être enregistrés et annulés
-- [ ] La situation financière d'un élève est consultable
-- [ ] Un reçu numéroté est généré automatiquement
-- [ ] Le tableau de bord financier est fonctionnel
-- [ ] Les données sont synchronisées via le moteur Session 3
-- [ ] Les règles de sécurité et d'accès sont respectées
+- [x] Les frais scolaires peuvent être configurés par année
+- [x] Les paiements peuvent être enregistrés et annulés
+- [x] La situation financière d'un élève est consultable
+- [x] Un reçu numéroté est généré automatiquement
+- [x] Le tableau de bord financier est fonctionnel
+- [x] Les données sont synchronisées via le moteur Session 3
+- [x] Les règles de sécurité et d'accès sont respectées
 - [ ] Les tests offline/online sont passés
 - [ ] La Session 4 est explicitement validée
 

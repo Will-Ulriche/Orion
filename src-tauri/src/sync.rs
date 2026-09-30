@@ -662,10 +662,38 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
     Ok(())
 }
 
-fn soft_delete_entity(_db: &Connection, entity_type: &str, entity_id: &str) -> Result<(), String> {
-    // Pour l'instant, on ne supprime pas réellement — on pourra ajouter deleted_at plus tard
-    // selon la politique de soft delete de chaque table
-    println!("[Inbox] DELETE pour {}/{} — soft delete non encore implémenté.", entity_type, entity_id);
+fn soft_delete_entity(db: &Connection, entity_type: &str, entity_id: &str) -> Result<(), String> {
+    // Supprimer les dépendances d'abord selon le type d'entité
+    match entity_type {
+        "academic_years" => {
+            db.execute("DELETE FROM enrollment_history WHERE academic_year_id = ?1", rusqlite::params![entity_id])
+                .map_err(|e| e.to_string())?;
+            db.execute("DELETE FROM enrollments WHERE academic_year_id = ?1", rusqlite::params![entity_id])
+                .map_err(|e| e.to_string())?;
+            db.execute("DELETE FROM classes WHERE academic_year_id = ?1", rusqlite::params![entity_id])
+                .map_err(|e| e.to_string())?;
+        }
+        "classes" => {
+            db.execute("UPDATE enrollments SET class_id = NULL WHERE class_id = ?1", rusqlite::params![entity_id])
+                .map_err(|e| e.to_string())?;
+        }
+        "enrollments" => {
+            db.execute("DELETE FROM enrollment_history WHERE enrollment_id = ?1", rusqlite::params![entity_id])
+                .map_err(|e| e.to_string())?;
+        }
+        "fee_structures" => {
+            // Les paiements liés ne sont pas supprimés automatiquement
+        }
+        _ => {}
+    }
+
+    // Supprimer l'entité elle-même
+    let table = entity_type;
+    let sql = format!("DELETE FROM {} WHERE id = ?1", table);
+    db.execute(&sql, rusqlite::params![entity_id])
+        .map_err(|e| format!("Erreur DELETE {}/{}: {}", entity_type, entity_id, e))?;
+
+    println!("[Inbox] ✓ DELETE {}/{} appliqué.", entity_type, entity_id);
     Ok(())
 }
 
@@ -683,13 +711,32 @@ fn load_pending_mutations(db_path: &PathBuf) -> Result<Vec<(String, String, Stri
          WHERE status IN ('PENDING', 'FAILED')
            AND COALESCE(attempt_count, 0) < 5
          ORDER BY
-           CASE entity_type
-             WHEN 'school' THEN 0
-             WHEN 'academic_years' THEN 1
-             WHEN 'classes' THEN 2
-             WHEN 'students' THEN 3
-             WHEN 'enrollments' THEN 4
-             ELSE 5
+           -- Pour les INSERT/UPSERT : parents d'abord (school → enrollments)
+           -- Pour les DELETE : enfants d'abord (enrollments → school)
+           CASE WHEN operation = 'DELETE' THEN
+             CASE entity_type
+               WHEN 'enrollment_history' THEN 0
+               WHEN 'enrollments' THEN 1
+               WHEN 'payments' THEN 1
+               WHEN 'fee_structures' THEN 2
+               WHEN 'students' THEN 3
+               WHEN 'classes' THEN 3
+               WHEN 'academic_years' THEN 4
+               WHEN 'school' THEN 5
+               ELSE 6
+             END
+           ELSE
+             CASE entity_type
+               WHEN 'school' THEN 0
+               WHEN 'academic_years' THEN 1
+               WHEN 'classes' THEN 2
+               WHEN 'students' THEN 3
+               WHEN 'enrollments' THEN 4
+               WHEN 'enrollment_history' THEN 5
+               WHEN 'fee_structures' THEN 6
+               WHEN 'payments' THEN 7
+               ELSE 8
+             END
            END,
            created_at ASC
          LIMIT 20"

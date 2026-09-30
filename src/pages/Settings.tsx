@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import {
   Building2, Save, MapPin, Phone, Mail, Calendar, Check, Globe, Map, Coins, Clock,
-  Upload, X, Image as ImageIcon
+  Upload, X, Image as ImageIcon, Landmark, UserCog, Contact
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import AcademicYearsManager from '../components/AcademicYearsManager';
@@ -90,6 +90,58 @@ function ImageUploadZone({
   );
 }
 
+const fieldClass = "w-full px-4 py-2.5 bg-[#f8fafc] border border-slate-200/60 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] outline-none transition-all text-[13.5px] placeholder:text-slate-400 text-slate-700";
+const labelClass = "block text-[12px] font-semibold text-[#1e293b] mb-1.5";
+
+const TONES: Record<string, string> = {
+  indigo: 'bg-[#eef2ff] text-[#4f46e5]',
+  emerald: 'bg-emerald-50 text-emerald-600',
+  sky: 'bg-sky-50 text-sky-600',
+  amber: 'bg-amber-50 text-amber-600',
+  rose: 'bg-rose-50 text-rose-600',
+};
+
+/** Carte de section : en-tête coloré + corps de formulaire. */
+function Section({
+  icon, title, subtitle, tone = 'indigo', wide = false, children,
+}: {
+  icon: ReactNode; title: string; subtitle?: string; tone?: string; wide?: boolean; children: ReactNode;
+}) {
+  return (
+    <div className={`bg-white rounded-2xl border border-slate-100 shadow-sm ${wide ? 'xl:col-span-2' : ''}`}>
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100">
+        <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${TONES[tone]}`}>{icon}</div>
+        <div className="min-w-0">
+          <h3 className="text-[14px] font-bold text-slate-800 leading-tight">{title}</h3>
+          {subtitle && <p className="text-[11.5px] text-slate-400 leading-tight mt-0.5">{subtitle}</p>}
+        </div>
+      </div>
+      <div className="p-5 space-y-4">{children}</div>
+    </div>
+  );
+}
+
+/** Champ de formulaire : libellé + contrôle (+ icône optionnelle à gauche). */
+function Field({
+  label, icon, required, children,
+}: {
+  label: string; icon?: ReactNode; required?: boolean; children: ReactNode;
+}) {
+  return (
+    <div>
+      <label className={labelClass}>
+        {label} {required && <span className="text-[#4f46e5]">*</span>}
+      </label>
+      <div className="relative">
+        {icon && (
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">{icon}</div>
+        )}
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
@@ -124,17 +176,14 @@ export default function Settings() {
     }
   };
 
-  const fieldClass = "w-full px-4 py-2.5 bg-[#f8fafc] border border-slate-200/60 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] outline-none transition-all text-[13.5px] placeholder:text-slate-400 text-slate-700";
-  const labelClass = "block text-[12px] font-semibold text-[#1e293b] mb-1.5";
-
   const TABS = [
     { key: 'general', label: 'Informations générales', icon: <Building2 size={14} strokeWidth={2.5} /> },
     { key: 'identity', label: 'Identité visuelle', icon: <ImageIcon size={14} strokeWidth={2.5} /> },
     { key: 'years', label: 'Années scolaires', icon: <Calendar size={14} strokeWidth={2.5} /> },
   ] as const;
 
-  const SaveBar = () => (
-    <div className="mt-5 pt-4 border-t border-slate-100 flex items-center justify-between">
+  const SaveBar = ({ contained = false }: { contained?: boolean }) => (
+    <div className={`flex items-center justify-between gap-3 ${contained ? 'px-5 py-4' : 'mt-5 pt-4 border-t border-slate-100'}`}>
       <div>
         {status && (
           <span className={`text-sm flex items-center gap-1.5 font-medium ${status.type === 'success' ? 'text-green-600' : 'text-red-500'}`}>
@@ -178,140 +227,165 @@ export default function Settings() {
 
         {/* ── ONGLET : Informations générales ── */}
         {activeTab === 'general' && (
-          <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-sm space-y-5">
-            <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
-              <div className="w-9 h-9 rounded-xl bg-[#f0f3ff] text-[#4f46e5] flex items-center justify-center flex-shrink-0"><Building2 size={18} /></div>
-              <div>
-                <h3 className="text-[15px] font-bold text-slate-800">Informations générales</h3>
-                <p className="text-[12px] text-slate-400">Ces informations apparaîtront sur les bulletins et documents officiels.</p>
-              </div>
-            </div>
+          <div className="space-y-4">
 
-            {/* Dénomination ministère */}
-            <div>
-              <label className={labelClass}>Dénomination du ministère de tutelle</label>
-              <input name="ministry_name" value={formData.ministry_name} onChange={handleChange}
-                placeholder="Ex : Ministère des Enseignements Primaire et Secondaire"
-                className={fieldClass} />
-            </div>
-
-            {/* Nom + Sigle */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className={labelClass}>Nom de l'établissement <span className="text-[#4f46e5]">*</span></label>
-                <input name="name" value={formData.name} onChange={handleChange}
-                  placeholder="Ex : Complexe Scolaire Orion" className={fieldClass} />
-              </div>
-              <div>
-                <label className={labelClass}>Sigle / Nom court</label>
-                <input name="short_name" value={formData.short_name} onChange={handleChange}
-                  placeholder="Ex : CSO" className={fieldClass} />
-              </div>
-            </div>
-
-            {/* Numéro d'immatriculation */}
-            <div>
-              <label className={labelClass}>Numéro d'immatriculation / Agrément</label>
-              <input name="registration_number" value={formData.registration_number} onChange={handleChange}
-                placeholder="Ex : MEPS-2024-00123" className={fieldClass} />
-            </div>
-
-            {/* Slogan */}
-            <div>
-              <label className={labelClass}>Slogan de l'établissement</label>
-              <input name="slogan" value={formData.slogan} onChange={handleChange}
-                placeholder="Ex : La réussite, notre ambition" className={fieldClass} />
-            </div>
-
-            {/* Chef d'établissement */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className={labelClass}>Titre du chef d'établissement</label>
-                <select name="head_title" value={formData.head_title} onChange={handleChange} className={fieldClass}>
-                  <option value="Directeur">Directeur</option>
-                  <option value="Directrice">Directrice</option>
-                  <option value="Proviseur">Proviseur</option>
-                  <option value="Proviseure">Proviseure</option>
-                  <option value="Censeur">Censeur</option>
-                  <option value="Principal">Principal</option>
-                  <option value="Principale">Principale</option>
-                  <option value="Recteur">Recteur</option>
-                  <option value="Administrateur">Administrateur</option>
-                </select>
-              </div>
-              <div>
-                <label className={labelClass}>Nom du chef d'établissement</label>
-                <input name="head_name" value={formData.head_name} onChange={handleChange}
-                  placeholder="Ex : M. Kofi AGBENYEFIA" className={fieldClass} />
-              </div>
-            </div>
-
-            {/* Contact */}
-            <div className="pt-3 border-t border-slate-100">
-              <h4 className="text-[12px] font-bold text-slate-500 uppercase tracking-wider mb-3">Contacts</h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className={labelClass}>Email de contact</label>
-                  <div className="relative"><div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400"><Mail size={14} /></div>
-                    <input type="email" name="email" value={formData.email} onChange={handleChange} placeholder="direction@ecole.tg" className={`${fieldClass} pl-9`} /></div>
+            {/* Aperçu de l'identité de l'établissement (mis à jour en direct) */}
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#0a3b4d] via-[#0b6b83] to-[#0e7490] px-6 py-5 text-white shadow-[0_10px_30px_-12px_rgba(11,107,131,0.75)]">
+              <div className="absolute -top-16 -right-10 w-56 h-56 rounded-full bg-[#24c8db]/35 blur-2xl pointer-events-none" />
+              <div className="absolute -bottom-24 left-20 w-48 h-48 rounded-full bg-white/10 blur-2xl pointer-events-none" />
+              <div className="absolute inset-x-0 bottom-0 h-1 bg-gradient-to-r from-[#24c8db] via-[#5ad9e8] to-transparent pointer-events-none" />
+              <div className="relative flex items-center gap-4">
+                {formData.logo_url ? (
+                  <div className="w-16 h-16 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center overflow-hidden flex-shrink-0 ring-1 ring-white/25">
+                    <img src={formData.logo_url} alt="Logo de l'établissement" className="w-full h-full object-contain p-1.5" />
+                  </div>
+                ) : (
+                  <div className="w-16 h-16 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center flex-shrink-0 ring-1 ring-white/25">
+                    <Building2 size={28} className="text-white/90" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10.5px] font-bold uppercase tracking-[0.14em] text-white/70 truncate">
+                    {formData.ministry_name || 'Ministère de tutelle'}
+                  </p>
+                  <p className="text-xl font-bold tracking-tight truncate mt-0.5">
+                    {formData.name || "Nom de l'établissement"}
+                  </p>
+                  <p className="text-[12.5px] text-white/80 truncate">
+                    {[formData.short_name, formData.city, formData.country].filter(Boolean).join(' · ') || 'Sigle · Ville · Pays'}
+                  </p>
                 </div>
-                <div>
-                  <label className={labelClass}>Site Web</label>
-                  <div className="relative"><div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400"><Globe size={14} /></div>
-                    <input type="url" name="website" value={formData.website} onChange={handleChange} placeholder="https://www.ecole.tg" className={`${fieldClass} pl-9`} /></div>
-                </div>
-                <div>
-                  <label className={labelClass}>Téléphone principal</label>
-                  <div className="relative"><div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400"><Phone size={14} /></div>
-                    <input name="phone" value={formData.phone} onChange={handleChange} placeholder="+228 90 00 00 00" className={`${fieldClass} pl-9`} /></div>
-                </div>
-                <div>
-                  <label className={labelClass}>Téléphone secondaire</label>
-                  <div className="relative"><div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400"><Phone size={14} /></div>
-                    <input name="phone_secondary" value={formData.phone_secondary} onChange={handleChange} placeholder="+228 90 00 00 01" className={`${fieldClass} pl-9`} /></div>
-                </div>
+                {formData.slogan && (
+                  <p className="hidden lg:block max-w-[250px] text-right text-[12.5px] italic text-white/80 leading-snug">
+                    « {formData.slogan} »
+                  </p>
+                )}
               </div>
+              {formData.registration_number && (
+                <div className="relative mt-4 pt-3 border-t border-white/20 text-[11px] font-medium text-white/70 flex items-center gap-1.5">
+                  <Landmark size={12} /> Immatriculation : {formData.registration_number}
+                </div>
+              )}
             </div>
 
-            {/* Localisation */}
-            <div className="pt-3 border-t border-slate-100">
-              <h4 className="text-[12px] font-bold text-slate-500 uppercase tracking-wider mb-3">Localisation</h4>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className={labelClass}>Adresse physique</label>
-                  <div className="relative"><div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400"><MapPin size={14} /></div>
-                    <input name="address" value={formData.address} onChange={handleChange} placeholder="Quartier, rue..." className={`${fieldClass} pl-9`} /></div>
-                </div>
-                <div>
-                  <label className={labelClass}>Ville</label>
-                  <input name="city" value={formData.city} onChange={handleChange} placeholder="Lomé" className={fieldClass} />
-                </div>
-                <div>
-                  <label className={labelClass}>Pays</label>
-                  <div className="relative"><div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400"><Map size={14} /></div>
-                    <input name="country" value={formData.country} onChange={handleChange} placeholder="Togo" className={`${fieldClass} pl-9`} /></div>
-                </div>
-              </div>
-            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
 
-            {/* Paramètres régionaux */}
-            <div className="pt-3 border-t border-slate-100">
-              <h4 className="text-[12px] font-bold text-slate-500 uppercase tracking-wider mb-3">Paramètres régionaux</h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className={labelClass}>Devise monétaire</label>
-                  <div className="relative"><div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400"><Coins size={14} /></div>
+              <Section
+                icon={<Landmark size={18} />} tone="indigo"
+                title="Établissement" subtitle="Dénomination et identité légale"
+              >
+                <Field label="Dénomination du ministère de tutelle">
+                  <input name="ministry_name" value={formData.ministry_name} onChange={handleChange}
+                    placeholder="Ex : Ministère des Enseignements Primaire et Secondaire"
+                    className={fieldClass} />
+                </Field>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field label="Nom de l'établissement" required>
+                    <input name="name" value={formData.name} onChange={handleChange}
+                      placeholder="Ex : Complexe Scolaire Orion" className={fieldClass} />
+                  </Field>
+                  <Field label="Sigle / Nom court">
+                    <input name="short_name" value={formData.short_name} onChange={handleChange}
+                      placeholder="Ex : CSO" className={fieldClass} />
+                  </Field>
+                </div>
+                <Field label="Numéro d'immatriculation / Agrément">
+                  <input name="registration_number" value={formData.registration_number} onChange={handleChange}
+                    placeholder="Ex : MEPS-2024-00123" className={fieldClass} />
+                </Field>
+                <Field label="Slogan de l'établissement">
+                  <input name="slogan" value={formData.slogan} onChange={handleChange}
+                    placeholder="Ex : La réussite, notre ambition" className={fieldClass} />
+                </Field>
+              </Section>
+
+              <Section
+                icon={<UserCog size={18} />} tone="rose"
+                title="Direction" subtitle="Responsable de l'établissement"
+              >
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field label="Titre du chef d'établissement">
+                    <select name="head_title" value={formData.head_title} onChange={handleChange} className={`${fieldClass} appearance-none`}>
+                      <option value="Directeur">Directeur</option>
+                      <option value="Directrice">Directrice</option>
+                      <option value="Proviseur">Proviseur</option>
+                      <option value="Proviseure">Proviseure</option>
+                      <option value="Censeur">Censeur</option>
+                      <option value="Principal">Principal</option>
+                      <option value="Principale">Principale</option>
+                      <option value="Recteur">Recteur</option>
+                      <option value="Administrateur">Administrateur</option>
+                    </select>
+                  </Field>
+                  <Field label="Nom du chef d'établissement">
+                    <input name="head_name" value={formData.head_name} onChange={handleChange}
+                      placeholder="Ex : M. Kofi AGBENYEFIA" className={fieldClass} />
+                  </Field>
+                </div>
+                <div className="flex items-center gap-2.5 rounded-xl bg-rose-50/70 border border-rose-100 px-3.5 py-3">
+                  <UserCog size={16} className="text-rose-500 flex-shrink-0" />
+                  <p className="text-[11.5px] text-rose-700 leading-snug">
+                    Ce nom et ce titre signeront automatiquement les bulletins et attestations de l'établissement.
+                  </p>
+                </div>
+              </Section>
+
+              <Section
+                icon={<Contact size={18} />} tone="emerald"
+                title="Coordonnées" subtitle="Email, site web et téléphones"
+              >
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field label="Email de contact" icon={<Mail size={14} />}>
+                    <input type="email" name="email" value={formData.email} onChange={handleChange}
+                      placeholder="direction@ecole.tg" className={`${fieldClass} pl-9`} />
+                  </Field>
+                  <Field label="Site Web" icon={<Globe size={14} />}>
+                    <input type="url" name="website" value={formData.website} onChange={handleChange}
+                      placeholder="https://www.ecole.tg" className={`${fieldClass} pl-9`} />
+                  </Field>
+                  <Field label="Téléphone principal" icon={<Phone size={14} />}>
+                    <input name="phone" value={formData.phone} onChange={handleChange}
+                      placeholder="+228 90 00 00 00" className={`${fieldClass} pl-9`} />
+                  </Field>
+                  <Field label="Téléphone secondaire" icon={<Phone size={14} />}>
+                    <input name="phone_secondary" value={formData.phone_secondary} onChange={handleChange}
+                      placeholder="+228 90 00 00 01" className={`${fieldClass} pl-9`} />
+                  </Field>
+                </div>
+              </Section>
+
+              <Section
+                icon={<MapPin size={18} />} tone="sky"
+                title="Localisation" subtitle="Adresse postale de l'établissement"
+              >
+                <Field label="Adresse physique" icon={<MapPin size={14} />}>
+                  <input name="address" value={formData.address} onChange={handleChange}
+                    placeholder="Quartier, rue..." className={`${fieldClass} pl-9`} />
+                </Field>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field label="Ville">
+                    <input name="city" value={formData.city} onChange={handleChange} placeholder="Lomé" className={fieldClass} />
+                  </Field>
+                  <Field label="Pays" icon={<Map size={14} />}>
+                    <input name="country" value={formData.country} onChange={handleChange} placeholder="Togo" className={`${fieldClass} pl-9`} />
+                  </Field>
+                </div>
+              </Section>
+
+              <Section
+                icon={<Globe size={18} />} tone="amber" wide
+                title="Paramètres régionaux" subtitle="Devise monétaire et fuseau horaire utilisés par le module finances"
+              >
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field label="Devise monétaire" icon={<Coins size={14} />}>
                     <select name="currency" value={formData.currency} onChange={handleChange} className={`${fieldClass} pl-9 appearance-none`}>
                       <option value="XOF">Franc CFA BCEAO (XOF)</option>
                       <option value="XAF">Franc CFA CEMAC (XAF)</option>
                       <option value="EUR">Euro (€)</option>
                       <option value="USD">Dollar ($)</option>
                     </select>
-                  </div>
-                </div>
-                <div>
-                  <label className={labelClass}>Fuseau horaire</label>
-                  <div className="relative"><div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400"><Clock size={14} /></div>
+                  </Field>
+                  <Field label="Fuseau horaire" icon={<Clock size={14} />}>
                     <select name="timezone" value={formData.timezone} onChange={handleChange} className={`${fieldClass} pl-9 appearance-none`}>
                       <option value="Africa/Lome">Lomé / Togo (GMT+0)</option>
                       <option value="Africa/Abidjan">Abidjan / Côte d'Ivoire (GMT+0)</option>
@@ -323,12 +397,14 @@ export default function Settings() {
                       <option value="Africa/Kinshasa">Kinshasa / RDC (GMT+1)</option>
                       <option value="Europe/Paris">Paris (CET/CEST)</option>
                     </select>
-                  </div>
+                  </Field>
                 </div>
-              </div>
+              </Section>
             </div>
 
-            <SaveBar />
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
+              <SaveBar contained />
+            </div>
           </div>
         )}
 

@@ -119,3 +119,49 @@ pub struct StudentFinancialSummary {
     pub remaining_balance: i64,
     pub status: String, // SOLDE, PARTIEL, IMPAYE
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClassFinancialStat {
+    pub class_id: Option<String>,
+    pub class_name: String,
+    pub student_count: i64,
+    pub total_due: i64,
+    pub total_paid: i64,
+    pub remaining_balance: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MethodStat {
+    pub method: String,
+    pub amount: i64,
+    pub payment_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StudentBalance {
+    pub student_id: String,
+    pub enrollment_id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub class_name: String,
+    pub total_due: i64,
+    pub total_paid: i64,
+    pub remaining_balance: i64,
+    pub status: String, // SOLDE, PARTIEL, IMPAYE
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FinancialDashboard {
+    pub total_due: i64,
+    pub total_paid: i64,
+    pub remaining_balance: i64,
+    pub recovery_rate: f64, // en pourcentage (0.0 - 100.0)
+    pub student_count: i64,
+    pub settled_count: i64,
+    pub partial_count: i64,
+    pub unpaid_count: i64,
+    pub cancelled_payment_count: i64,
+    pub by_class: Vec<ClassFinancialStat>,
+    pub by_method: Vec<MethodStat>,
+    pub debtors: Vec<StudentBalance>,
+}

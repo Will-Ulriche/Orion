@@ -5,7 +5,7 @@ import { useYear } from '../contexts/YearContext';
 import StudentProfileModal from '../components/StudentProfileModal';
 import BulkMigrationModal from '../components/BulkMigrationModal';
 import {
-  Search, UserPlus, Pencil, Trash2, Users, Eye,
+  Search, UserPlus, Pencil, Trash2, Users, Eye, MapPin,
   GraduationCap, BookOpen, ChevronDown, ArrowRight, ArrowRightLeft,
   GraduationCap as RepeatIcon, X, Check, AlertCircle
 } from 'lucide-react';
@@ -48,6 +48,18 @@ function formatDate(d: string | null): string {
   const [y, m, day] = d.split('-');
   if (!y || !m || !day) return d;
   return `${day}/${m}/${y}`;
+}
+
+/** Nom de famille en majuscules (accents gérés : Koné -> KONÉ). */
+function displayLastName(name: string | null): string {
+  return (name ?? '').trim().toLocaleUpperCase('fr-FR');
+}
+
+/** Prénom avec la première lettre en majuscule, le reste inchangé. */
+function displayFirstName(name: string | null): string {
+  const value = (name ?? '').trim();
+  if (!value) return '';
+  return value.charAt(0).toLocaleUpperCase('fr-FR') + value.slice(1);
 }
 
 function LevelBadge({ level }: { level: string | null }) {
@@ -372,23 +384,22 @@ export default function StudentsMigration() {
           <table className="w-full text-left border-collapse text-[13px]">
             <thead>
               <tr className="sticky top-0 bg-white border-b border-slate-100 z-10">
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Matricule</th>
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Élève</th>
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Sexe</th>
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Date de naissance</th>
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Lieu de naissance</th>
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Adresse</th>
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Niveau</th>
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Classe actuelle</th>
-                <th className="py-3.5 px-5 text-[11px] font-bold text-slate-400 uppercase tracking-wider text-right">Actions</th>
+                <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Matricule</th>
+                <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Élève</th>
+                <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Sexe</th>
+                <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Date de naissance</th>
+                <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Adresse</th>
+                <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Niveau</th>
+                <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Classe actuelle</th>
+                <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9} className="p-10 text-center text-slate-400 text-sm">Chargement...</td></tr>
+                <tr><td colSpan={8} className="p-10 text-center text-slate-400 text-sm">Chargement...</td></tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-10 text-center">
+                  <td colSpan={8} className="p-10 text-center">
                     <div className="flex flex-col items-center gap-2 text-slate-400">
                       <GraduationCap size={36} strokeWidth={1} className="opacity-40" />
                       <p className="text-sm">Aucun élève trouvé.</p>
@@ -398,21 +409,28 @@ export default function StudentsMigration() {
               ) : (
                 filtered.map(s => (
                   <tr key={s.id} className="border-b border-slate-50 hover:bg-slate-50/60 transition-colors group">
-                    <td className="py-3.5 px-5 font-mono text-[12px] text-slate-500 font-semibold">
+                    <td className="py-1.5 px-4 font-mono text-[12px] text-slate-500 font-semibold leading-tight">
                       {s.matricule || <span className="text-slate-300 italic">—</span>}
                     </td>
-                    <td className="py-3.5 px-5 font-bold text-slate-800">
-                      {s.last_name} {s.first_name}
+                    <td className="py-1.5 px-4">
+                      <p className="font-normal text-slate-700 leading-tight">
+                        {displayLastName(s.last_name)} {displayFirstName(s.first_name)}
+                      </p>
+                      {s.birth_place && (
+                        <p className="flex items-center gap-1 text-[11px] text-slate-400 leading-tight mt-0.5">
+                          <MapPin size={10} className="flex-shrink-0" />
+                          {s.birth_place}
+                        </p>
+                      )}
                     </td>
-                    <td className="py-3.5 px-5 text-slate-500">
+                    <td className="py-1.5 px-4 text-slate-500 leading-tight">
                       {s.gender === 'M' ? 'M' : s.gender === 'F' ? 'F' : <span className="text-slate-300">—</span>}
                     </td>
-                    <td className="py-3.5 px-5 text-slate-600">{formatDate(s.birth_date)}</td>
-                    <td className="py-3.5 px-5 text-slate-600">{s.birth_place || <span className="text-slate-300">—</span>}</td>
-                    <td className="py-3.5 px-5 text-slate-600">{s.address || <span className="text-slate-300">—</span>}</td>
-                    <td className="py-3.5 px-5"><LevelBadge level={s.class_level} /></td>
-                    <td className="py-3.5 px-5"><ClassBadge name={s.class_name} /></td>
-                    <td className="py-3.5 px-5">
+                    <td className="py-1.5 px-4 text-slate-600 leading-tight">{formatDate(s.birth_date)}</td>
+                    <td className="py-1.5 px-4 text-slate-600 leading-tight">{s.address || <span className="text-slate-300">—</span>}</td>
+                    <td className="py-1.5 px-4"><LevelBadge level={s.class_level} /></td>
+                    <td className="py-1.5 px-4"><ClassBadge name={s.class_name} /></td>
+                    <td className="py-1.5 px-4">
                       <div className="flex items-center justify-end gap-1.5">
                         {/* Modifier / Voir (ouvre le profil) */}
                         <button
