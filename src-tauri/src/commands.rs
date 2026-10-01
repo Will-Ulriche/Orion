@@ -48,10 +48,17 @@ const REMOTE_COLUMNS: &[(&str, &[&str])] = &[
     ("enrollments",    &["id", "school_id", "academic_year_id", "student_id", "class_id", "enrollment_number", "enrollment_date", "status", "enrollment_type", "previous_class_id", "created_at", "updated_at"]),
     ("fee_structures", &["id", "school_id", "academic_year_id", "name", "amount", "fee_type", "applies_to", "class_id", "level", "due_date", "is_mandatory", "created_at", "updated_at"]),
     ("payments",       &["id", "school_id", "academic_year_id", "enrollment_id", "student_id", "fee_structure_id", "amount", "payment_date", "payment_method", "reference", "receipt_number", "notes", "recorded_by", "status", "cancelled_at", "cancel_reason", "created_at", "updated_at"]),
+    // Session 5 — Module pédagogique
+    ("subjects",            &["id", "school_id", "name", "code", "color", "created_at", "updated_at"]),
+    ("grade_types",         &["id", "school_id", "name", "weight", "max_score", "created_at", "updated_at"]),
+    ("grading_periods",     &["id", "school_id", "academic_year_id", "name", "period_order", "start_date", "end_date", "is_active", "created_at", "updated_at"]),
+    ("class_subjects",      &["id", "school_id", "academic_year_id", "class_id", "subject_id", "teacher_id", "coefficient", "created_at", "updated_at"]),
+    ("teacher_assignments", &["id", "school_id", "academic_year_id", "teacher_id", "class_subject_id", "created_at", "updated_at"]),
+    ("grades",              &["id", "school_id", "academic_year_id", "enrollment_id", "student_id", "class_subject_id", "grading_period_id", "grade_type_id", "score", "max_score", "evaluation_date", "notes", "recorded_by", "is_absent", "created_at", "updated_at"]),
 ];
 
 // Colonnes booléennes : SQLite les range en 0/1, PostgreSQL attend true/false.
-const BOOLEAN_COLUMNS: &[&str] = &["is_current", "is_mandatory"];
+const BOOLEAN_COLUMNS: &[&str] = &["is_current", "is_mandatory", "is_active", "is_absent"];
 
 /// Convertit une valeur SQLite en JSON, en honorant le type booléen attendu.
 fn column_to_json(row: &rusqlite::Row, idx: usize, as_bool: bool) -> rusqlite::Result<serde_json::Value> {
@@ -1842,7 +1849,697 @@ pub fn cancel_payment(id: String, school_id: String, cancel_reason: String, stat
     Ok(())
 }
 
+
+// ============================================================
+// SESSION 5 : MODULE PÉDAGOGIQUE (Notes & Résultats)
+// ============================================================
+
+// ── Helpers internes ────────────────────────────────────────
+
+/// Calcule l'appréciation textuelle à partir d'une moyenne sur 20.
+fn appreciation(avg: f64) -> String {
+    match avg as u32 {
+        18..=20 => "Excellent".into(),
+        15..=17 => "Bien".into(),
+        12..=14 => "Assez Bien".into(),
+        10..=11 => "Passable".into(),
+        _        => "Insuffisant".into(),
+    }
+}
+
+// ── SUBJECTS ────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_subjects(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::Subject>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, school_id, name, code, color FROM subjects WHERE school_id = ?1 ORDER BY name"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
+        Ok(crate::models::Subject {
+            id: row.get(0)?,
+            school_id: row.get(1)?,
+            name: row.get(2)?,
+            code: row.get(3)?,
+            color: row.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows { if let Ok(s) = r { res.push(s); } }
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn create_subject(
+    school_id: String,
+    name: String,
+    code: String,
+    color: Option<String>,
+    state: State<'_, DbState>
+) -> Result<crate::models::Subject, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO subjects (id, school_id, name, code, color, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
+        rusqlite::params![id, school_id, name, code, color, now]
+    ).map_err(|e| format!("Erreur SQL: {}", e))?;
+    let payload = serde_json::json!({"id":id,"school_id":school_id,"name":name,"code":code,"color":color,"created_at":now,"updated_at":now});
+    enqueue_entity(&conn, "subjects", &school_id, &id);
+    conn.execute(
+        "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1,?2,'CREATE_SUBJECT','subjects',?3)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, payload.to_string()]
+    ).unwrap_or(0);
+    Ok(crate::models::Subject { id, school_id, name, code, color })
+}
+
+#[tauri::command]
+pub fn update_subject(
+    id: String,
+    school_id: String,
+    name: String,
+    code: String,
+    color: Option<String>,
+    state: State<'_, DbState>
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE subjects SET name=?1, code=?2, color=?3, updated_at=?4 WHERE id=?5 AND school_id=?6",
+        rusqlite::params![name, code, color, now, id, school_id]
+    ).map_err(|e| e.to_string())?;
+    enqueue_entity(&conn, "subjects", &school_id, &id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_subject(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM grades g JOIN class_subjects cs ON g.class_subject_id = cs.id WHERE cs.subject_id = ?1",
+        rusqlite::params![id], |r| r.get(0)
+    ).unwrap_or(0);
+    if count > 0 {
+        return Err("Impossible de supprimer : des notes existent pour cette matière.".into());
+    }
+    conn.execute("DELETE FROM subjects WHERE id=?1 AND school_id=?2", rusqlite::params![id, school_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── CLASS SUBJECTS ───────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_class_subjects(
+    school_id: String,
+    academic_year_id: String,
+    class_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::ClassSubject>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
+                cs.teacher_id, cs.coefficient,
+                s.name, s.code, c.name,
+                (u.first_name || ' ' || u.last_name)
+         FROM class_subjects cs
+         JOIN subjects s ON cs.subject_id = s.id
+         JOIN classes c ON cs.class_id = c.id
+         LEFT JOIN users u ON cs.teacher_id = u.id
+         WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3
+         ORDER BY s.name"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, class_id], |row| {
+        Ok(crate::models::ClassSubject {
+            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
+            class_id: row.get(3)?, subject_id: row.get(4)?, teacher_id: row.get(5)?,
+            coefficient: row.get(6)?,
+            subject_name: row.get(7)?, subject_code: row.get(8)?,
+            class_name: row.get(9)?, teacher_name: row.get(10)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows { if let Ok(cs) = r { res.push(cs); } }
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn assign_subject_to_class(
+    school_id: String,
+    academic_year_id: String,
+    class_id: String,
+    subject_id: String,
+    teacher_id: Option<String>,
+    coefficient: f64,
+    state: State<'_, DbState>
+) -> Result<crate::models::ClassSubject, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO class_subjects (id, school_id, academic_year_id, class_id, subject_id, teacher_id, coefficient, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",
+        rusqlite::params![id, school_id, academic_year_id, class_id, subject_id, teacher_id, coefficient, now]
+    ).map_err(|e| format!("Erreur SQL: {}", e))?;
+    enqueue_entity(&conn, "class_subjects", &school_id, &id);
+    let subject_name: Option<String> = conn.query_row("SELECT name FROM subjects WHERE id=?1", rusqlite::params![subject_id], |r| r.get(0)).unwrap_or(None);
+    let subject_code: Option<String> = conn.query_row("SELECT code FROM subjects WHERE id=?1", rusqlite::params![subject_id], |r| r.get(0)).unwrap_or(None);
+    let class_name: Option<String> = conn.query_row("SELECT name FROM classes WHERE id=?1", rusqlite::params![class_id], |r| r.get(0)).unwrap_or(None);
+    Ok(crate::models::ClassSubject { id, school_id, academic_year_id, class_id, subject_id, teacher_id, coefficient, subject_name, subject_code, class_name, teacher_name: None })
+}
+
+#[tauri::command]
+pub fn update_class_subject_coefficient(
+    id: String,
+    school_id: String,
+    coefficient: f64,
+    teacher_id: Option<String>,
+    state: State<'_, DbState>
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE class_subjects SET coefficient=?1, teacher_id=?2, updated_at=?3 WHERE id=?4 AND school_id=?5",
+        rusqlite::params![coefficient, teacher_id, now, id, school_id]
+    ).map_err(|e| e.to_string())?;
+    enqueue_entity(&conn, "class_subjects", &school_id, &id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_class_subject(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM grades WHERE class_subject_id=?1",
+        rusqlite::params![id], |r| r.get(0)
+    ).unwrap_or(0);
+    if count > 0 {
+        return Err("Impossible de retirer cette matière : des notes y sont attachées.".into());
+    }
+    conn.execute("DELETE FROM class_subjects WHERE id=?1 AND school_id=?2", rusqlite::params![id, school_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── GRADING PERIODS ──────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_grading_periods(
+    school_id: String,
+    academic_year_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::GradingPeriod>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, school_id, academic_year_id, name, period_order, start_date, end_date, is_active
+         FROM grading_periods WHERE school_id=?1 AND academic_year_id=?2 ORDER BY period_order"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
+        Ok(crate::models::GradingPeriod {
+            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
+            name: row.get(3)?, period_order: row.get(4)?,
+            start_date: row.get(5)?, end_date: row.get(6)?,
+            is_active: row.get::<_, i64>(7)? != 0,
+        })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows { if let Ok(p) = r { res.push(p); } }
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn create_grading_period(
+    school_id: String,
+    academic_year_id: String,
+    name: String,
+    period_order: i64,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    state: State<'_, DbState>
+) -> Result<crate::models::GradingPeriod, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO grading_periods (id, school_id, academic_year_id, name, period_order, start_date, end_date, is_active, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8,?8)",
+        rusqlite::params![id, school_id, academic_year_id, name, period_order, start_date, end_date, now]
+    ).map_err(|e| format!("Erreur SQL: {}", e))?;
+    enqueue_entity(&conn, "grading_periods", &school_id, &id);
+    Ok(crate::models::GradingPeriod { id, school_id, academic_year_id, name, period_order, start_date, end_date, is_active: false })
+}
+
+#[tauri::command]
+pub fn update_grading_period(
+    id: String,
+    school_id: String,
+    name: String,
+    period_order: i64,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    is_active: bool,
+    state: State<'_, DbState>
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE grading_periods SET name=?1, period_order=?2, start_date=?3, end_date=?4, is_active=?5, updated_at=?6 WHERE id=?7 AND school_id=?8",
+        rusqlite::params![name, period_order, start_date, end_date, is_active, now, id, school_id]
+    ).map_err(|e| e.to_string())?;
+    enqueue_entity(&conn, "grading_periods", &school_id, &id);
+    Ok(())
+}
+
+// ── GRADE TYPES ──────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_grade_types(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::GradeType>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, school_id, name, weight, max_score FROM grade_types WHERE school_id=?1 ORDER BY name"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
+        Ok(crate::models::GradeType { id: row.get(0)?, school_id: row.get(1)?, name: row.get(2)?, weight: row.get(3)?, max_score: row.get(4)? })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows { if let Ok(g) = r { res.push(g); } }
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn create_grade_type(
+    school_id: String,
+    name: String,
+    weight: f64,
+    max_score: f64,
+    state: State<'_, DbState>
+) -> Result<crate::models::GradeType, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO grade_types (id, school_id, name, weight, max_score, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
+        rusqlite::params![id, school_id, name, weight, max_score, now]
+    ).map_err(|e| format!("Erreur SQL: {}", e))?;
+    enqueue_entity(&conn, "grade_types", &school_id, &id);
+    Ok(crate::models::GradeType { id, school_id, name, weight, max_score })
+}
+
+#[tauri::command]
+pub fn update_grade_type(
+    id: String,
+    school_id: String,
+    name: String,
+    weight: f64,
+    max_score: f64,
+    state: State<'_, DbState>
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE grade_types SET name=?1, weight=?2, max_score=?3, updated_at=?4 WHERE id=?5 AND school_id=?6",
+        rusqlite::params![name, weight, max_score, now, id, school_id]
+    ).map_err(|e| e.to_string())?;
+    enqueue_entity(&conn, "grade_types", &school_id, &id);
+    Ok(())
+}
+
+// ── GRADES ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_grades_by_class(
+    school_id: String,
+    academic_year_id: String,
+    class_subject_id: String,
+    grading_period_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::Grade>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
+                g.class_subject_id, g.grading_period_id, g.grade_type_id,
+                g.score, g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
+                st.first_name, st.last_name, s.name, gt.name, gt.weight
+         FROM grades g
+         JOIN students st ON g.student_id = st.id
+         JOIN class_subjects cs ON g.class_subject_id = cs.id
+         JOIN subjects s ON cs.subject_id = s.id
+         JOIN grade_types gt ON g.grade_type_id = gt.id
+         WHERE g.school_id=?1 AND g.academic_year_id=?2
+           AND g.class_subject_id=?3 AND g.grading_period_id=?4
+         ORDER BY st.last_name, st.first_name, g.evaluation_date"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, class_subject_id, grading_period_id], |row| {
+        Ok(crate::models::Grade {
+            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
+            enrollment_id: row.get(3)?, student_id: row.get(4)?, class_subject_id: row.get(5)?,
+            grading_period_id: row.get(6)?, grade_type_id: row.get(7)?,
+            score: row.get(8)?, max_score: row.get(9)?,
+            evaluation_date: row.get(10)?, notes: row.get(11)?,
+            recorded_by: row.get(12)?, is_absent: row.get::<_, i64>(13)? != 0,
+            student_first_name: row.get(14)?, student_last_name: row.get(15)?,
+            subject_name: row.get(16)?, grade_type_name: row.get(17)?, grade_type_weight: row.get(18)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows { if let Ok(g) = r { res.push(g); } }
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn get_grades_by_student(
+    school_id: String,
+    academic_year_id: String,
+    student_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::Grade>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
+                g.class_subject_id, g.grading_period_id, g.grade_type_id,
+                g.score, g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
+                st.first_name, st.last_name, s.name, gt.name, gt.weight
+         FROM grades g
+         JOIN students st ON g.student_id = st.id
+         JOIN class_subjects cs ON g.class_subject_id = cs.id
+         JOIN subjects s ON cs.subject_id = s.id
+         JOIN grade_types gt ON g.grade_type_id = gt.id
+         WHERE g.school_id=?1 AND g.academic_year_id=?2 AND g.student_id=?3
+         ORDER BY g.grading_period_id, s.name, g.evaluation_date"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, student_id], |row| {
+        Ok(crate::models::Grade {
+            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
+            enrollment_id: row.get(3)?, student_id: row.get(4)?, class_subject_id: row.get(5)?,
+            grading_period_id: row.get(6)?, grade_type_id: row.get(7)?,
+            score: row.get(8)?, max_score: row.get(9)?,
+            evaluation_date: row.get(10)?, notes: row.get(11)?,
+            recorded_by: row.get(12)?, is_absent: row.get::<_, i64>(13)? != 0,
+            student_first_name: row.get(14)?, student_last_name: row.get(15)?,
+            subject_name: row.get(16)?, grade_type_name: row.get(17)?, grade_type_weight: row.get(18)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows { if let Ok(g) = r { res.push(g); } }
+    Ok(res)
+}
+
+/// Crée ou corrige une note. Si une note du même (enrollment, class_subject, period, grade_type)
+/// existe déjà, elle est mise à jour (audit trail) ; sinon elle est insérée.
+#[tauri::command]
+pub fn upsert_grade(
+    school_id: String,
+    academic_year_id: String,
+    enrollment_id: String,
+    student_id: String,
+    class_subject_id: String,
+    grading_period_id: String,
+    grade_type_id: String,
+    score: f64,
+    max_score: f64,
+    evaluation_date: Option<String>,
+    notes: Option<String>,
+    recorded_by: String,
+    is_absent: bool,
+    state: State<'_, DbState>
+) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Cherche une note existante pour ce triplet (enrollment, class_subject, period, grade_type)
+    let existing_id: Option<String> = conn.query_row(
+        "SELECT id FROM grades WHERE enrollment_id=?1 AND class_subject_id=?2 AND grading_period_id=?3 AND grade_type_id=?4",
+        rusqlite::params![enrollment_id, class_subject_id, grading_period_id, grade_type_id],
+        |r| r.get(0)
+    ).ok();
+
+    let grade_id = if let Some(eid) = existing_id {
+        conn.execute(
+            "UPDATE grades SET score=?1, max_score=?2, evaluation_date=?3, notes=?4, recorded_by=?5, is_absent=?6, updated_at=?7 WHERE id=?8",
+            rusqlite::params![score, max_score, evaluation_date, notes, recorded_by, is_absent, now, eid]
+        ).map_err(|e| e.to_string())?;
+        eid
+    } else {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO grades (id, school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id, score, max_score, evaluation_date, notes, recorded_by, is_absent, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
+            rusqlite::params![new_id, school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id, score, max_score, evaluation_date, notes, recorded_by, is_absent, now]
+        ).map_err(|e| format!("Erreur SQL: {}", e))?;
+        new_id
+    };
+
+    enqueue_entity(&conn, "grades", &school_id, &grade_id);
+    let payload = serde_json::json!({"id":grade_id,"student_id":student_id,"score":score,"is_absent":is_absent,"updated_at":now});
+    conn.execute(
+        "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1,?2,'UPSERT_GRADE','grades',?3)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, payload.to_string()]
+    ).unwrap_or(0);
+
+    Ok(grade_id)
+}
+
+// ── MOYENNES & CLASSEMENTS ────────────────────────────────────
+
+/// Calcule les moyennes d'un élève (par matière + générale) pour une période donnée.
+/// Formule : Σ(score_i × weight_i) / Σ(weight_i) par matière, puis pondération par coefficient.
+#[tauri::command]
+pub fn get_student_averages(
+    school_id: String,
+    academic_year_id: String,
+    enrollment_id: String,
+    grading_period_id: String,
+    state: State<'_, DbState>
+) -> Result<crate::models::StudentAverages, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    // Infos élève
+    let (student_id, first_name, last_name): (String, String, String) = conn.query_row(
+        "SELECT e.student_id, s.first_name, s.last_name FROM enrollments e JOIN students s ON e.student_id = s.id WHERE e.id=?1",
+        rusqlite::params![enrollment_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    ).map_err(|e| e.to_string())?;
+
+    // Matières de la classe pour l'année
+    let class_id: String = conn.query_row(
+        "SELECT class_id FROM enrollments WHERE id=?1", rusqlite::params![enrollment_id], |r| r.get(0)
+    ).map_err(|e| e.to_string())?;
+
+    let mut stmt = conn.prepare(
+        "SELECT cs.id, s.name, s.code, cs.coefficient FROM class_subjects cs JOIN subjects s ON cs.subject_id=s.id
+         WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3 ORDER BY s.name"
+    ).map_err(|e| e.to_string())?;
+    let class_subjects: Vec<(String, String, String, f64)> = stmt.query_map(
+        rusqlite::params![school_id, academic_year_id, class_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    ).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+
+    let mut subject_avgs: Vec<crate::models::SubjectAverage> = Vec::new();
+    let mut weighted_sum = 0.0_f64;
+    let mut coeff_sum = 0.0_f64;
+
+    for (cs_id, s_name, s_code, coeff) in &class_subjects {
+        // Notes de l'élève pour cette matière et cette période
+        let mut g_stmt = conn.prepare(
+            "SELECT g.score, g.max_score, gt.weight FROM grades g JOIN grade_types gt ON g.grade_type_id=gt.id
+             WHERE g.enrollment_id=?1 AND g.class_subject_id=?2 AND g.grading_period_id=?3"
+        ).map_err(|e| e.to_string())?;
+        let grade_rows: Vec<(f64, f64, f64)> = g_stmt.query_map(
+            rusqlite::params![enrollment_id, cs_id, grading_period_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        ).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+
+        let grade_count = grade_rows.len() as i64;
+
+        let avg: Option<f64> = if grade_count == 0 { None } else {
+            let num: f64 = grade_rows.iter().map(|(sc, ms, w)| (sc / ms * 20.0) * w).sum();
+            let den: f64 = grade_rows.iter().map(|(_, _, w)| w).sum();
+            if den > 0.0 { Some(num / den) } else { None }
+        };
+
+        // Moyenne de la classe pour la même matière/période
+        let class_avg: Option<f64> = conn.query_row(
+            "SELECT AVG(g.score / g.max_score * 20.0) FROM grades g WHERE g.class_subject_id=?1 AND g.grading_period_id=?2 AND g.school_id=?3",
+            rusqlite::params![cs_id, grading_period_id, school_id], |r| r.get(0)
+        ).unwrap_or(None);
+
+        let appr = avg.map(|a| appreciation(a)).unwrap_or_else(|| "—".into());
+
+        if let Some(a) = avg {
+            weighted_sum += a * coeff;
+            coeff_sum += coeff;
+        }
+
+        subject_avgs.push(crate::models::SubjectAverage {
+            class_subject_id: cs_id.clone(), subject_name: s_name.clone(), subject_code: s_code.clone(),
+            coefficient: *coeff, average: avg, class_average: class_avg, appreciation: appr, grade_count,
+        });
+    }
+
+    let general_average = if coeff_sum > 0.0 { Some(weighted_sum / coeff_sum) } else { None };
+
+    // Rang dans la classe pour cette période
+    let rank: Option<i64> = if general_average.is_some() {
+        let gen_avg_val = general_average.unwrap();
+        conn.query_row(
+            "SELECT COUNT(*)+1 FROM (
+                SELECT e2.id, SUM(g2.score / g2.max_score * 20.0 * gt2.weight * cs2.coefficient) / NULLIF(SUM(gt2.weight * cs2.coefficient), 0) AS gavg
+                FROM enrollments e2
+                JOIN grades g2 ON e2.id = g2.enrollment_id
+                JOIN grade_types gt2 ON g2.grade_type_id = gt2.id
+                JOIN class_subjects cs2 ON g2.class_subject_id = cs2.id
+                WHERE e2.class_id=?1 AND g2.grading_period_id=?2 AND g2.academic_year_id=?3
+                GROUP BY e2.id
+             ) WHERE gavg > ?4",
+            rusqlite::params![class_id, grading_period_id, academic_year_id, gen_avg_val],
+            |r| r.get(0)
+        ).ok()
+    } else { None };
+
+    let class_size: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM enrollments WHERE class_id=?1 AND academic_year_id=?2 AND status='ACTIVE'",
+        rusqlite::params![class_id, academic_year_id], |r| r.get(0)
+    ).unwrap_or(0);
+
+    Ok(crate::models::StudentAverages {
+        student_id, enrollment_id, first_name, last_name, grading_period_id,
+        general_average, rank, class_size, subjects: subject_avgs,
+    })
+}
+
+/// Retourne le classement complet d'une classe pour une période.
+#[tauri::command]
+pub fn get_class_rankings(
+    school_id: String,
+    academic_year_id: String,
+    class_id: String,
+    grading_period_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::ClassRankingEntry>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.student_id, s.first_name, s.last_name,
+                SUM(g.score / g.max_score * 20.0 * gt.weight * cs.coefficient) / NULLIF(SUM(gt.weight * cs.coefficient), 0) AS gavg
+         FROM enrollments e
+         JOIN students s ON e.student_id = s.id
+         LEFT JOIN grades g ON e.id = g.enrollment_id AND g.grading_period_id = ?3 AND g.academic_year_id = ?2
+         LEFT JOIN grade_types gt ON g.grade_type_id = gt.id
+         LEFT JOIN class_subjects cs ON g.class_subject_id = cs.id
+         WHERE e.class_id=?1 AND e.academic_year_id=?2 AND e.status='ACTIVE' AND e.school_id=?4
+         GROUP BY e.id, e.student_id, s.first_name, s.last_name
+         ORDER BY gavg DESC NULLS LAST, s.last_name"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map(rusqlite::params![class_id, academic_year_id, grading_period_id, school_id], |row| {
+        let avg: Option<f64> = row.get(4)?;
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, avg))
+    }).map_err(|e| e.to_string())?;
+
+    let mut result = Vec::new();
+    for (rank, r) in rows.filter_map(Result::ok).enumerate() {
+        let appr = r.4.map(|a| appreciation(a)).unwrap_or_else(|| "—".into());
+        result.push(crate::models::ClassRankingEntry {
+            rank: (rank + 1) as i64,
+            enrollment_id: r.0, student_id: r.1, first_name: r.2, last_name: r.3,
+            general_average: r.4, appreciation: appr,
+        });
+    }
+    Ok(result)
+}
+
+/// Statistiques par matière pour une classe et une période.
+#[tauri::command]
+pub fn get_class_statistics(
+    school_id: String,
+    academic_year_id: String,
+    class_id: String,
+    grading_period_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::SubjectStats>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT cs.id, s.name, s.code,
+                COUNT(DISTINCT g.enrollment_id),
+                AVG(g.score / g.max_score * 20.0),
+                MIN(g.score / g.max_score * 20.0),
+                MAX(g.score / g.max_score * 20.0),
+                SUM(CASE WHEN (g.score / g.max_score * 20.0) >= 10 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(DISTINCT g.enrollment_id), 0)
+         FROM class_subjects cs
+         JOIN subjects s ON cs.subject_id = s.id
+         LEFT JOIN grades g ON g.class_subject_id = cs.id AND g.grading_period_id = ?3 AND g.academic_year_id = ?2
+         WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?4
+         GROUP BY cs.id, s.name, s.code ORDER BY s.name"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, grading_period_id, class_id], |row| {
+        Ok(crate::models::SubjectStats {
+            class_subject_id: row.get(0)?, subject_name: row.get(1)?, subject_code: row.get(2)?,
+            grade_count: row.get(3)?, class_average: row.get(4)?,
+            min_score: row.get(5)?, max_score: row.get(6)?,
+            success_rate: row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+        })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows { if let Ok(s) = r { res.push(s); } }
+    Ok(res)
+}
+
+// ── TEACHER ASSIGNMENTS ──────────────────────────────────────
+
+#[tauri::command]
+pub fn get_teacher_assignments(
+    school_id: String,
+    academic_year_id: String,
+    teacher_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::TeacherAssignment>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT ta.id, ta.school_id, ta.academic_year_id, ta.teacher_id, ta.class_subject_id,
+                (u.first_name || ' ' || u.last_name), s.name, c.name
+         FROM teacher_assignments ta
+         JOIN class_subjects cs ON ta.class_subject_id = cs.id
+         JOIN subjects s ON cs.subject_id = s.id
+         JOIN classes c ON cs.class_id = c.id
+         LEFT JOIN users u ON ta.teacher_id = u.id
+         WHERE ta.school_id=?1 AND ta.academic_year_id=?2 AND ta.teacher_id=?3
+         ORDER BY c.name, s.name"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, teacher_id], |row| {
+        Ok(crate::models::TeacherAssignment {
+            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
+            teacher_id: row.get(3)?, class_subject_id: row.get(4)?,
+            teacher_name: row.get(5)?, subject_name: row.get(6)?, class_name: row.get(7)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows { if let Ok(ta) = r { res.push(ta); } }
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn assign_teacher_to_class_subject(
+    school_id: String,
+    academic_year_id: String,
+    teacher_id: String,
+    class_subject_id: String,
+    state: State<'_, DbState>
+) -> Result<crate::models::TeacherAssignment, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR IGNORE INTO teacher_assignments (id, school_id, academic_year_id, teacher_id, class_subject_id, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?6)",
+        rusqlite::params![id, school_id, academic_year_id, teacher_id, class_subject_id, now]
+    ).map_err(|e| format!("Erreur SQL: {}", e))?;
+    enqueue_entity(&conn, "teacher_assignments", &school_id, &id);
+    Ok(crate::models::TeacherAssignment { id, school_id, academic_year_id, teacher_id, class_subject_id, teacher_name: None, subject_name: None, class_name: None })
+}
+
 #[cfg(test)]
+
 mod finance_tests {
     use super::*;
     use rusqlite::Connection;

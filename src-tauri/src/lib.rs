@@ -71,7 +71,30 @@ pub fn run() {
             commands::get_student_financial_summary,
             commands::get_financial_dashboard,
             commands::create_payment,
-            commands::cancel_payment
+            commands::cancel_payment,
+            // ── Session 5 : Pédagogie ──
+            commands::get_subjects,
+            commands::create_subject,
+            commands::update_subject,
+            commands::delete_subject,
+            commands::get_class_subjects,
+            commands::assign_subject_to_class,
+            commands::update_class_subject_coefficient,
+            commands::remove_class_subject,
+            commands::get_grading_periods,
+            commands::create_grading_period,
+            commands::update_grading_period,
+            commands::get_grade_types,
+            commands::create_grade_type,
+            commands::update_grade_type,
+            commands::get_grades_by_class,
+            commands::get_grades_by_student,
+            commands::upsert_grade,
+            commands::get_student_averages,
+            commands::get_class_rankings,
+            commands::get_class_statistics,
+            commands::get_teacher_assignments,
+            commands::assign_teacher_to_class_subject
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

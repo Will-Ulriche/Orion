@@ -35,13 +35,20 @@ const SYNC_STATE_ID: &str = "local-device";
 
 /// Tables parentes dont l'insertion doit précéder celle des enfants,
 /// sinon PostgreSQL rejette l'enfant sur une violation de clé étrangère.
-const DEPENDENCY_ORDER: [(&str, u8); 6] = [
+const DEPENDENCY_ORDER: [(&str, u8); 12] = [
     ("schools", 0),
     ("academic_years", 1),
     ("classes", 2),
     ("students", 3),
     ("fee_structures", 4),
     ("payments", 5),
+    // Session 5 — Module pédagogique
+    ("subjects", 6),
+    ("grade_types", 6),
+    ("grading_periods", 7),
+    ("class_subjects", 7),
+    ("teacher_assignments", 7),
+    ("grades", 8),
 ];
 
 // ──────────────────────────────────────────────

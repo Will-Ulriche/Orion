@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart, Wallet, Calendar, ArrowDownUp,
-  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins
+  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins, BookOpen
 } from 'lucide-react';
 import { useState } from 'react';
 import YearSelector from './YearSelector';
@@ -14,6 +14,7 @@ const manageItems = [
   { to: '/classes', icon: GraduationCap, label: 'Classes' },
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions' },
   { to: '/finances', icon: Coins, label: 'Finances & Paiements' },
+  { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Notes' },
   { to: '/profils', icon: Wallet, label: 'Profils & Rôles' },
   { to: '/appareils', icon: Calendar, label: 'Appareils' },
   { to: '/licences', icon: ArrowDownUp, label: 'Licence' },

@@ -104,7 +104,7 @@ export default function StudentsMigration() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [newStudent, setNewStudent] = useState({ firstName: '', lastName: '', classId: '' });
-  const [viewingProfile, setViewingProfile] = useState<{ id: string; className: string | null } | null>(null);
+  const [viewingProfile, setViewingProfile] = useState<{ id: string; className: string | null, enrollmentId?: string } | null>(null);
   const [migratingStudent, setMigratingStudent] = useState<StudentEnrollment | null>(null);
   const [migrationTargetClass, setMigrationTargetClass] = useState('');
   const [migrationType, setMigrationType] = useState<'PROMOTED' | 'REPEATED'>('PROMOTED');
@@ -434,7 +434,7 @@ export default function StudentsMigration() {
                       <div className="flex items-center justify-end gap-1.5">
                         {/* Modifier / Voir (ouvre le profil) */}
                         <button
-                          onClick={() => setViewingProfile({ id: s.student_id, className: s.class_name })}
+                          onClick={() => setViewingProfile({ id: s.student_id, className: s.class_name, enrollmentId: s.id })}
                           title={isReadOnly ? "Voir le profil" : "Modifier"}
                           className={`w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 transition-colors ${isReadOnly ? 'hover:bg-[#e0f2fe] hover:text-[#0369a1] text-slate-400' : 'hover:bg-[#fef9c3] hover:text-[#a16207] text-slate-400'}`}
                         >
@@ -582,6 +582,7 @@ export default function StudentsMigration() {
       {viewingProfile && (
         <StudentProfileModal
           studentId={viewingProfile.id}
+          enrollmentId={viewingProfile.enrollmentId}
           className={viewingProfile.className}
           readOnly={isReadOnly}
           onClose={() => setViewingProfile(null)}

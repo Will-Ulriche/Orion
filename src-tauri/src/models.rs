@@ -165,3 +165,143 @@ pub struct FinancialDashboard {
     pub by_method: Vec<MethodStat>,
     pub debtors: Vec<StudentBalance>,
 }
+
+// ============================================================
+// SESSION 5 : MODULE PÉDAGOGIQUE (Notes & Résultats)
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Subject {
+    pub id: String,
+    pub school_id: String,
+    pub name: String,
+    pub code: String,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClassSubject {
+    pub id: String,
+    pub school_id: String,
+    pub academic_year_id: String,
+    pub class_id: String,
+    pub subject_id: String,
+    pub teacher_id: Option<String>,
+    pub coefficient: f64,
+    // Extra (JOIN)
+    pub subject_name: Option<String>,
+    pub subject_code: Option<String>,
+    pub class_name: Option<String>,
+    pub teacher_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GradingPeriod {
+    pub id: String,
+    pub school_id: String,
+    pub academic_year_id: String,
+    pub name: String,
+    pub period_order: i64,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GradeType {
+    pub id: String,
+    pub school_id: String,
+    pub name: String,
+    pub weight: f64,
+    pub max_score: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Grade {
+    pub id: String,
+    pub school_id: String,
+    pub academic_year_id: String,
+    pub enrollment_id: String,
+    pub student_id: String,
+    pub class_subject_id: String,
+    pub grading_period_id: String,
+    pub grade_type_id: String,
+    pub score: f64,
+    pub max_score: f64,
+    pub evaluation_date: Option<String>,
+    pub notes: Option<String>,
+    pub recorded_by: String,
+    pub is_absent: bool,
+    // Extra (JOIN)
+    pub student_first_name: Option<String>,
+    pub student_last_name: Option<String>,
+    pub subject_name: Option<String>,
+    pub grade_type_name: Option<String>,
+    pub grade_type_weight: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TeacherAssignment {
+    pub id: String,
+    pub school_id: String,
+    pub academic_year_id: String,
+    pub teacher_id: String,
+    pub class_subject_id: String,
+    // Extra (JOIN)
+    pub teacher_name: Option<String>,
+    pub subject_name: Option<String>,
+    pub class_name: Option<String>,
+}
+
+/// Moyenne d'une matière pour un élève sur une période, avec coefficient.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SubjectAverage {
+    pub class_subject_id: String,
+    pub subject_name: String,
+    pub subject_code: String,
+    pub coefficient: f64,
+    pub average: Option<f64>,      // None si aucune note
+    pub class_average: Option<f64>, // Moyenne de la classe pour comparaison
+    pub appreciation: String,       // Excellent / Bien / Assez Bien / Passable / Insuffisant
+    pub grade_count: i64,
+}
+
+/// Résumé complet des moyennes d'un élève pour une période.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StudentAverages {
+    pub student_id: String,
+    pub enrollment_id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub grading_period_id: String,
+    pub general_average: Option<f64>, // Moyenne générale pondérée
+    pub rank: Option<i64>,            // Rang dans la classe
+    pub class_size: i64,
+    pub subjects: Vec<SubjectAverage>,
+}
+
+/// Entrée de classement pour une classe et une période.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClassRankingEntry {
+    pub rank: i64,
+    pub student_id: String,
+    pub enrollment_id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub general_average: Option<f64>,
+    pub appreciation: String,
+}
+
+/// Statistiques d'une matière pour une classe sur une période.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SubjectStats {
+    pub class_subject_id: String,
+    pub subject_name: String,
+    pub subject_code: String,
+    pub grade_count: i64,
+    pub class_average: Option<f64>,
+    pub min_score: Option<f64>,
+    pub max_score: Option<f64>,
+    pub success_rate: f64, // % d'élèves >= 10
+}
+
