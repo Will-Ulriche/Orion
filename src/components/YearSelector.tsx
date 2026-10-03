@@ -6,7 +6,7 @@ export default function YearSelector({ collapsed }: { collapsed: boolean }) {
 
   if (isLoading) {
     return (
-      <div className={`flex items-center gap-2 px-6 py-4 border-b border-[#44434c] ${collapsed ? 'justify-center px-0' : ''}`}>
+      <div className={`flex items-center gap-2 px-6 py-2 border-b border-[#44434c] ${collapsed ? 'justify-center px-0' : ''}`}>
         <div className="w-4 h-4 rounded-full border-2 border-slate-500 border-t-slate-200 animate-spin"></div>
         {!collapsed && <span className="text-sm text-slate-500">Chargement...</span>}
       </div>
@@ -35,7 +35,7 @@ export default function YearSelector({ collapsed }: { collapsed: boolean }) {
 
   if (!selectedYear) {
     return (
-      <div className={`flex items-center gap-2 px-6 py-4 border-b border-[#44434c] ${collapsed ? 'justify-center px-0' : ''}`}>
+      <div className={`flex items-center gap-2 px-6 py-2 border-b border-[#44434c] ${collapsed ? 'justify-center px-0' : ''}`}>
         <CalendarDays size={18} className="text-slate-500" />
         {!collapsed && <span className="text-sm text-slate-500">Aucune année</span>}
       </div>
@@ -43,7 +43,7 @@ export default function YearSelector({ collapsed }: { collapsed: boolean }) {
   }
 
   return (
-    <div className={`relative px-6 py-4 border-b border-[#44434c] ${collapsed ? 'flex justify-center px-0' : ''}`}>
+    <div className={`relative px-6 py-2 border-b border-[#44434c] ${collapsed ? 'flex justify-center px-0' : ''}`}>
       <div className="group relative">
         <button className="flex items-center gap-3 w-full p-2 rounded-xl hover:bg-[#383742] transition-colors text-left">
           <div className="relative flex-shrink-0">
