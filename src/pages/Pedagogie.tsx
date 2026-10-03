@@ -857,7 +857,7 @@ function PanelClass({
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">
             <Kpi icon={BookOpen} label="Matières" value={classSubjects.length} tone="brand" />
-            <Kpi icon={Weight} label="Coefficient total" value={totalCoef.toFixed(1)} tone="violet" />
+            <Kpi icon={SlidersHorizontal} label="Coefficient total" value={totalCoef.toFixed(1)} tone="violet" />
             <Kpi icon={CalendarDays} label="Heures / semaine" value={`${totalHours}h`} tone="blue" />
           </div>
 
