@@ -4,8 +4,11 @@ import { useYear } from '../contexts/YearContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
   GraduationCap, Plus, Search, Pencil, Trash2,
-  Users, ChevronDown, BookOpen, X, Check, AlertCircle
+  Users, ChevronDown, BookOpen, X, Check, AlertCircle,
+  Layers, Calendar, ChevronRight, Zap, Minus,
+  LayoutGrid
 } from 'lucide-react';
+import { LevelDropdown } from '../components/ui';
 
 interface Class {
   id: string;
@@ -13,30 +16,109 @@ interface Class {
   academic_year_id: string;
   name: string;
   level: string | null;
+  level_id: string | null;
+  series_id: string | null;
   student_count: number;
 }
 
-const LEVELS = [
-  '1ère année', '2ème année', '3ème année',
-  '4ème année', '5ème année', '6ème année',
-  '6ème', '5ème', '4ème', '3ème',
-  '2nde', '1ère', 'Terminale',
-  'Maternelle PS', 'Maternelle MS', 'Maternelle GS',
-  'CP', 'CE1', 'CE2', 'CM1', 'CM2',
+interface Section {
+  id: string;
+  school_id: string;
+  name: string;
+}
+
+interface Level {
+  id: string;
+  school_id: string;
+  section_id: string;
+  name: string;
+  level_order: number;
+}
+
+interface Series {
+  id: string;
+  school_id: string;
+  level_id: string;
+  name: string;
+}
+
+interface PeriodDraft {
+  name: string;
+  period_order: number;
+  start_date: string;
+  end_date: string;
+}
+
+const PERIOD_TEMPLATES: { label: string; icon: string; periods: Omit<PeriodDraft, 'start_date' | 'end_date'>[] }[] = [
+  {
+    label: '3 Trimestres',
+    icon: '3️⃣',
+    periods: [
+      { name: 'Trimestre 1', period_order: 1 },
+      { name: 'Trimestre 2', period_order: 2 },
+      { name: 'Trimestre 3', period_order: 3 },
+    ],
+  },
+  {
+    label: '2 Semestres',
+    icon: '2️⃣',
+    periods: [
+      { name: 'Semestre 1', period_order: 1 },
+      { name: 'Semestre 2', period_order: 2 },
+    ],
+  },
 ];
+
+const GROUP_COLORS = [
+  { bg: 'from-violet-500 to-indigo-600', light: 'bg-violet-50', text: 'text-violet-600', border: 'border-violet-100', badge: 'bg-violet-100 text-violet-700' },
+  { bg: 'from-blue-500 to-cyan-600',    light: 'bg-blue-50',   text: 'text-blue-600',   border: 'border-blue-100',   badge: 'bg-blue-100 text-blue-700'   },
+  { bg: 'from-emerald-500 to-teal-600', light: 'bg-emerald-50',text: 'text-emerald-600',border: 'border-emerald-100',badge: 'bg-emerald-100 text-emerald-700'},
+  { bg: 'from-orange-500 to-amber-600', light: 'bg-orange-50', text: 'text-orange-600', border: 'border-orange-100', badge: 'bg-orange-100 text-orange-700' },
+  { bg: 'from-pink-500 to-rose-600',    light: 'bg-pink-50',   text: 'text-pink-600',   border: 'border-pink-100',   badge: 'bg-pink-100 text-pink-700'   },
+];
+
+
+
 
 export default function Classes() {
   const { selectedYear } = useYear();
   const { schoolId } = useAuth();
   const [classes, setClasses] = useState<Class[]>([]);
+  const [sections, setSections] = useState<Section[]>([]);
+  const [levels, setLevels] = useState<Level[]>([]);
+  const [allSeries, setAllSeries] = useState<Series[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingClass, setEditingClass] = useState<Class | null>(null);
+  const [classToDelete, setClassToDelete] = useState<Class | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const [form, setForm] = useState({ name: '', level: '' });
+  // Etapes du modal : 'class' → 'periods'
+  const [step, setStep] = useState<'class' | 'periods'>('class');
+  const [createdClassId, setCreatedClassId] = useState<string | null>(null);
+
+  const [form, setForm] = useState({
+    name: '',
+    level: '',
+    level_id: '',
+    series_id: '',
+    section_id: '',
+  });
+
+  const [periods, setPeriods] = useState<PeriodDraft[]>([
+    { name: 'Trimestre 1', period_order: 1, start_date: '', end_date: '' },
+    { name: 'Trimestre 2', period_order: 2, start_date: '', end_date: '' },
+    { name: 'Trimestre 3', period_order: 3, start_date: '', end_date: '' },
+  ]);
+  const [savingPeriods, setSavingPeriods] = useState(false);
+
+
+
+  const filteredSeries = form.level_id
+    ? allSeries.filter(s => s.level_id === form.level_id)
+    : [];
 
   const loadClasses = async () => {
     if (!selectedYear) return;
@@ -54,64 +136,163 @@ export default function Classes() {
     }
   };
 
-  useEffect(() => { loadClasses(); }, [selectedYear]);
+  const loadStructure = async () => {
+    if (!schoolId) return;
+    try {
+      const [sects, lvls, srs] = await Promise.all([
+        invoke<Section[]>('get_sections', { schoolId }),
+        invoke<Level[]>('get_levels', { schoolId, sectionId: null }),
+        invoke<Series[]>('get_series', { schoolId, levelId: null }),
+      ]);
+      setSections(sects);
+      setLevels(lvls);
+      setAllSeries(srs);
+    } catch (e: any) {
+      console.warn('Structure pedagogique non disponible:', e);
+    }
+  };
 
-  const handleSubmit = async () => {
+  useEffect(() => { loadClasses(); }, [selectedYear]);
+  useEffect(() => { loadStructure(); }, [schoolId]);
+
+
+
+  const handleSectionChange = (sectionId: string) => {
+    setForm(f => ({ ...f, section_id: sectionId, level_id: '', series_id: '', level: '' }));
+  };
+
+  // Etape 1 : creer la classe puis passer aux periodes
+  const handleSubmitClass = async () => {
     setError(null);
     if (!form.name.trim()) { setError("Le nom de la classe est requis."); return; }
-    if (!selectedYear) { setError("Aucune année scolaire sélectionnée."); return; }
+    if (!selectedYear) { setError("Aucune annee scolaire selectionnee."); return; }
 
     try {
       if (editingClass) {
-        // Mode édition : mise à jour de la classe existante
         await invoke('update_class', {
           id: editingClass.id,
           name: form.name.trim(),
           level: form.level || null,
+          levelId: form.level_id || null,
+          seriesId: form.series_id || null,
         });
-        setSuccess(`Classe "${form.name}" modifiée avec succès !`);
+        setSuccess(`Classe "${form.name}" modifiee avec succes !`);
+        resetForm();
+        await loadClasses();
+        setTimeout(() => setSuccess(null), 3000);
       } else {
-        // Mode création : nouvelle classe
-        await invoke('create_class', {
+        const created: any = await invoke('create_class', {
           schoolId,
           academicYearId: selectedYear.id,
           name: form.name.trim(),
           level: form.level || null,
+          levelId: form.level_id || null,
+          seriesId: form.series_id || null,
         });
-        setSuccess(`Classe "${form.name}" créée avec succès !`);
+        setCreatedClassId(created.id ?? created);
+        setStep('periods');
       }
-      setForm({ name: '', level: '' });
-      setShowForm(false);
-      setEditingClass(null);
-      await loadClasses();
-      setTimeout(() => setSuccess(null), 3000);
     } catch (e: any) {
       setError(e.toString());
     }
   };
 
-  const openEdit = (cls: Class) => {
-    setEditingClass(cls);
-    setForm({ name: cls.name, level: cls.level ?? '' });
-    setShowForm(true);
+  // Etape 2 : enregistrer les periodes
+  const handleSavePeriods = async () => {
+    if (!createdClassId || !selectedYear) return;
+    setSavingPeriods(true);
+    setError(null);
+    try {
+      const valid = periods.filter(p => p.name.trim());
+      for (const p of valid) {
+        await invoke('create_grading_period', {
+          schoolId,
+          academicYearId: selectedYear.id,
+          classId: createdClassId,
+          name: p.name.trim(),
+          periodOrder: p.period_order,
+          startDate: p.start_date || null,
+          endDate: p.end_date || null,
+        });
+      }
+      setSuccess(`Classe "${form.name}" creee avec ${valid.length} periode(s) !`);
+      resetForm();
+      await loadClasses();
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (e: any) {
+      setError(e.toString());
+    } finally {
+      setSavingPeriods(false);
+    }
   };
 
-  const closeForm = () => {
+  const handleSkipPeriods = async () => {
+    setSuccess(`Classe "${form.name}" creee. Vous pouvez configurer les periodes plus tard.`);
+    resetForm();
+    await loadClasses();
+    setTimeout(() => setSuccess(null), 4000);
+  };
+
+  const applyTemplate = (tplIdx: number) => {
+    const tpl = PERIOD_TEMPLATES[tplIdx];
+    setPeriods(tpl.periods.map(p => ({ ...p, start_date: '', end_date: '' })));
+  };
+
+  const updatePeriod = (idx: number, patch: Partial<PeriodDraft>) => {
+    setPeriods(prev => prev.map((p, i) => i === idx ? { ...p, ...patch } : p));
+  };
+
+  const addPeriod = () => {
+    setPeriods(prev => [...prev, { name: `Periode ${prev.length + 1}`, period_order: prev.length + 1, start_date: '', end_date: '' }]);
+  };
+
+  const removePeriod = (idx: number) => {
+    setPeriods(prev => prev.filter((_, i) => i !== idx).map((p, i) => ({ ...p, period_order: i + 1 })));
+  };
+
+  const resetForm = () => {
+    setForm({ name: '', level: '', level_id: '', series_id: '', section_id: '' });
+    setPeriods([
+      { name: 'Trimestre 1', period_order: 1, start_date: '', end_date: '' },
+      { name: 'Trimestre 2', period_order: 2, start_date: '', end_date: '' },
+      { name: 'Trimestre 3', period_order: 3, start_date: '', end_date: '' },
+    ]);
     setShowForm(false);
     setEditingClass(null);
-    setForm({ name: '', level: '' });
+    setCreatedClassId(null);
+    setStep('class');
     setError(null);
   };
 
-  const handleDelete = async (cls: Class) => {
-    if (!window.confirm(`Supprimer la classe "${cls.name}" ? Cette action est irréversible.`)) return;
+  const openEdit = (cls: Class) => {
+    setEditingClass(cls);
+    const clsLevel = levels.find(l => l.id === cls.level_id);
+    setForm({
+      name: cls.name,
+      level: cls.level ?? '',
+      level_id: cls.level_id ?? '',
+      series_id: cls.series_id ?? '',
+      section_id: clsLevel?.section_id ?? '',
+    });
+    setStep('class');
+    setShowForm(true);
+  };
+
+  const handleDelete = (cls: Class) => {
+    setClassToDelete(cls);
+  };
+
+  const confirmDelete = async () => {
+    if (!classToDelete) return;
     try {
-      await invoke('delete_class', { id: cls.id });
-      setSuccess(`Classe "${cls.name}" supprimée.`);
+      await invoke('delete_class', { id: classToDelete.id });
+      setSuccess(`Classe "${classToDelete.name}" supprimée.`);
       await loadClasses();
       setTimeout(() => setSuccess(null), 3000);
     } catch (e: any) {
       setError(e.toString());
+    } finally {
+      setClassToDelete(null);
     }
   };
 
@@ -120,136 +301,85 @@ export default function Classes() {
     (c.level ?? '').toLowerCase().includes(search.toLowerCase())
   );
 
-  // Grouper par niveau
-  const grouped = filtered.reduce<Record<string, Class[]>>((acc, cls) => {
-    const key = cls.level || 'Sans niveau';
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(cls);
-    return acc;
-  }, {});
+  const getLevelWeight = (levelName: string | null | undefined): number => {
+    if (!levelName) return 99;
+    const l = levelName.toLowerCase();
+    if (l.includes('terminale')) return 1;
+    if (l.includes('première') || l.includes('premiere')) return 2;
+    if (l.includes('seconde')) return 3;
+    if (l.includes('3ème') || l.includes('3eme')) return 4;
+    if (l.includes('4ème') || l.includes('4eme')) return 5;
+    if (l.includes('5ème') || l.includes('5eme')) return 6;
+    if (l.includes('6ème') || l.includes('6eme')) return 7;
+    return 50; // other levels
+  };
+
+  const sortedClasses = [...filtered].sort((a, b) => {
+    let levelA = a.level;
+    if (a.level_id) {
+       const lvl = levels.find(l => l.id === a.level_id);
+       if (lvl) levelA = lvl.name;
+    }
+    
+    let levelB = b.level;
+    if (b.level_id) {
+       const lvl = levels.find(l => l.id === b.level_id);
+       if (lvl) levelB = lvl.name;
+    }
+    
+    const weightA = getLevelWeight(levelA);
+    const weightB = getLevelWeight(levelB);
+    
+    if (weightA !== weightB) {
+      return weightA - weightB; 
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  const hasStructure = sections.length > 0;
+
+  const totalStudents = classes.reduce((s, c) => s + c.student_count, 0);
 
   return (
-    <div className="px-8 pt-6 pb-4 w-full h-full flex flex-col bg-[#f8f9fc]">
+    <div className="flex flex-col h-full bg-[#f4f5fb] overflow-hidden">
 
-      {/* En-tête */}
-      <div className="mb-5 flex items-center justify-between flex-shrink-0">
-        <div>
-          <h2 className="text-2xl font-bold text-[#1e293b] tracking-tight">Classes</h2>
-          <p className="text-slate-500 mt-0.5 text-[13px]">
-            {selectedYear
-              ? <><span>Année : </span><span className="font-semibold text-[#4f46e5]">{selectedYear.name}</span><span> · {classes.length} classe(s)</span></>
-              : 'Aucune année sélectionnée'}
-          </p>
-        </div>
-        <button
-          onClick={() => { setShowForm(true); setEditingClass(null); setForm({ name: '', level: '' }); }}
-          className="flex items-center gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-[0_4px_14px_0_rgb(79,70,229,0.4)]"
-        >
-          <Plus size={16} />
-          Nouvelle classe
-        </button>
-      </div>
-
-      {/* Alertes */}
-      {error && (
-        <div className="flex items-center gap-2 mb-4 bg-red-50 text-red-600 border border-red-100 p-3 rounded-xl text-sm flex-shrink-0">
-          <AlertCircle size={16} />
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="ml-auto"><X size={14} /></button>
-        </div>
-      )}
-      {success && (
-        <div className="flex items-center gap-2 mb-4 bg-green-50 text-green-700 border border-green-100 p-3 rounded-xl text-sm flex-shrink-0">
-          <Check size={16} />
-          <span>{success}</span>
-        </div>
-      )}
-
-      {/* Barre de recherche */}
-      <div className="relative mb-5 flex-shrink-0">
-        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-          <Search size={15} />
-        </div>
-        <input
-          type="text"
-          placeholder="Rechercher une classe ou un niveau..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="w-full max-w-sm pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] placeholder:text-slate-400 text-slate-700"
-        />
-      </div>
-
-      {/* Contenu principal */}
-      <div className="flex-1 overflow-y-auto">
-        {!selectedYear ? (
-          <div className="flex flex-col items-center justify-center h-64 text-slate-400">
-            <BookOpen size={48} strokeWidth={1} className="mb-3 opacity-40" />
-            <p className="text-sm">Sélectionnez une année scolaire dans la barre latérale.</p>
+      {/* Hero Header */}
+      <div className="relative overflow-hidden flex-shrink-0 bg-gradient-to-br from-[#4f46e5] via-[#6366f1] to-[#818cf8] px-8 pt-7 pb-6">
+        <div className="absolute -top-10 -right-10 w-52 h-52 rounded-full bg-white/5 blur-2xl pointer-events-none" />
+        <div className="absolute bottom-0 left-1/3 w-40 h-40 rounded-full bg-white/5 blur-xl pointer-events-none" />
+        <div className="relative flex items-start justify-between gap-6">
+          <div>
+            <div className="flex items-center gap-2.5 mb-1">
+              <div className="w-9 h-9 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center">
+                <GraduationCap size={18} className="text-white" />
+              </div>
+              <h1 className="text-2xl font-bold text-white tracking-tight">Classes</h1>
+            </div>
+            <p className="text-indigo-200 text-[13px] mt-1">
+              {selectedYear
+                ? <><span className="font-semibold text-white">{selectedYear.name}</span> · Gestion des classes et périodes</>
+                : 'Aucune année scolaire sélectionnée'}
+            </p>
           </div>
-        ) : loading ? (
-          <div className="flex items-center justify-center h-64 text-slate-400 text-sm">
-            Chargement des classes...
-          </div>
-        ) : classes.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 text-slate-400">
-            <GraduationCap size={48} strokeWidth={1} className="mb-3 opacity-40" />
-            <p className="text-sm font-medium text-slate-500">Aucune classe pour cette année</p>
-            <p className="text-xs mt-1">Commencez par créer votre première classe.</p>
-            <button
-              onClick={() => setShowForm(true)}
-              className="mt-4 flex items-center gap-2 bg-[#4f46e5] text-white px-4 py-2 rounded-xl text-sm font-medium"
-            >
-              <Plus size={14} /> Créer une classe
-            </button>
-          </div>
-        ) : Object.keys(grouped).length === 0 ? (
-          <div className="text-center text-slate-400 text-sm py-16">Aucune classe trouvée.</div>
-        ) : (
-          <div className="space-y-6 pb-6">
-            {Object.entries(grouped).map(([level, levelClasses]) => (
-              <div key={level}>
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-[11px] font-bold text-slate-500 tracking-widest uppercase">{level}</span>
-                  <div className="flex-1 h-px bg-slate-100"></div>
-                  <span className="text-[11px] text-slate-400">{levelClasses.length} classe(s)</span>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {levelClasses.map(cls => (
-                    <div
-                      key={cls.id}
-                      className="group bg-white border border-slate-100 rounded-2xl p-4 shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] hover:shadow-[0_4px_20px_-4px_rgba(79,70,229,0.15)] hover:border-[#c7d2fe] transition-all"
-                    >
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="w-10 h-10 rounded-xl bg-[#ede9fe] text-[#7c3aed] flex items-center justify-center">
-                          <GraduationCap size={18} />
-                        </div>
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={() => openEdit(cls)}
-                            className="w-7 h-7 rounded-lg bg-slate-50 hover:bg-[#ede9fe] hover:text-[#7c3aed] text-slate-400 flex items-center justify-center transition-colors"
-                            title="Modifier"
-                          >
-                            <Pencil size={13} />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(cls)}
-                            className="w-7 h-7 rounded-lg bg-slate-50 hover:bg-red-50 hover:text-red-500 text-slate-400 flex items-center justify-center transition-colors"
-                            title="Supprimer"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </div>
-                      <p className="font-bold text-slate-800 text-[15px] truncate">{cls.name}</p>
-                      <div className="flex items-center gap-1 mt-1 text-slate-400">
-                        <Users size={11} />
-                        <span className="text-[11px]">
-                          {cls.student_count} élève{cls.student_count > 1 ? 's' : ''}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+          <button
+            onClick={() => { resetForm(); setShowForm(true); }}
+            className="flex items-center gap-2 bg-white hover:bg-indigo-50 text-[#4f46e5] px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg shadow-black/10 flex-shrink-0"
+          >
+            <Plus size={16} />
+            Nouvelle classe
+          </button>
+        </div>
+        {selectedYear && (
+          <div className="relative mt-5 grid grid-cols-3 gap-3">
+            {[
+              { label: 'Classes', value: classes.length, icon: <LayoutGrid size={14} /> },
+              { label: 'Élèves', value: totalStudents, icon: <Users size={14} /> },
+            ].map(stat => (
+              <div key={stat.label} className="bg-white/10 backdrop-blur rounded-xl px-4 py-3 flex items-center gap-3">
+                <div className="text-indigo-200">{stat.icon}</div>
+                <div>
+                  <div className="text-white font-bold text-lg leading-none">{stat.value}</div>
+                  <div className="text-indigo-200 text-[11px] mt-0.5">{stat.label}</div>
                 </div>
               </div>
             ))}
@@ -257,79 +387,387 @@ export default function Classes() {
         )}
       </div>
 
-      {/* Modal : Créer / Modifier */}
-      {showForm && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl">
-            <div className="flex justify-between items-center mb-5">
-              <div>
-                <h3 className="text-lg font-bold text-slate-800">
-                  {editingClass ? 'Modifier la classe' : 'Nouvelle classe'}
-                </h3>
-                <p className="text-sm text-slate-400">{selectedYear?.name}</p>
-              </div>
-              <button onClick={closeForm} className="text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-full p-1.5 transition-colors">
-                <X size={18} />
-              </button>
-            </div>
+      {/* Alertes */}
+      <div className="flex-shrink-0 px-8">
+        {error && (
+          <div className="flex items-center gap-2 mt-4 bg-red-50 text-red-600 border border-red-100 p-3 rounded-xl text-sm animate-fade-in">
+            <AlertCircle size={15} className="flex-shrink-0" />
+            <span className="flex-1">{error}</span>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600"><X size={14} /></button>
+          </div>
+        )}
+        {success && (
+          <div className="flex items-center gap-2 mt-4 bg-emerald-50 text-emerald-700 border border-emerald-100 p-3 rounded-xl text-sm animate-fade-in">
+            <Check size={15} className="flex-shrink-0" />
+            <span>{success}</span>
+          </div>
+        )}
+      </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">
-                  Nom de la classe <span className="text-[#4f46e5]">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: 6ème A, Terminale C, CP Soleil..."
-                  value={form.name}
-                  onChange={e => setForm({ ...form, name: e.target.value })}
-                  onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] placeholder:text-slate-400"
-                  autoFocus
+      {/* Barre de recherche */}
+      <div className="flex-shrink-0 px-8 pt-5 pb-1">
+        <div className="relative max-w-sm">
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+            <Search size={15} />
+          </div>
+          <input
+            type="text"
+            placeholder="Rechercher une classe ou un niveau..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] placeholder:text-slate-400 text-slate-700 shadow-sm transition-all"
+          />
+        </div>
+      </div>
+
+      {/* Contenu principal */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-5">
+        {!selectedYear ? (
+          <div className="flex flex-col items-center justify-center h-64 text-center">
+            <div className="text-slate-300 mb-3"><BookOpen size={40} strokeWidth={1.5} /></div>
+            <p className="text-[15px] font-semibold text-slate-600">Aucune année sélectionnée</p>
+            <p className="text-[13px] text-slate-400 mt-1 max-w-xs">Sélectionnez une année scolaire dans la barre latérale pour afficher les classes.</p>
+          </div>
+        ) : loading ? (
+          <div className="flex flex-col items-center justify-center h-48 gap-3">
+            <div className="w-8 h-8 border-2 border-[#4f46e5] border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm text-slate-400">Chargement des classes...</p>
+          </div>
+        ) : classes.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-64 text-center">
+            <div className="text-slate-300 mb-3"><GraduationCap size={40} strokeWidth={1.5} /></div>
+            <p className="text-[15px] font-semibold text-slate-600">Aucune classe pour cette année</p>
+            <p className="text-[13px] text-slate-400 mt-1">Commencez par créer votre première classe.</p>
+            <button
+              onClick={() => { resetForm(); setShowForm(true); }}
+              className="mt-5 flex items-center gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors shadow-md shadow-indigo-200"
+            >
+              <Plus size={15} /> Créer une classe
+            </button>
+          </div>
+        ) : sortedClasses.length === 0 ? (
+          <div className="text-center text-slate-400 text-sm py-16">Aucune classe trouvée.</div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3.5 pb-6">
+            {sortedClasses.map((cls, idx) => {
+              const clsSeries = allSeries.find(s => s.id === cls.series_id);
+              const color = GROUP_COLORS[idx % GROUP_COLORS.length];
+              return (
+                <ClassCard
+                  key={cls.id}
+                  cls={cls}
+                  clsSeries={clsSeries}
+                  color={color}
+                  onEdit={() => openEdit(cls)}
+                  onDelete={() => handleDelete(cls)}
                 />
-              </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
-              <div>
-                <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Niveau scolaire</label>
-                <div className="relative">
-                  <select
-                    value={form.level}
-                    onChange={e => setForm({ ...form, level: e.target.value })}
-                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-700 appearance-none"
-                  >
-                    <option value="">— Choisir un niveau —</option>
-                    {LEVELS.map(l => (
-                      <option key={l} value={l}>{l}</option>
-                    ))}
-                  </select>
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-                    <ChevronDown size={15} />
-                  </div>
+      {/* Modal */}
+      {showForm && (
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div
+            className="bg-white rounded-2xl w-full shadow-2xl animate-scale-in"
+            style={{ maxWidth: step === 'periods' ? '560px' : '460px' }}
+          >
+            {/* Stepper animé (création uniquement) */}
+            {!editingClass && (
+              <div className="flex items-center bg-slate-50 border-b border-slate-100 px-6 py-3.5 gap-4 rounded-t-2xl">
+                <div className={`flex items-center gap-2 text-[12px] font-semibold transition-colors ${step === 'class' ? 'text-[#4f46e5]' : 'text-emerald-500'}`}>
+                  <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all ${
+                    step === 'class' ? 'bg-[#4f46e5] text-white shadow-md shadow-indigo-200' : 'bg-emerald-500 text-white'
+                  }`}>
+                    {step === 'class' ? '1' : <Check size={11} />}
+                  </span>
+                  Informations
+                </div>
+                <div className="flex-1 h-px bg-slate-200 relative">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-gradient-to-r from-[#4f46e5] to-[#818cf8] rounded-full transition-all duration-500"
+                    style={{ width: step === 'periods' ? '100%' : '0%' }}
+                  />
+                </div>
+                <div className={`flex items-center gap-2 text-[12px] font-semibold transition-colors ${step === 'periods' ? 'text-[#4f46e5]' : 'text-slate-400'}`}>
+                  <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all ${
+                    step === 'periods' ? 'bg-[#4f46e5] text-white shadow-md shadow-indigo-200' : 'bg-slate-200 text-slate-500'
+                  }`}>2</span>
+                  Périodes
                 </div>
               </div>
+            )}
 
-              {error && (
-                <div className="text-red-600 text-xs bg-red-50 border border-red-100 rounded-lg p-2.5">{error}</div>
+            <div className="p-6">
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <h3 className="text-[17px] font-bold text-slate-800">
+                    {editingClass ? 'Modifier la classe' : step === 'class' ? 'Nouvelle classe' : `Périodes — ${form.name}`}
+                  </h3>
+                  <p className="text-[12px] text-slate-400 mt-0.5">{selectedYear?.name}</p>
+                </div>
+                <button onClick={resetForm} className="text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full p-1.5 transition-colors">
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* ÉTAPE 1 */}
+              {step === 'class' && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">
+                      Nom de la classe <span className="text-[#4f46e5]">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: 6ème A, Terminale C, CP Soleil..."
+                      value={form.name}
+                      onChange={e => setForm({ ...form, name: e.target.value })}
+                      onKeyDown={e => e.key === 'Enter' && handleSubmitClass()}
+                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] placeholder:text-slate-400 text-slate-800 transition-all"
+                      autoFocus
+                    />
+                  </div>
+
+                  {/* Niveau scolaire — liste prédéfinie (toujours visible) */}
+                  <div>
+                    <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">
+                      Niveau scolaire
+                    </label>
+                    <LevelDropdown
+                      value={form.level}
+                      onChange={level => setForm({ ...form, level })}
+                    />
+                  </div>
+
+                  {/* Structure pédagogique avancée (si configurée) */}
+                  {hasStructure && (
+                    <>
+                      <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-medium bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+                        <Layers size={11} className="text-indigo-400" />
+                        <span>Structure pédagogique :</span>
+                        <span className="text-[#4f46e5] font-semibold">Section → Série</span>
+                      </div>
+
+                      <div>
+                        <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Section</label>
+                        <div className="relative">
+                          <select value={form.section_id} onChange={e => handleSectionChange(e.target.value)}
+                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-700 appearance-none transition-all">
+                            <option value="">— Toutes les sections —</option>
+                            {sections.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                          </select>
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><ChevronDown size={15} /></div>
+                        </div>
+                      </div>
+
+                      {filteredSeries.length > 0 && (
+                        <div>
+                          <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">
+                            Série <span className="text-slate-400 font-normal">(optionnel)</span>
+                          </label>
+                          <div className="relative">
+                            <select value={form.series_id} onChange={e => setForm({ ...form, series_id: e.target.value })}
+                              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-700 appearance-none transition-all">
+                              <option value="">— Sans série —</option>
+                              {filteredSeries.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                            </select>
+                            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><ChevronDown size={15} /></div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {error && (
+                    <div className="flex items-start gap-2 text-red-600 text-[12px] bg-red-50 border border-red-100 rounded-xl p-3">
+                      <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+                      <span>{error}</span>
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-2">
+                    <button onClick={resetForm} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">
+                      Annuler
+                    </button>
+                    <button onClick={handleSubmitClass} className="flex-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#4f46e5] to-[#6366f1] hover:from-[#4338ca] hover:to-[#4f46e5] text-white text-sm font-semibold transition-all flex items-center justify-center gap-2 shadow-md shadow-indigo-200">
+                      {editingClass ? <><Check size={15} /> Enregistrer</> : <><span>Suivant</span><ChevronRight size={15} /></>}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ÉTAPE 2 */}
+              {step === 'periods' && (
+                <div className="space-y-4">
+                  {/* Templates rapides */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-2.5">
+                      <Zap size={13} className="text-amber-500" />
+                      <span className="text-[12px] font-semibold text-slate-600">Modèles rapides</span>
+                    </div>
+                    <div className="flex gap-2">
+                      {PERIOD_TEMPLATES.map((tpl, i) => (
+                        <button key={i} onClick={() => applyTemplate(i)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-indigo-50 hover:border-indigo-200 text-slate-600 hover:text-[#4f46e5] text-[12px] font-medium transition-all">
+                          <span>{tpl.icon}</span>{tpl.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Liste des périodes */}
+                  <div className="space-y-2.5 max-h-60 overflow-y-auto pr-0.5 custom-scrollbar">
+                    {periods.map((p, idx) => (
+                      <div key={idx} className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2 hover:border-indigo-200 transition-colors">
+                        <div className="flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 text-[11px] font-bold flex items-center justify-center flex-shrink-0">
+                            {p.period_order}
+                          </span>
+                          <input
+                            type="text"
+                            value={p.name}
+                            onChange={e => updatePeriod(idx, { name: e.target.value })}
+                            placeholder="Nom de la période"
+                            className="flex-1 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-700 transition-all"
+                          />
+                          {periods.length > 1 && (
+                            <button onClick={() => removePeriod(idx)} className="w-6 h-6 rounded-lg hover:bg-red-50 hover:text-red-500 text-slate-300 flex items-center justify-center transition-colors flex-shrink-0">
+                              <Minus size={13} />
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 pl-8">
+                          <div>
+                            <label className="block text-[10px] font-medium text-slate-400 mb-0.5">Début <span className="text-slate-300">(optionnel)</span></label>
+                            <input type="date" value={p.start_date} onChange={e => updatePeriod(idx, { start_date: e.target.value })}
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-[12px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-600" />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-medium text-slate-400 mb-0.5">Fin <span className="text-slate-300">(optionnel)</span></label>
+                            <input type="date" value={p.end_date} onChange={e => updatePeriod(idx, { end_date: e.target.value })}
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-[12px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-600" />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button onClick={addPeriod} className="w-full flex items-center justify-center gap-1.5 py-2 border border-dashed border-slate-300 rounded-xl text-slate-400 hover:text-[#4f46e5] hover:border-[#4f46e5] hover:bg-indigo-50 text-[12px] font-medium transition-all">
+                    <Plus size={13} /> Ajouter une période
+                  </button>
+
+                  <div className="flex items-center gap-2 text-[11px] text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                    <Calendar size={12} className="flex-shrink-0 text-blue-400" />
+                    Les périodes seront liées à cette classe uniquement. Modifiables dans Pédagogie et Notes.
+                  </div>
+
+                  {error && (
+                    <div className="flex items-start gap-2 text-red-600 text-[12px] bg-red-50 border border-red-100 rounded-xl p-3">
+                      <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+                      <span>{error}</span>
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-1">
+                    <button onClick={handleSkipPeriods} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-500 text-sm font-medium hover:bg-slate-50 transition-colors">
+                      Ignorer
+                    </button>
+                    <button
+                      onClick={handleSavePeriods}
+                      disabled={savingPeriods || periods.filter(p => p.name.trim()).length === 0}
+                      className="flex-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#4f46e5] to-[#6366f1] hover:from-[#4338ca] hover:to-[#4f46e5] text-white text-sm font-semibold transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed shadow-md shadow-indigo-200"
+                    >
+                      <Check size={15} />
+                      {savingPeriods ? 'Enregistrement...' : `Créer avec ${periods.filter(p => p.name.trim()).length} période(s)`}
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
 
-            <div className="flex gap-3 mt-6">
+      {/* Delete Confirmation Modal */}
+      {classToDelete && (
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-[400px] shadow-2xl overflow-hidden animate-scale-in p-6">
+            <div className="flex items-center gap-3 text-red-600 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center flex-shrink-0">
+                <AlertCircle size={20} />
+              </div>
+              <h3 className="text-[17px] font-bold text-slate-800">Confirmer la suppression</h3>
+            </div>
+            <p className="text-sm text-slate-600 mb-6">
+              Êtes-vous sûr de vouloir supprimer la classe <span className="font-bold text-slate-800">"{classToDelete.name}"</span> ? Cette action est irréversible et supprimera également toutes les données qui y sont associées.
+            </p>
+            <div className="flex gap-3">
               <button
-                onClick={closeForm}
+                onClick={() => setClassToDelete(null)}
                 className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors"
               >
                 Annuler
               </button>
               <button
-                onClick={handleSubmit}
-                className="flex-1 px-4 py-2.5 rounded-xl bg-[#4f46e5] hover:bg-[#4338ca] text-white text-sm font-semibold transition-colors"
+                onClick={confirmDelete}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 shadow-md shadow-red-200"
               >
-                {editingClass ? 'Enregistrer' : 'Créer la classe'}
+                <Trash2 size={15} /> Supprimer
               </button>
             </div>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ─── Sous-composant : Carte de classe ─── */
+function ClassCard({
+  cls, clsSeries, color, onEdit, onDelete,
+}: {
+  cls: { id: string; name: string; student_count: number; series_id: string | null };
+  clsSeries: { name: string } | undefined;
+  color: typeof GROUP_COLORS[0];
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="group relative bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-[0_2px_8px_-2px_rgba(0,0,0,0.06)] hover:shadow-[0_8px_24px_-6px_rgba(79,70,229,0.18)] hover:-translate-y-0.5 hover:border-indigo-100 transition-all duration-200">
+      {/* Barre colorée en haut */}
+      <div className={`h-1 w-full bg-gradient-to-r ${color.bg}`} />
+      <div className="p-3">
+        <div className="flex items-start justify-between mb-2">
+          <div className={`w-8 h-8 rounded-xl ${color.light} ${color.text} flex items-center justify-center`}>
+            <GraduationCap size={16} />
+          </div>
+          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+            <button onClick={onEdit} title="Modifier"
+              className="w-6 h-6 rounded-md bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 text-slate-400 flex items-center justify-center transition-colors">
+              <Pencil size={11} />
+            </button>
+            <button onClick={onDelete} title="Supprimer"
+              className="w-6 h-6 rounded-md bg-slate-50 hover:bg-red-50 hover:text-red-500 text-slate-400 flex items-center justify-center transition-colors">
+              <Trash2 size={11} />
+            </button>
+          </div>
+        </div>
+        <p className="font-bold text-slate-800 text-[14px] truncate leading-tight">{cls.name}</p>
+        {clsSeries && (
+          <span className={`inline-block mt-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${color.badge}`}>
+            {clsSeries.name}
+          </span>
+        )}
+        <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-slate-50">
+          <Users size={11} className="text-slate-400" />
+          <span className="text-[11px] text-slate-500 font-medium">
+            {cls.student_count} élève{cls.student_count > 1 ? 's' : ''}
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

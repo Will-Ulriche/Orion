@@ -100,7 +100,10 @@ pub fn start_sync_loop(db_path: PathBuf) {
     tauri::async_runtime::spawn(async move {
         let _ = dotenv();
         let supabase_url  = env::var("VITE_SUPABASE_URL").unwrap_or_default();
-        let supabase_key  = env::var("VITE_SUPABASE_ANON_KEY").unwrap_or_default();
+        // Prefer service_role key (bypasses RLS) for backend sync; fall back to anon key
+        let supabase_key  = env::var("SUPABASE_SERVICE_ROLE_KEY")
+            .or_else(|_| env::var("VITE_SUPABASE_ANON_KEY"))
+            .unwrap_or_default();
 
         if supabase_url.is_empty() || supabase_key.is_empty() {
             println!("[Sync] Configuration Supabase absente. Moteur en attente.");
@@ -1056,7 +1059,10 @@ pub fn retry_failed_mutations_internal(db_path: &PathBuf) -> Result<usize, Strin
 pub async fn run_manual_sync(db_path: PathBuf) -> Result<SyncStatus, String> {
     let _ = dotenv();
     let supabase_url = env::var("VITE_SUPABASE_URL").unwrap_or_default();
-    let supabase_key = env::var("VITE_SUPABASE_ANON_KEY").unwrap_or_default();
+    // Prefer service_role key (bypasses RLS) for backend sync; fall back to anon key
+    let supabase_key = env::var("SUPABASE_SERVICE_ROLE_KEY")
+        .or_else(|_| env::var("VITE_SUPABASE_ANON_KEY"))
+        .unwrap_or_default();
 
     if supabase_url.is_empty() || supabase_key.is_empty() {
         return Err("Configuration Supabase absente. Vérifiez le fichier .env.".to_string());

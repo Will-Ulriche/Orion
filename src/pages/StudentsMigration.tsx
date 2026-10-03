@@ -9,6 +9,7 @@ import {
   GraduationCap, BookOpen, ChevronDown, ArrowRight, ArrowRightLeft,
   GraduationCap as RepeatIcon, X, Check, AlertCircle
 } from 'lucide-react';
+import { LevelDropdown, AnimatedSelect } from '../components/ui';
 
 interface StudentEnrollment {
   id: string;
@@ -42,6 +43,12 @@ interface Class {
 }
 
 const SCHOOL_ID = 'school-1';
+
+/** Niveaux scolaires prédéfinis */
+const PREDEFINED_LEVELS: { group: string; levels: string[] }[] = [
+  { group: 'Collège', levels: ['6ème', '5ème', '4ème', '3ème'] },
+  { group: 'Lycée', levels: ['Seconde', 'Première', 'Terminale'] },
+];
 
 function formatDate(d: string | null): string {
   if (!d) return '—';
@@ -103,7 +110,7 @@ export default function StudentsMigration() {
   // Modals
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
-  const [newStudent, setNewStudent] = useState({ firstName: '', lastName: '', classId: '' });
+  const [newStudent, setNewStudent] = useState({ firstName: '', lastName: '', level: '' });
   const [viewingProfile, setViewingProfile] = useState<{ id: string; className: string | null, enrollmentId?: string } | null>(null);
   const [migratingStudent, setMigratingStudent] = useState<StudentEnrollment | null>(null);
   const [migrationTargetClass, setMigrationTargetClass] = useState('');
@@ -113,6 +120,7 @@ export default function StudentsMigration() {
   // Changement de classe (même année)
   const [transferringStudent, setTransferringStudent] = useState<StudentEnrollment | null>(null);
   const [transferTargetClass, setTransferTargetClass] = useState('');
+  const [studentToDelete, setStudentToDelete] = useState<StudentEnrollment | null>(null);
 
   useEffect(() => {
     if (currentYear) {
@@ -161,10 +169,10 @@ export default function StudentsMigration() {
         academicYearId: currentYear!.id,
         firstName: newStudent.firstName,
         lastName: newStudent.lastName,
-        classId: newStudent.classId || null,
+        classId: null,
       });
       setShowAddForm(false);
-      setNewStudent({ firstName: '', lastName: '', classId: '' });
+      setNewStudent({ firstName: '', lastName: '', level: '' });
       fetchStudents();
       showSuccess('Élève inscrit avec succès.');
     } catch (err: any) {
@@ -172,14 +180,20 @@ export default function StudentsMigration() {
     }
   };
 
-  const handleDeleteStudent = async (s: StudentEnrollment) => {
-    if (!window.confirm(`Supprimer l'inscription de "${s.last_name} ${s.first_name}" ? Cette action est irréversible.`)) return;
+  const handleDeleteStudent = (s: StudentEnrollment) => {
+    setStudentToDelete(s);
+  };
+
+  const confirmDeleteStudent = async () => {
+    if (!studentToDelete) return;
     try {
-      await invoke('delete_enrollment', { id: s.id });
+      await invoke('delete_enrollment', { id: studentToDelete.id });
       fetchStudents();
       showSuccess('Inscription supprimée.');
     } catch (err: any) {
       setError(err.toString());
+    } finally {
+      setStudentToDelete(null);
     }
   };
 
@@ -299,35 +313,33 @@ export default function StudentsMigration() {
           <span>{success}</span>
         </div>
       )}
-
-      {/* Formulaire d'ajout rapide */}
+      {/* Formulaire d'ajout rapide (inline) */}
       {showAddForm && (
         <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm mb-5 flex-shrink-0">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-[15px] font-bold text-slate-800">Nouvelle inscription — {currentYear.name}</h3>
-            <button onClick={() => setShowAddForm(false)} className="text-slate-400 hover:text-slate-600 p-1"><X size={18} /></button>
+            <button onClick={() => { setShowAddForm(false); setNewStudent({ firstName: '', lastName: '', level: '' }); }} className="text-slate-400 hover:text-slate-600 p-1"><X size={18} /></button>
           </div>
           <form onSubmit={handleAddStudent} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
             <div>
               <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Prénom <span className="text-[#4f46e5]">*</span></label>
-              <input required value={newStudent.firstName} onChange={e => setNewStudent({ ...newStudent, firstName: e.target.value })}
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]" />
+              <input required placeholder="Ex : Mamadou" value={newStudent.firstName} onChange={e => setNewStudent({ ...newStudent, firstName: e.target.value })}
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] placeholder:text-slate-400" />
             </div>
             <div>
               <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Nom <span className="text-[#4f46e5]">*</span></label>
-              <input required value={newStudent.lastName} onChange={e => setNewStudent({ ...newStudent, lastName: e.target.value })}
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]" />
+              <input required placeholder="Ex : KONE" value={newStudent.lastName} onChange={e => setNewStudent({ ...newStudent, lastName: e.target.value })}
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] placeholder:text-slate-400" />
             </div>
             <div>
-              <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Classe</label>
-              <select value={newStudent.classId} onChange={e => setNewStudent({ ...newStudent, classId: e.target.value })}
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]">
-                <option value="">— Sans classe —</option>
-                {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Niveau scolaire</label>
+              <LevelDropdown
+                value={newStudent.level}
+                onChange={level => setNewStudent({ ...newStudent, level })}
+              />
             </div>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setShowAddForm(false)}
+              <button type="button" onClick={() => { setShowAddForm(false); setNewStudent({ firstName: '', lastName: '', level: '' }); }}
                 className="flex-1 px-4 py-2 border border-slate-200 rounded-xl text-slate-600 text-[13px] font-medium hover:bg-slate-50 transition-colors">
                 Annuler
               </button>
@@ -339,6 +351,7 @@ export default function StudentsMigration() {
           </form>
         </div>
       )}
+
 
       {/* Barre de filtres */}
       <div className="flex items-center gap-3 mb-4 flex-shrink-0">
@@ -353,29 +366,19 @@ export default function StudentsMigration() {
           />
         </div>
 
-        <div className="relative">
-          <select
-            value={filterLevel}
-            onChange={e => setFilterLevel(e.target.value)}
-            className="appearance-none pl-4 pr-9 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-700 font-medium"
-          >
-            <option value="">Tous les niveaux</option>
-            {levels.map(l => <option key={l} value={l}>{l}</option>)}
-          </select>
-          <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-        </div>
+        <AnimatedSelect
+          value={filterLevel}
+          onChange={setFilterLevel}
+          placeholder="Tous les niveaux"
+          options={levels.map(l => ({ value: l, label: l }))}
+        />
 
-        <div className="relative">
-          <select
-            value={filterClass}
-            onChange={e => setFilterClass(e.target.value)}
-            className="appearance-none pl-4 pr-9 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-700 font-medium"
-          >
-            <option value="">Toutes les classes</option>
-            {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-        </div>
+        <AnimatedSelect
+          value={filterClass}
+          onChange={setFilterClass}
+          placeholder="Toutes les classes"
+          options={classes.map(c => ({ value: c.id, label: c.name }))}
+        />
       </div>
 
       {/* Tableau */}
@@ -416,12 +419,6 @@ export default function StudentsMigration() {
                       <p className="font-normal text-slate-700 leading-tight">
                         {displayLastName(s.last_name)} {displayFirstName(s.first_name)}
                       </p>
-                      {s.birth_place && (
-                        <p className="flex items-center gap-1 text-[11px] text-slate-400 leading-tight mt-0.5">
-                          <MapPin size={10} className="flex-shrink-0" />
-                          {s.birth_place}
-                        </p>
-                      )}
                     </td>
                     <td className="py-1.5 px-4 text-slate-500 leading-tight">
                       {s.gender === 'M' ? 'M' : s.gender === 'F' ? 'F' : <span className="text-slate-300">—</span>}
@@ -490,7 +487,7 @@ export default function StudentsMigration() {
 
       {/* Modal : Passage de classe */}
       {migratingStudent && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
             <div className="flex items-center justify-between mb-5">
               <h3 className="text-lg font-bold text-slate-800">Passage de classe</h3>
@@ -543,7 +540,7 @@ export default function StudentsMigration() {
 
       {/* Modal : Changement de classe (même année) */}
       {transferringStudent && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
             <div className="flex items-center justify-between mb-5">
               <h3 className="text-lg font-bold text-slate-800">Changer de classe</h3>
@@ -610,6 +607,37 @@ export default function StudentsMigration() {
             showSuccess('Passage en masse effectué avec succès.');
           }}
         />
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {studentToDelete && (
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-[400px] shadow-2xl overflow-hidden animate-scale-in p-6">
+            <div className="flex items-center gap-3 text-red-600 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center flex-shrink-0">
+                <AlertCircle size={20} />
+              </div>
+              <h3 className="text-[17px] font-bold text-slate-800">Confirmer la suppression</h3>
+            </div>
+            <p className="text-sm text-slate-600 mb-6">
+              Êtes-vous sûr de vouloir supprimer l'inscription de <span className="font-bold text-slate-800">"{displayLastName(studentToDelete.last_name)} {displayFirstName(studentToDelete.first_name)}"</span> ? Cette action est irréversible.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setStudentToDelete(null)}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={confirmDeleteStudent}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 shadow-md shadow-red-200"
+              >
+                <Trash2 size={15} /> Supprimer
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-﻿-- 06_student_details.sql
+-- 06_student_details.sql
 ALTER TABLE students ADD COLUMN photo_url TEXT;
 ALTER TABLE students ADD COLUMN matricule TEXT;
 ALTER TABLE students ADD COLUMN address TEXT;

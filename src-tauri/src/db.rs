@@ -16,6 +16,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/09_sync_engine.sql"),
     include_str!("../migrations/10_financial_module.sql"),
     include_str!("../migrations/11_academic_module.sql"),
+    include_str!("../migrations/12_grading_periods_class.sql"),
+    include_str!("../migrations/13_pedagogical_structure.sql"),
+    include_str!("../migrations/14_personnel_module.sql"),
 ];
 
 pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {

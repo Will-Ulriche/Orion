@@ -116,7 +116,7 @@ export default function StudentProfileModal({ studentId, enrollmentId, className
 
   if (loading) {
     return (
-      <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
         <div className="bg-white rounded-2xl p-6 shadow-2xl">Chargement...</div>
       </div>
     );
@@ -124,7 +124,7 @@ export default function StudentProfileModal({ studentId, enrollmentId, className
   if (!student) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+    <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
       <div className="bg-white rounded-[24px] max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         
         {/* Header */}

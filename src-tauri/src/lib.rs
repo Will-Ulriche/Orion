@@ -79,7 +79,7 @@ pub fn run() {
             commands::delete_subject,
             commands::get_class_subjects,
             commands::assign_subject_to_class,
-            commands::update_class_subject_coefficient,
+            commands::update_class_subject,
             commands::remove_class_subject,
             commands::get_grading_periods,
             commands::create_grading_period,
@@ -94,7 +94,25 @@ pub fn run() {
             commands::get_class_rankings,
             commands::get_class_statistics,
             commands::get_teacher_assignments,
-            commands::assign_teacher_to_class_subject
+            commands::assign_teacher_to_class_subject,
+            // ── Phase 3 : Structure Pédagogique ──
+            commands::get_sections,
+            commands::create_section,
+            commands::update_section,
+            commands::delete_section,
+            commands::get_levels,
+            commands::create_level,
+            commands::update_level,
+            commands::delete_level,
+            commands::get_series,
+            commands::create_series,
+            commands::update_series,
+            commands::delete_series,
+            // Personnel
+            commands::get_staff,
+            commands::create_staff,
+            commands::update_staff,
+            commands::delete_staff
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

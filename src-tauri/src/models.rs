@@ -18,12 +18,38 @@ pub struct AcademicYear {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Section {
+    pub id: String,
+    pub school_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Level {
+    pub id: String,
+    pub school_id: String,
+    pub section_id: String,
+    pub name: String,
+    pub level_order: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Series {
+    pub id: String,
+    pub school_id: String,
+    pub level_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Class {
     pub id: String,
     pub school_id: String,
     pub academic_year_id: String,
     pub name: String,
     pub level: Option<String>,
+    pub level_id: Option<String>,
+    pub series_id: Option<String>,
     /// Nombre d'élèves inscrits et actifs dans cette classe pour l'année en cours.
     /// Calculé à la lecture, jamais stocké.
     pub student_count: i64,
@@ -188,6 +214,11 @@ pub struct ClassSubject {
     pub subject_id: String,
     pub teacher_id: Option<String>,
     pub coefficient: f64,
+    pub weekly_hours: Option<f64>,
+    pub subject_type: Option<String>,
+    pub is_mandatory: Option<bool>,
+    pub order_index: Option<i64>,
+    pub color_icon: Option<String>,
     // Extra (JOIN)
     pub subject_name: Option<String>,
     pub subject_code: Option<String>,
@@ -200,6 +231,7 @@ pub struct GradingPeriod {
     pub id: String,
     pub school_id: String,
     pub academic_year_id: String,
+    pub class_id: Option<String>,
     pub name: String,
     pub period_order: i64,
     pub start_date: Option<String>,
@@ -302,6 +334,94 @@ pub struct SubjectStats {
     pub class_average: Option<f64>,
     pub min_score: Option<f64>,
     pub max_score: Option<f64>,
-    pub success_rate: f64, // % d'élèves >= 10
+    pub success_rate: f64,
 }
 
+// ── MODULE PERSONNEL ──────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Staff {
+    pub id: String,
+    pub school_id: String,
+
+    // 1. Informations personnelles
+    pub matricule: Option<String>,
+    pub nom: String,
+    pub prenoms: String,
+    pub sexe: Option<String>,
+    pub date_naissance: Option<String>,
+    pub lieu_naissance: Option<String>,
+    pub nationalite: Option<String>,
+    pub photo_url: Option<String>,
+    pub situation_matrimoniale: Option<String>,
+    pub nombre_enfants: Option<i64>,
+
+    // 2. Coordonnees
+    pub telephone_principal: Option<String>,
+    pub telephone_secondaire: Option<String>,
+    pub email: Option<String>,
+    pub adresse: Option<String>,
+    pub region: Option<String>,
+    pub prefecture: Option<String>,
+    pub commune: Option<String>,
+    pub quartier: Option<String>,
+    pub urgence_nom: Option<String>,
+    pub urgence_telephone: Option<String>,
+
+    // 3. Informations professionnelles
+    pub type_personnel: Option<String>,
+    pub fonction: Option<String>,
+    pub statut_professionnel: Option<String>,
+    pub matricule_professionnel: Option<String>,
+    pub categorie: Option<String>,
+    pub grade: Option<String>,
+    pub classe_grade: Option<String>,
+    pub echelon: Option<String>,
+    pub indice: Option<i64>,
+    pub diplome_academique: Option<String>,
+    pub diplome_professionnel: Option<String>,
+    pub specialite: Option<String>,
+    pub date_recrutement: Option<String>,
+    pub date_entree_fonction_pub: Option<String>,
+
+    // 4. Affectation
+    pub etablissement: Option<String>,
+    pub annee_scolaire_id: Option<String>,
+    pub fonction_etablissement: Option<String>,
+    pub decision_affectation_num: Option<String>,
+    pub date_affectation: Option<String>,
+    pub date_prise_service: Option<String>,
+    pub date_arrivee_region: Option<String>,
+    pub date_arrivee_etablissement: Option<String>,
+    pub ancien_etablissement: Option<String>,
+    pub service_direction: Option<String>,
+
+    // 5. Enseignement
+    pub matiere_principale: Option<String>,
+    pub matieres_secondaires: Option<String>,
+    pub classes_principales: Option<String>,
+    pub volume_horaire_hebdo: Option<f64>,
+    pub est_prof_principal: bool,
+    pub est_responsable_classe: bool,
+    pub heures_prevues: Option<f64>,
+    pub heures_effectuees: Option<f64>,
+
+    // 6. Situation administrative
+    pub statut_administratif: String,
+    pub date_debut_conge: Option<String>,
+    pub date_fin_conge: Option<String>,
+    pub date_disponibilite: Option<String>,
+    pub date_mutation: Option<String>,
+    pub date_suspension: Option<String>,
+    pub date_retraite: Option<String>,
+    pub date_depart: Option<String>,
+    pub motif_depart: Option<String>,
+    pub observations: Option<String>,
+
+    // 8. Systeme
+    pub est_actif: bool,
+    pub created_by: Option<String>,
+    pub updated_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
