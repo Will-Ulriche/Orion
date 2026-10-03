@@ -50,7 +50,7 @@ const REMOTE_COLUMNS: &[(&str, &[&str])] = &[
     ("payments",       &["id", "school_id", "academic_year_id", "enrollment_id", "student_id", "fee_structure_id", "amount", "payment_date", "payment_method", "reference", "receipt_number", "notes", "recorded_by", "status", "cancelled_at", "cancel_reason", "created_at", "updated_at"]),
     // Session 5 — Module pédagogique
     ("subjects",            &["id", "school_id", "name", "code", "color", "created_at", "updated_at"]),
-    ("grade_types",         &["id", "school_id", "name", "weight", "max_score", "created_at", "updated_at"]),
+    ("grade_types",         &["id", "school_id", "name", "max_score", "created_at", "updated_at"]),
     ("grading_periods",     &["id", "school_id", "academic_year_id", "name", "period_order", "start_date", "end_date", "is_active", "created_at", "updated_at"]),
     ("class_subjects",      &["id", "school_id", "academic_year_id", "class_id", "subject_id", "teacher_id", "coefficient", "created_at", "updated_at"]),
     ("teacher_assignments", &["id", "school_id", "academic_year_id", "teacher_id", "class_subject_id", "created_at", "updated_at"]),
@@ -2192,10 +2192,10 @@ pub fn update_grading_period(
 pub fn get_grade_types(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::GradeType>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, school_id, name, weight, max_score FROM grade_types WHERE school_id=?1 ORDER BY name"
+        "SELECT id, school_id, name, max_score FROM grade_types WHERE school_id=?1 ORDER BY name"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map(rusqlite::params![school_id], |row| {
-        Ok(crate::models::GradeType { id: row.get(0)?, school_id: row.get(1)?, name: row.get(2)?, weight: row.get(3)?, max_score: row.get(4)? })
+        Ok(crate::models::GradeType { id: row.get(0)?, school_id: row.get(1)?, name: row.get(2)?, max_score: row.get(3)? })
     }).map_err(|e| e.to_string())?;
     let mut res = Vec::new();
     for r in rows { if let Ok(g) = r { res.push(g); } }
@@ -2206,7 +2206,6 @@ pub fn get_grade_types(school_id: String, state: State<'_, DbState>) -> Result<V
 pub fn create_grade_type(
     school_id: String,
     name: String,
-    weight: f64,
     max_score: f64,
     state: State<'_, DbState>
 ) -> Result<crate::models::GradeType, String> {
@@ -2214,11 +2213,11 @@ pub fn create_grade_type(
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO grade_types (id, school_id, name, weight, max_score, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
-        rusqlite::params![id, school_id, name, weight, max_score, now]
+        "INSERT INTO grade_types (id, school_id, name, max_score, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?5)",
+        rusqlite::params![id, school_id, name, max_score, now]
     ).map_err(|e| format!("Erreur SQL: {}", e))?;
     enqueue_entity(&conn, "grade_types", &school_id, &id);
-    Ok(crate::models::GradeType { id, school_id, name, weight, max_score })
+    Ok(crate::models::GradeType { id, school_id, name, max_score })
 }
 
 #[tauri::command]
@@ -2226,15 +2225,14 @@ pub fn update_grade_type(
     id: String,
     school_id: String,
     name: String,
-    weight: f64,
     max_score: f64,
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "UPDATE grade_types SET name=?1, weight=?2, max_score=?3, updated_at=?4 WHERE id=?5 AND school_id=?6",
-        rusqlite::params![name, weight, max_score, now, id, school_id]
+        "UPDATE grade_types SET name=?1, max_score=?2, updated_at=?3 WHERE id=?4 AND school_id=?5",
+        rusqlite::params![name, max_score, now, id, school_id]
     ).map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "grade_types", &school_id, &id);
     Ok(())
@@ -2255,7 +2253,7 @@ pub fn get_grades_by_class(
         "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
                 g.class_subject_id, g.grading_period_id, g.grade_type_id,
                 g.score, g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
-                st.first_name, st.last_name, s.name, gt.name, gt.weight
+                st.first_name, st.last_name, s.name, gt.name
          FROM grades g
          JOIN students st ON g.student_id = st.id
          JOIN class_subjects cs ON g.class_subject_id = cs.id
@@ -2274,7 +2272,7 @@ pub fn get_grades_by_class(
             evaluation_date: row.get(10)?, notes: row.get(11)?,
             recorded_by: row.get(12)?, is_absent: row.get::<_, i64>(13)? != 0,
             student_first_name: row.get(14)?, student_last_name: row.get(15)?,
-            subject_name: row.get(16)?, grade_type_name: row.get(17)?, grade_type_weight: row.get(18)?,
+            subject_name: row.get(16)?, grade_type_name: row.get(17)?,
         })
     }).map_err(|e| e.to_string())?;
     let mut res = Vec::new();
@@ -2299,7 +2297,7 @@ pub fn get_grades_by_student(
         "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
                 g.class_subject_id, g.grading_period_id, g.grade_type_id,
                 g.score, g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
-                st.first_name, st.last_name, s.name, gt.name, gt.weight
+                st.first_name, st.last_name, s.name, gt.name
          FROM grades g
          JOIN students st ON g.student_id = st.id
          JOIN class_subjects cs ON g.class_subject_id = cs.id
@@ -2317,7 +2315,7 @@ pub fn get_grades_by_student(
             evaluation_date: row.get(10)?, notes: row.get(11)?,
             recorded_by: row.get(12)?, is_absent: row.get::<_, i64>(13)? != 0,
             student_first_name: row.get(14)?, student_last_name: row.get(15)?,
-            subject_name: row.get(16)?, grade_type_name: row.get(17)?, grade_type_weight: row.get(18)?,
+            subject_name: row.get(16)?, grade_type_name: row.get(17)?,
         })
     }).map_err(|e| e.to_string())?;
     let mut res = Vec::new();
@@ -2422,18 +2420,18 @@ pub fn get_student_averages(
     for (cs_id, s_name, s_code, coeff) in &class_subjects {
         // Notes de l'élève pour cette matière et cette période
         let mut g_stmt = conn.prepare(
-            "SELECT g.score, g.max_score, gt.weight FROM grades g JOIN grade_types gt ON g.grade_type_id=gt.id
+            "SELECT g.score, g.max_score FROM grades g
              WHERE g.enrollment_id=?1 AND g.class_subject_id=?2 AND g.grading_period_id=?3"
         ).map_err(|e| e.to_string())?;
-        let grade_rows: Vec<(f64, f64, f64)> = g_stmt.query_map(
-            rusqlite::params![enrollment_id, cs_id, grading_period_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        let grade_rows: Vec<(f64, f64)> = g_stmt.query_map(
+            rusqlite::params![enrollment_id, cs_id, grading_period_id], |r| Ok((r.get(0)?, r.get(1)?))
         ).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
 
         let grade_count = grade_rows.len() as i64;
 
         let avg: Option<f64> = if grade_count == 0 { None } else {
-            let num: f64 = grade_rows.iter().map(|(sc, ms, w)| (sc / ms * 20.0) * w).sum();
-            let den: f64 = grade_rows.iter().map(|(_, _, w)| w).sum();
+            let num: f64 = grade_rows.iter().map(|(sc, ms)| sc / ms * 20.0).sum();
+            let den = grade_count as f64;
             if den > 0.0 { Some(num / den) } else { None }
         };
 
@@ -2463,10 +2461,9 @@ pub fn get_student_averages(
         let gen_avg_val = general_average.unwrap();
         conn.query_row(
             "SELECT COUNT(*)+1 FROM (
-                SELECT e2.id, SUM(g2.score / g2.max_score * 20.0 * gt2.weight * cs2.coefficient) / NULLIF(SUM(gt2.weight * cs2.coefficient), 0) AS gavg
+                SELECT e2.id, SUM(g2.score / g2.max_score * 20.0 * cs2.coefficient) / NULLIF(SUM(cs2.coefficient), 0) AS gavg
                 FROM enrollments e2
                 JOIN grades g2 ON e2.id = g2.enrollment_id
-                JOIN grade_types gt2 ON g2.grade_type_id = gt2.id
                 JOIN class_subjects cs2 ON g2.class_subject_id = cs2.id
                 WHERE e2.class_id=?1 AND g2.grading_period_id=?2 AND g2.academic_year_id=?3
                 GROUP BY e2.id
@@ -2499,11 +2496,10 @@ pub fn get_class_rankings(
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     let mut stmt = conn.prepare(
         "SELECT e.id, e.student_id, s.first_name, s.last_name,
-                SUM(g.score / g.max_score * 20.0 * gt.weight * cs.coefficient) / NULLIF(SUM(gt.weight * cs.coefficient), 0) AS gavg
+                SUM(g.score / g.max_score * 20.0 * cs.coefficient) / NULLIF(SUM(cs.coefficient), 0) AS gavg
          FROM enrollments e
          JOIN students s ON e.student_id = s.id
          LEFT JOIN grades g ON e.id = g.enrollment_id AND g.grading_period_id = ?3 AND g.academic_year_id = ?2
-         LEFT JOIN grade_types gt ON g.grade_type_id = gt.id
          LEFT JOIN class_subjects cs ON g.class_subject_id = cs.id
          WHERE e.class_id=?1 AND e.academic_year_id=?2 AND e.status='ACTIVE' AND e.school_id=?4
          GROUP BY e.id, e.student_id, s.first_name, s.last_name

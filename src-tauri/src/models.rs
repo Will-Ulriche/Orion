@@ -244,7 +244,6 @@ pub struct GradeType {
     pub id: String,
     pub school_id: String,
     pub name: String,
-    pub weight: f64,
     pub max_score: f64,
 }
 
@@ -269,7 +268,6 @@ pub struct Grade {
     pub student_last_name: Option<String>,
     pub subject_name: Option<String>,
     pub grade_type_name: Option<String>,
-    pub grade_type_weight: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

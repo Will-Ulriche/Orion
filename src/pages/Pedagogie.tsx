@@ -5,7 +5,7 @@ import { useYear } from '../contexts/YearContext';
 import {
   BarChart3, BookOpen, CalendarDays, CheckCircle2, ClipboardList, FileText,
   GraduationCap, Layers, Pencil, Plus, Save, Search, SlidersHorizontal, Star,
-  Trash2, Trophy, UserX, Users, Weight, UserCheck, ChevronDown, X, Check,
+  Trash2, Trophy, UserX, Users, UserCheck, ChevronDown, X, Check,
 } from 'lucide-react';
 import { generateClassReport } from '../utils/pdfGenerator';
 import {
@@ -35,14 +35,14 @@ interface ClassSubject {
 }
 interface GradingPeriod { id: string; school_id: string; academic_year_id: string; class_id: string | null; name: string; period_order: number; start_date: string | null; end_date: string | null; is_active: boolean; }
 interface GradeType {
-  id: string; name: string; weight: number; max_score: number;
+  id: string; name: string; max_score: number;
 }
 interface Grade {
   id: string; enrollment_id: string; student_id: string;
   class_subject_id: string; grading_period_id: string; grade_type_id: string;
   score: number; max_score: number; is_absent: boolean;
   student_first_name: string | null; student_last_name: string | null;
-  subject_name: string | null; grade_type_name: string | null; grade_type_weight: number | null;
+  subject_name: string | null; grade_type_name: string | null;
 }
 export interface ClassRankingEntry {
   rank: number; student_id: string; enrollment_id: string;
@@ -186,7 +186,7 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [subjectForm, setSubjectForm] = useState({ name: '', code: '', color: '#6366f1' });
   const [periodForm, setPeriodForm] = useState({ name: '', period_order: 1, start_date: '', end_date: '', class_id: '' });
-  const [gtForm, setGtForm] = useState({ name: '', weight: 1.0, max_score: 20.0 });
+  const [gtForm, setGtForm] = useState({ name: '', max_score: 20.0 });
   const [assignForm, setAssignForm] = useState({ subject_id: '', coefficient: 1.0, weekly_hours: 2.0, subject_type: 'principal', is_mandatory: true, order_index: 0 });
 
   const [leftSection, setLeftSection] = useState<LeftSection>('subjects');
@@ -222,7 +222,7 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
     setModal(null); setEditSubject(null);
     setSubjectForm({ name: '', code: '', color: '#6366f1' });
     setPeriodForm({ name: '', period_order: 1, start_date: '', end_date: '', class_id: '' });
-    setGtForm({ name: '', weight: 1.0, max_score: 20.0 });
+    setGtForm({ name: '', max_score: 20.0 });
     setAssignForm({ subject_id: '', coefficient: 1.0, weekly_hours: 2.0, subject_type: 'principal', is_mandatory: true, order_index: 0 });
   };
 
@@ -276,7 +276,7 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
   const saveGt = async () => {
     try {
-      await invoke('create_grade_type', { schoolId, name: gtForm.name, weight: gtForm.weight, maxScore: gtForm.max_score });
+      await invoke('create_grade_type', { schoolId, name: gtForm.name, maxScore: gtForm.max_score });
       closeModal(); load();
     } catch (e: any) { setError(String(e)); }
   };
@@ -552,7 +552,7 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
       {modal === 'gradeType' && (
         <Modal
           title="Nouveau type d'évaluation"
-          description="Le poids détermine la part de ce type dans la moyenne générale."
+          description="Définissez le nom et la note maximale pour ce type d'évaluation."
           onClose={closeModal}
           footer={
             <>
@@ -572,26 +572,15 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
                 onChange={(e) => setGtForm((f) => ({ ...f, name: e.target.value }))}
               />
             </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Poids">
-                <NumberInput
-                  min={0.1}
-                  max={10}
-                  step={0.5}
-                  value={gtForm.weight}
-                  onChange={(e) => setGtForm((f) => ({ ...f, weight: parseFloat(e.target.value) || 1 }))}
-                />
-              </Field>
-              <Field label="Note maximale">
-                <NumberInput
-                  min={5}
-                  max={100}
-                  step={5}
-                  value={gtForm.max_score}
-                  onChange={(e) => setGtForm((f) => ({ ...f, max_score: parseFloat(e.target.value) || 20 }))}
-                />
-              </Field>
-            </div>
+            <Field label="Note maximale">
+              <NumberInput
+                min={5}
+                max={100}
+                step={5}
+                value={gtForm.max_score}
+                onChange={(e) => setGtForm((f) => ({ ...f, max_score: parseFloat(e.target.value) || 20 }))}
+              />
+            </Field>
           </div>
         </Modal>
       )}
@@ -1008,14 +997,12 @@ function PanelPeriods({
 }
 
 function PanelGradeTypes({ gradeTypes, onAdd }: { gradeTypes: GradeType[]; onAdd: () => void }) {
-  const totalWeight = gradeTypes.reduce((s, gt) => s + gt.weight, 0);
-
   return (
     <div className="space-y-6">
       <PanelHeader
         icon={Star}
         title="Types d'évaluation"
-        subtitle="Contrôle, examen, devoir… et leur poids respectif dans la moyenne."
+        subtitle="Contrôle, examen, devoir… Définissez les types utilisés dans l'établissement."
         actions={
           <Btn variant="primary" onClick={onAdd}>
             <Plus size={16} /> Nouveau type
@@ -1031,40 +1018,19 @@ function PanelGradeTypes({ gradeTypes, onAdd }: { gradeTypes: GradeType[]; onAdd
           action={<Btn variant="primary" onClick={onAdd}><Plus size={16} /> Créer un type</Btn>}
         />
       ) : (
-        <>
-          <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
-            <div className="flex items-center gap-2.5">
-              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
-                <Weight size={16} />
-              </span>
-              <p className="text-[13px] text-slate-500">
-                Poids cumulé des types d'évaluation
-              </p>
-            </div>
-            <Badge tone="amber">×{totalWeight.toFixed(1)} au total</Badge>
-          </Card>
-
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {gradeTypes.map((gt) => (
-              <Card key={gt.id} interactive className="p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
-                    <Star size={17} />
-                  </span>
-                  <Badge tone="amber">×{gt.weight}</Badge>
-                </div>
-                <p className="mt-3 truncate text-sm font-bold text-slate-800">{gt.name}</p>
-                <p className="mt-0.5 text-[11px] text-slate-400">Note sur {gt.max_score}</p>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100">
-                  <div
-                    className="h-full rounded-full bg-amber-400 transition-all duration-500"
-                    style={{ width: `${totalWeight > 0 ? Math.min((gt.weight / totalWeight) * 100, 100) : 0}%` }}
-                  />
-                </div>
-              </Card>
-            ))}
-          </div>
-        </>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {gradeTypes.map((gt) => (
+            <Card key={gt.id} interactive className="p-4">
+              <div className="flex items-start justify-between gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                  <Star size={17} />
+                </span>
+              </div>
+              <p className="mt-3 truncate text-sm font-bold text-slate-800">{gt.name}</p>
+              <p className="mt-0.5 text-[11px] text-slate-400">Note sur {gt.max_score}</p>
+            </Card>
+          ))}
+        </div>
       )}
     </div>
   );

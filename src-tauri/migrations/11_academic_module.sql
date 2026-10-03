@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS grade_types (
     id TEXT PRIMARY KEY,
     school_id TEXT NOT NULL,
     name TEXT NOT NULL,       -- Ex: "Contrôle", "Examen", "Devoir"
-    weight REAL NOT NULL DEFAULT 1.0, -- Poids dans la moyenne de la matière
     max_score REAL NOT NULL DEFAULT 20.0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
