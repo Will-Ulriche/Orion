@@ -117,6 +117,12 @@ export default function Pedagogie() {
   const { schoolId } = useAuth();
   const { selectedYear } = useYear();
   const [tab, setTab] = useState<Tab>('config');
+  const [saisieKey, setSaisieKey] = useState(0);
+
+  const handleTabChange = (newTab: Tab) => {
+    if (newTab === 'saisie') setSaisieKey(k => k + 1); // force refresh
+    setTab(newTab);
+  };
 
   return (
     <div className="flex h-full flex-col bg-canvas">
@@ -136,7 +142,7 @@ export default function Pedagogie() {
 
           <Segmented<Tab>
             value={tab}
-            onChange={setTab}
+            onChange={handleTabChange}
             options={[
               { value: 'config', label: 'Configuration', icon: SlidersHorizontal },
               { value: 'saisie', label: 'Saisie des notes', icon: ClipboardList },
@@ -148,7 +154,7 @@ export default function Pedagogie() {
 
       <main className="min-h-0 flex-1 overflow-hidden">
         {tab === 'config' && <TabConfig schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
-        {tab === 'saisie' && <TabSaisie schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
+        {tab === 'saisie' && <TabSaisie key={saisieKey} schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
         {tab === 'resultats' && <TabResultats schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
       </main>
     </div>
@@ -159,7 +165,7 @@ export default function Pedagogie() {
 // ONGLET 1 — CONFIGURATION
 // ═══════════════════════════════════════════════════════════
 
-type LeftSection = 'subjects' | 'classes' | 'periods' | 'gradeTypes' | 'professeurs';
+type LeftSection = 'subjects' | 'classes' | 'gradeTypes' | 'professeurs';
 
 interface ConfirmState {
   title: string;
@@ -187,7 +193,11 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
   const [subjectForm, setSubjectForm] = useState({ name: '', code: '', color: '#6366f1' });
   const [periodForm, setPeriodForm] = useState({ name: '', period_order: 1, start_date: '', end_date: '', class_id: '' });
   const [gtForm, setGtForm] = useState({ name: '', max_score: 20.0 });
-  const [assignForm, setAssignForm] = useState({ subject_id: '', coefficient: 1.0, weekly_hours: 2.0, subject_type: 'principal', is_mandatory: true, order_index: 0 });
+  // Multi-affectation : map subjectId -> { selected, coefficient, weekly_hours, subject_type, is_mandatory }
+  const [assignSelections, setAssignSelections] = useState<Record<string, {
+    selected: boolean; coefficient: number; weekly_hours: number;
+    subject_type: 'principal' | 'facultatif' | 'option'; is_mandatory: boolean;
+  }>>({});
 
   const [leftSection, setLeftSection] = useState<LeftSection>('subjects');
 
@@ -195,13 +205,12 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
     if (!yearId) return;
     setLoading(true);
     try {
-      const [s, c, p, gt] = await Promise.all([
+      const [s, c, gt] = await Promise.all([
         invoke<Subject[]>('get_subjects', { schoolId }),
         invoke<ClassItem[]>('get_classes', { schoolId, academicYearId: yearId }),
-        invoke<GradingPeriod[]>('get_grading_periods', { schoolId, academicYearId: yearId, classId: null }),
         invoke<GradeType[]>('get_grade_types', { schoolId }),
       ]);
-      setSubjects(s); setClasses(c); setPeriods(p); setGradeTypes(gt);
+      setSubjects(s); setClasses(c); setGradeTypes(gt);
     } catch (e: any) { setError(String(e)); }
     finally { setLoading(false); }
   }, [schoolId, yearId]);
@@ -217,13 +226,19 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { if (selectedClass) loadClassSubjects(selectedClass.id); }, [selectedClass, loadClassSubjects]);
+  // Recharge quand on revient sur l'onglet "Matière/Classe" pour voir les affectations prof
+  useEffect(() => {
+    if (leftSection === 'classes' && selectedClass) {
+      loadClassSubjects(selectedClass.id);
+    }
+  }, [leftSection]);
+
 
   const closeModal = () => {
     setModal(null); setEditSubject(null);
     setSubjectForm({ name: '', code: '', color: '#6366f1' });
-    setPeriodForm({ name: '', period_order: 1, start_date: '', end_date: '', class_id: '' });
     setGtForm({ name: '', max_score: 20.0 });
-    setAssignForm({ subject_id: '', coefficient: 1.0, weekly_hours: 2.0, subject_type: 'principal', is_mandatory: true, order_index: 0 });
+    setAssignSelections({});
   };
 
   const openSubjectModal = (s: Subject | null) => {
@@ -252,27 +267,6 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
       },
     });
 
-  const savePeriod = async () => {
-    try {
-      await invoke('create_grading_period', {
-        schoolId, academicYearId: yearId, name: periodForm.name,
-        periodOrder: periodForm.period_order, classId: periodForm.class_id || null,
-        startDate: periodForm.start_date || null, endDate: periodForm.end_date || null,
-      });
-      closeModal(); load();
-    } catch (e: any) { setError(String(e)); }
-  };
-
-  const togglePeriodActive = async (p: GradingPeriod) => {
-    try {
-      await invoke('update_grading_period', {
-        id: p.id, schoolId, classId: p.class_id, name: p.name,
-        periodOrder: p.period_order, startDate: p.start_date, endDate: p.end_date,
-        isActive: !p.is_active,
-      });
-      load();
-    } catch (e: any) { setError(String(e)); }
-  };
 
   const saveGt = async () => {
     try {
@@ -283,14 +277,22 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
   const assignSubject = async () => {
     if (!selectedClass) return;
+    const toAssign = subjects
+      .filter(s => assignSelections[s.id]?.selected)
+      .filter(s => !classSubjects.find(cs => cs.subject_id === s.id));
+    if (toAssign.length === 0) return;
     try {
-      await invoke('assign_subject_to_class', {
-        schoolId, academicYearId: yearId, classId: selectedClass.id,
-        subjectId: assignForm.subject_id, teacherId: null,
-        coefficient: assignForm.coefficient, weeklyHours: assignForm.weekly_hours,
-        subjectType: assignForm.subject_type, isMandatory: assignForm.is_mandatory,
-        orderIndex: assignForm.order_index, colorIcon: null,
-      });
+      let orderIdx = classSubjects.length;
+      for (const s of toAssign) {
+        const sel = assignSelections[s.id];
+        await invoke('assign_subject_to_class', {
+          schoolId, academicYearId: yearId, classId: selectedClass.id,
+          subjectId: s.id, teacherId: null,
+          coefficient: sel.coefficient, weeklyHours: sel.weekly_hours,
+          subjectType: sel.subject_type, isMandatory: sel.is_mandatory,
+          orderIndex: orderIdx++, colorIcon: null,
+        });
+      }
       closeModal(); loadClassSubjects(selectedClass.id);
     } catch (e: any) { setError(String(e)); }
   };
@@ -313,7 +315,6 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
     { id: 'subjects',   icon: BookOpen,     label: 'Matières',          count: subjects.length },
     { id: 'classes',    icon: Users,        label: 'Matières / Classe', count: classes.length },
     { id: 'professeurs', icon: UserCheck,   label: 'Professeur / Matière', count: null },
-    { id: 'periods',    icon: ClipboardList, label: 'Périodes',         count: periods.length },
     { id: 'gradeTypes', icon: Star,         label: "Types d'éval.",     count: gradeTypes.length },
   ];
 
@@ -414,14 +415,6 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
             />
           )}
 
-          {leftSection === 'periods' && (
-            <PanelPeriods
-              periods={periods}
-              classes={classes}
-              onAdd={() => setModal('period')}
-              onToggle={togglePeriodActive}
-            />
-          )}
 
           {leftSection === 'gradeTypes' && (
             <PanelGradeTypes gradeTypes={gradeTypes} onAdd={() => setModal('gradeType')} />
@@ -489,66 +482,6 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
         </Modal>
       )}
 
-      {modal === 'period' && (
-        <Modal
-          title="Nouvelle période d'évaluation"
-          description="Trimestre, semestre ou période personnalisée."
-          onClose={closeModal}
-          footer={
-            <>
-              <Btn onClick={closeModal}>Annuler</Btn>
-              <Btn variant="primary" onClick={savePeriod} disabled={!periodForm.name}>
-                <Save size={15} /> Créer la période
-              </Btn>
-            </>
-          }
-        >
-          <div className="space-y-4">
-            <Field label="Nom" required>
-              <TextInput
-                autoFocus
-                placeholder="Ex : Trimestre 1"
-                value={periodForm.name}
-                onChange={(e) => setPeriodForm((f) => ({ ...f, name: e.target.value }))}
-              />
-            </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Classe concernée" hint="Laissez vide pour toutes les classes.">
-                <Select
-                  value={periodForm.class_id}
-                  onChange={(e) => setPeriodForm((f) => ({ ...f, class_id: e.target.value }))}
-                >
-                  <option value="">Toutes les classes</option>
-                  {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </Select>
-              </Field>
-              <Field label="Ordre" hint="Position dans le calendrier scolaire.">
-                <NumberInput
-                  min={1}
-                  max={6}
-                  value={periodForm.period_order}
-                  onChange={(e) => setPeriodForm((f) => ({ ...f, period_order: parseInt(e.target.value) || 1 }))}
-                />
-              </Field>
-              <Field label="Date de début">
-                <TextInput
-                  type="date"
-                  value={periodForm.start_date}
-                  onChange={(e) => setPeriodForm((f) => ({ ...f, start_date: e.target.value }))}
-                />
-              </Field>
-              <Field label="Date de fin">
-                <TextInput
-                  type="date"
-                  value={periodForm.end_date}
-                  onChange={(e) => setPeriodForm((f) => ({ ...f, end_date: e.target.value }))}
-                />
-              </Field>
-            </div>
-          </div>
-        </Modal>
-      )}
-
       {modal === 'gradeType' && (
         <Modal
           title="Nouveau type d'évaluation"
@@ -585,99 +518,113 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
         </Modal>
       )}
 
-      {modal === 'assign' && selectedClass && (
-        <Modal
-          title="Affecter une matière"
-          description={`${selectedClass.name} · ${selectedClass.student_count} élève(s)`}
-          onClose={closeModal}
-          footer={
-            <>
-              <Btn onClick={closeModal}>Annuler</Btn>
-              <Btn variant="primary" onClick={assignSubject} disabled={!assignForm.subject_id}>
-                <Plus size={15} /> Affecter
-              </Btn>
-            </>
+      {modal === 'assign' && selectedClass && (() => {
+        const available = subjects.filter(s => !classSubjects.find(cs => cs.subject_id === s.id));
+        const selectedCount = available.filter(s => assignSelections[s.id]?.selected).length;
+        const toggleAll = () => {
+          const allSelected = available.every(s => assignSelections[s.id]?.selected);
+          const next: typeof assignSelections = {};
+          for (const s of available) {
+            next[s.id] = { selected: !allSelected, coefficient: assignSelections[s.id]?.coefficient ?? 1, weekly_hours: assignSelections[s.id]?.weekly_hours ?? 2, subject_type: assignSelections[s.id]?.subject_type ?? 'principal', is_mandatory: assignSelections[s.id]?.is_mandatory ?? true };
           }
-        >
-          <div className="space-y-4">
-            <Field label="Matière" required>
-              <Select
-                autoFocus
-                value={assignForm.subject_id}
-                onChange={(e) => setAssignForm((f) => ({ ...f, subject_id: e.target.value }))}
-              >
-                <option value="">-- Sélectionner --</option>
-                {subjects.filter((s) => !classSubjects.find((cs) => cs.subject_id === s.id)).map((s) => (
-                  <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
-                ))}
-              </Select>
-            </Field>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Type de matière">
-                <div className="flex gap-2">
-                  {(['principal', 'facultatif', 'option'] as const).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setAssignForm((f) => ({ ...f, subject_type: t }))}
-                      aria-pressed={assignForm.subject_type === t}
-                      className={cx(
-                        'flex-1 rounded-xl border px-3 py-2 text-xs font-bold transition-all',
-                        assignForm.subject_type === t
-                          ? TONES[TYPE_TONE[t].tone]
-                          : 'border-slate-200 text-slate-500 hover:bg-slate-50'
-                      )}
-                    >
-                      {TYPE_TONE[t].label}
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <Field label="Obligatoire">
-                <div className="flex h-[42px] w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5">
-                  <span className="text-sm font-semibold text-slate-700">
-                    {assignForm.is_mandatory ? 'Oui' : 'Non'}
+          setAssignSelections(next);
+        };
+        return (
+          <Modal
+            title="Affecter des matières"
+            description={`${selectedClass.name} · ${selectedClass.student_count ?? 0} élève(s) — cochez les matières à affecter`}
+            onClose={closeModal}
+            footer={
+              <>
+                <Btn onClick={closeModal}>Annuler</Btn>
+                <Btn variant="primary" onClick={assignSubject} disabled={selectedCount === 0}>
+                  <Plus size={15} /> Affecter {selectedCount > 0 ? `(${selectedCount})` : ''}
+                </Btn>
+              </>
+            }
+          >
+            {available.length === 0 ? (
+              <p className="py-6 text-center text-sm text-slate-400">Toutes les matières sont déjà affectées à cette classe.</p>
+            ) : (
+              <div className="space-y-2">
+                {/* Tout sélectionner */}
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                  <span className="text-[12px] font-semibold text-slate-500 uppercase tracking-wide">
+                    {available.length} matière{available.length > 1 ? 's' : ''} disponible{available.length > 1 ? 's' : ''}
                   </span>
-                  <Switch
-                    checked={assignForm.is_mandatory}
-                    onChange={(v) => setAssignForm((f) => ({ ...f, is_mandatory: v }))}
-                    label="Matière obligatoire"
-                  />
+                  <button onClick={toggleAll} className="text-[12px] font-semibold text-brand-600 hover:underline">
+                    {available.every(s => assignSelections[s.id]?.selected) ? 'Tout déselectionner' : 'Tout sélectionner'}
+                  </button>
                 </div>
-              </Field>
-            </div>
 
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Field label="Coefficient">
-                <NumberInput
-                  min={0.5}
-                  max={10}
-                  step={0.5}
-                  value={assignForm.coefficient}
-                  onChange={(e) => setAssignForm((f) => ({ ...f, coefficient: parseFloat(e.target.value) || 1 }))}
-                />
-              </Field>
-              <Field label="Heures / semaine">
-                <NumberInput
-                  min={0.5}
-                  max={10}
-                  step={0.5}
-                  value={assignForm.weekly_hours}
-                  onChange={(e) => setAssignForm((f) => ({ ...f, weekly_hours: parseFloat(e.target.value) || 1 }))}
-                />
-              </Field>
-              <Field label="Ordre">
-                <NumberInput
-                  min={0}
-                  max={100}
-                  value={assignForm.order_index}
-                  onChange={(e) => setAssignForm((f) => ({ ...f, order_index: parseInt(e.target.value) || 0 }))}
-                />
-              </Field>
-            </div>
-          </div>
-        </Modal>
-      )}
+                {/* Liste des matières */}
+                <div className="max-h-[380px] overflow-y-auto custom-scrollbar space-y-2 pr-1">
+                  {available.map(s => {
+                    const color = s.color || '#6366f1';
+                    const sel = assignSelections[s.id];
+                    const isChecked = sel?.selected ?? false;
+                    const toggle = () => setAssignSelections(prev => ({
+                      ...prev,
+                      [s.id]: { selected: !isChecked, coefficient: prev[s.id]?.coefficient ?? 1, weekly_hours: prev[s.id]?.weekly_hours ?? 2, subject_type: prev[s.id]?.subject_type ?? 'principal', is_mandatory: prev[s.id]?.is_mandatory ?? true },
+                    }));
+                    return (
+                      <div
+                        key={s.id}
+                        className={cx(
+                          'rounded-xl border transition-all duration-150',
+                          isChecked ? 'border-brand-300 bg-brand-50/60 shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300'
+                        )}
+                      >
+                        {/* Header ligne */}
+                        <div className="flex cursor-pointer items-center gap-3 px-3 py-2.5" onClick={toggle}>
+                          <div
+                            className={cx('flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-all', isChecked ? 'border-brand-600 bg-brand-600' : 'border-slate-300')}
+                          >
+                            {isChecked && <Check size={11} className="text-white" strokeWidth={3.5} />}
+                          </div>
+                          <div
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold text-white"
+                            style={{ backgroundColor: color }}
+                          >
+                            {initials(s.code)}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[13px] font-semibold text-slate-800 leading-tight truncate">{s.name}</p>
+                            <span className="text-[10px] font-bold tracking-wide" style={{ color }}>{s.code}</span>
+                          </div>
+                          {isChecked && (
+                            <span className="shrink-0 text-[11px] font-bold text-brand-600">Coef {sel?.coefficient ?? 1}</span>
+                          )}
+                        </div>
+
+                        {/* Détails expandables si coché */}
+                        {isChecked && (
+                          <div className="grid grid-cols-2 gap-2 border-t border-brand-100 bg-white/60 px-3 py-2.5 rounded-b-xl">
+                            <Field label="Coefficient">
+                              <NumberInput
+                                min={0.5} max={10} step={0.5}
+                                value={sel?.coefficient ?? 1}
+                                onChange={e => setAssignSelections(prev => ({ ...prev, [s.id]: { ...prev[s.id], coefficient: parseFloat(e.target.value) || 1 } }))}
+                              />
+                            </Field>
+                            <Field label="H/semaine">
+                              <NumberInput
+                                min={0.5} max={20} step={0.5}
+                                value={sel?.weekly_hours ?? 2}
+                                onChange={e => setAssignSelections(prev => ({ ...prev, [s.id]: { ...prev[s.id], weekly_hours: parseFloat(e.target.value) || 1 } }))}
+                              />
+                            </Field>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
 
       {confirmState && (
         <ConfirmDialog
@@ -711,31 +658,35 @@ function PanelSubjects({
 
   return (
     <div className="space-y-6">
-      <PanelHeader
-        icon={BookOpen}
-        title="Matières"
-        subtitle={`${subjects.length} matière${subjects.length > 1 ? 's' : ''} au programme`}
-        actions={
-          <>
+      {/* ── Header Style Notion ── */}
+      <div className="flex flex-col gap-4 border-b border-slate-200/80 pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-semibold text-slate-800 tracking-tight">Matières</h2>
+            <p className="mt-1 text-[13px] text-slate-500">
+              {subjects.length} matière{subjects.length > 1 ? 's' : ''} configurée{subjects.length > 1 ? 's' : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
             <SearchInput
               value={search}
               onChange={onSearch}
-              placeholder="Nom ou code…"
-              className="w-full sm:w-52"
+              placeholder="Rechercher..."
+              className="w-56"
             />
-            <Btn variant="primary" onClick={onAdd}>
-              <Plus size={16} /> Nouvelle matière
+            <Btn variant="primary" onClick={onAdd} className="rounded-md">
+              <Plus size={15} /> Nouvelle matière
             </Btn>
-          </>
-        }
-      />
+          </div>
+        </div>
+      </div>
 
       {subjects.length === 0 ? (
         <EmptyState
           icon={BookOpen}
-          title="Aucune matière configurée"
-          description="Créez les matières du programme (mathématiques, français, sciences…) pour pouvoir ensuite les affecter à vos classes."
-          action={<Btn variant="primary" onClick={onAdd}><Plus size={16} /> Créer une matière</Btn>}
+          title="Aucune matière"
+          description="Créez les matières du programme pour pouvoir ensuite les affecter à vos classes."
+          action={<Btn variant="primary" onClick={onAdd}><Plus size={16} /> Créer</Btn>}
         />
       ) : filtered.length === 0 ? (
         <EmptyState
@@ -744,33 +695,53 @@ function PanelSubjects({
           description={`Aucune matière ne correspond à « ${search} ».`}
         />
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {filtered.map((s) => {
             const color = s.color || '#6366f1';
             return (
-              <Card key={s.id} interactive className="relative overflow-hidden p-4">
-                <div className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: color }} />
-                <div className="mt-1 flex items-start gap-3">
-                  <span
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white shadow-sm"
-                    style={{ backgroundColor: color }}
-                  >
-                    {initials(s.code)}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-bold text-slate-800">{s.name}</p>
-                    <Badge tone="slate" className="mt-1">{s.code}</Badge>
+              <div
+                key={s.id}
+                className="group flex flex-col justify-between rounded-md border border-slate-200 bg-white p-3 shadow-sm transition-all hover:border-slate-300 hover:shadow-md"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-bold text-white"
+                      style={{ backgroundColor: color }}
+                    >
+                      {initials(s.code, s.name.charAt(0))}
+                    </div>
+                    <h3 className="truncate text-[14px] font-medium text-slate-700">{s.name}</h3>
+                  </div>
+                  
+                  {/* Actions (Visibles uniquement au survol) */}
+                  <div className="flex shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+                    <button
+                      onClick={() => onEdit(s)}
+                      className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+                      title="Modifier"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      onClick={() => onDelete(s)}
+                      className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                      title="Supprimer"
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </div>
                 </div>
-                <div className="mt-4 flex items-center justify-end gap-1 border-t border-slate-100 pt-2.5">
-                  <Btn size="sm" variant="ghost" onClick={() => onEdit(s)}>
-                    <Pencil size={13} /> Modifier
-                  </Btn>
-                  <IconBtn label={`Supprimer ${s.name}`} tone="danger" onClick={() => onDelete(s)}>
-                    <Trash2 size={14} />
-                  </IconBtn>
+
+                <div className="mt-3 flex items-center pl-[30px]">
+                  <span
+                    className="inline-flex items-center rounded-[3px] px-1.5 py-0.5 text-[11px] font-medium leading-4"
+                    style={{ backgroundColor: `${color}15`, color: color }}
+                  >
+                    {s.code}
+                  </span>
                 </div>
-              </Card>
+              </div>
             );
           })}
         </div>
@@ -778,6 +749,7 @@ function PanelSubjects({
     </div>
   );
 }
+
 
 function PanelClass({
   classes, subjects, selectedClass, classSubjects, loading, onSelectClass, onAssign, onRemove,
@@ -918,83 +890,6 @@ function PanelClass({
   );
 }
 
-function PanelPeriods({
-  periods, classes, onAdd, onToggle,
-}: {
-  periods: GradingPeriod[];
-  classes: ClassItem[];
-  onAdd: () => void;
-  onToggle: (p: GradingPeriod) => void;
-}) {
-  return (
-    <div className="space-y-6">
-      <PanelHeader
-        icon={ClipboardList}
-        title="Périodes d'évaluation"
-        subtitle="Trimestres ou semestres de l'année scolaire en cours."
-        actions={
-          <Btn variant="primary" onClick={onAdd}>
-            <Plus size={16} /> Nouvelle période
-          </Btn>
-        }
-      />
-
-      {periods.length === 0 ? (
-        <EmptyState
-          icon={ClipboardList}
-          title="Aucune période configurée"
-          description="Les périodes regroupent les notes d'un même moment de l'année (trimestre, semestre, période de rattrapage)."
-          action={<Btn variant="primary" onClick={onAdd}><Plus size={16} /> Créer une période</Btn>}
-        />
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {periods.map((p) => {
-            const scope = p.class_id
-              ? classes.find((c) => c.id === p.class_id)?.name ?? 'Classe inconnue'
-              : 'Toutes les classes';
-            return (
-              <Card
-                key={p.id}
-                interactive
-                className={cx('p-4', p.is_active && 'border-brand-200 shadow-card')}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span
-                      className={cx(
-                        'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-bold tabular-nums',
-                        p.is_active ? 'bg-brand-600 text-white shadow-brand' : 'bg-slate-100 text-slate-400'
-                      )}
-                    >
-                      {p.period_order}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-bold text-slate-800">{p.name}</p>
-                      <p className="truncate text-[11px] text-slate-400">{scope}</p>
-                    </div>
-                  </div>
-                  <Switch
-                    checked={p.is_active}
-                    onChange={() => onToggle(p)}
-                    label={p.is_active ? `Désactiver ${p.name}` : `Activer ${p.name}`}
-                  />
-                </div>
-                <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
-                  <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-400">
-                    <CalendarDays size={12} /> {formatDateRange(p.start_date, p.end_date)}
-                  </span>
-                  <Badge tone={p.is_active ? 'brand' : 'slate'}>
-                    {p.is_active ? 'Active' : 'Inactive'}
-                  </Badge>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function PanelGradeTypes({ gradeTypes, onAdd }: { gradeTypes: GradeType[]; onAdd: () => void }) {
   return (
@@ -1062,12 +957,23 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
   useEffect(() => {
     if (!yearId) return;
+    // Activer toutes les périodes existantes (fix migration is_active=0)
+    invoke('activate_all_grading_periods', { schoolId }).catch(() => {});
     Promise.all([
       invoke<ClassItem[]>('get_classes', { schoolId, academicYearId: yearId }),
-      invoke<GradingPeriod[]>('get_grading_periods', { schoolId, academicYearId: yearId, classId: null }),
       invoke<GradeType[]>('get_grade_types', { schoolId }),
-    ]).then(([c, p, gt]) => { setClasses(c); setPeriods(p); setGradeTypes(gt); });
+    ]).then(([c, gt]) => { setClasses(c); setGradeTypes(gt); });
   }, [schoolId, yearId]);
+
+
+  // Recharge toutes les périodes de la classe sélectionnée
+  useEffect(() => {
+    if (!selClass || !yearId) return;
+    setPeriods([]);
+    invoke<GradingPeriod[]>('get_grading_periods', { schoolId, academicYearId: yearId, classId: selClass })
+      .then((ps) => setPeriods(ps));
+  }, [selClass, schoolId, yearId]);
+
 
   useEffect(() => {
     if (!selClass || !yearId) return;
@@ -1167,7 +1073,7 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
           <Field label="Classe">
             <Select
               value={selClass}
-              onChange={(e) => { setSelClass(e.target.value); setSelSubject(''); }}
+              onChange={(e) => { setSelClass(e.target.value); setSelSubject(''); setSelPeriod(''); setPeriods([]); }}
             >
               <option value="">-- Choisir une classe --</option>
               {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -1192,12 +1098,16 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
             </Select>
           </Field>
           <Field label="Période">
-            <Select value={selPeriod} onChange={(e) => setSelPeriod(e.target.value)}>
-              <option value="">-- Choisir une période --</option>
+            <Select value={selPeriod} onChange={(e) => setSelPeriod(e.target.value)} disabled={!selClass}>
+              {!selClass ? (
+                <option value="">-- Sélectionnez d'abord une classe --</option>
+              ) : periods.length === 0 ? (
+                <option value="">-- Aucune période pour cette classe --</option>
+              ) : (
+                <option value="">-- Choisir une période --</option>
+              )}
               {periods.map((p) => (
-                <option key={p.id} value={p.id} disabled={!p.is_active}>
-                  {p.name}{p.is_active ? '' : ' (inactive)'}
-                </option>
+                <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </Select>
           </Field>

@@ -1977,12 +1977,12 @@ pub fn get_class_subjects(
         "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
                 cs.teacher_id, cs.coefficient,
                 s.name, s.code, c.name,
-                (p.first_name || ' ' || p.last_name),
+                (st.prenoms || ' ' || st.nom),
                 cs.weekly_hours, cs.subject_type, cs.is_mandatory, cs.order_index, cs.color_icon
          FROM class_subjects cs
          JOIN subjects s ON cs.subject_id = s.id
          JOIN classes c ON cs.class_id = c.id
-         LEFT JOIN profiles p ON cs.teacher_id = p.user_id AND p.school_id = cs.school_id
+         LEFT JOIN staff st ON cs.teacher_id = st.id AND st.school_id = cs.school_id
          WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3
          ORDER BY s.name"
     ).map_err(|e| e.to_string())?;
@@ -2111,7 +2111,7 @@ pub fn get_grading_periods(
          FROM grading_periods WHERE school_id=?1 AND academic_year_id=?2".to_string();
 
     if class_id.is_some() {
-        query.push_str(" AND (class_id=?3 OR class_id IS NULL)");
+        query.push_str(" AND class_id=?3");
     }
     query.push_str(" ORDER BY period_order");
 
@@ -2157,11 +2157,11 @@ pub fn create_grading_period(
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO grading_periods (id, school_id, academic_year_id, class_id, name, period_order, start_date, end_date, is_active, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?9)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?9)",
         rusqlite::params![id, school_id, academic_year_id, class_id, name, period_order, start_date, end_date, now]
     ).map_err(|e| format!("Erreur SQL: {}", e))?;
     enqueue_entity(&conn, "grading_periods", &school_id, &id);
-    Ok(crate::models::GradingPeriod { id, school_id, academic_year_id, class_id, name, period_order, start_date, end_date, is_active: false })
+    Ok(crate::models::GradingPeriod { id, school_id, academic_year_id, class_id, name, period_order, start_date, end_date, is_active: true })
 }
 
 #[tauri::command]
@@ -2183,6 +2183,30 @@ pub fn update_grading_period(
         rusqlite::params![class_id, name, period_order, start_date, end_date, is_active, now, id, school_id]
     ).map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "grading_periods", &school_id, &id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_grading_period(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    conn.execute(
+        "DELETE FROM grading_periods WHERE id=?1 AND school_id=?2",
+        rusqlite::params![id, school_id]
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+// Activation de toutes les périodes existantes (fix de migration is_active=0)
+#[tauri::command]
+pub fn activate_all_grading_periods(school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    conn.execute(
+        "UPDATE grading_periods SET is_active=1 WHERE school_id=?1",
+        rusqlite::params![school_id]
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 

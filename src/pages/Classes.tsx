@@ -42,12 +42,31 @@ interface Series {
   name: string;
 }
 
+interface GradingPeriod {
+  id: string;
+  class_id: string | null;
+  name: string;
+  period_order: number;
+  is_active: boolean;
+}
+
 interface PeriodDraft {
+  id?: string;
   name: string;
   period_order: number;
   start_date: string;
   end_date: string;
 }
+
+const ROW_COLORS = [
+  { bg: '#eef2ff', bar: '#6366f1' }, // indigo
+  { bg: '#eff6ff', bar: '#3b82f6' }, // blue
+  { bg: '#f0fdf4', bar: '#22c55e' }, // green
+  { bg: '#fff7ed', bar: '#f97316' }, // orange
+  { bg: '#fdf4ff', bar: '#a855f7' }, // purple
+  { bg: '#f0fdfa', bar: '#14b8a6' }, // teal
+  { bg: '#fff1f2', bar: '#f43f5e' }, // rose
+];
 
 const PERIOD_TEMPLATES: { label: string; icon: string; periods: Omit<PeriodDraft, 'start_date' | 'end_date'>[] }[] = [
   {
@@ -76,6 +95,7 @@ export default function Classes() {
   const [sections, setSections] = useState<Section[]>([]);
   const [levels, setLevels] = useState<Level[]>([]);
   const [allSeries, setAllSeries] = useState<Series[]>([]);
+  const [classPeriods, setClassPeriods] = useState<GradingPeriod[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -118,11 +138,17 @@ export default function Classes() {
     if (!selectedYear) return;
     setLoading(true);
     try {
-      const data: Class[] = await invoke('get_classes', {
-        schoolId,
-        academicYearId: selectedYear.id,
-      });
+      const data = await invoke<Class[]>('get_classes', { schoolId, academicYearId: selectedYear.id });
       setClasses(data);
+      // Charger les périodes de CHAQUE classe pour l'affichage dans le tableau
+      const allPeriods: GradingPeriod[] = [];
+      for (const cls of data) {
+        const ps = await invoke<GradingPeriod[]>('get_grading_periods', {
+          schoolId, academicYearId: selectedYear.id, classId: cls.id,
+        });
+        allPeriods.push(...ps);
+      }
+      setClassPeriods(allPeriods);
     } catch (e: any) {
       setError(e.toString());
     } finally {
@@ -167,10 +193,9 @@ export default function Classes() {
           levelId: form.level_id || null,
           seriesId: form.series_id || null,
         });
-        setSuccess(`Classe "${form.name}" modifiee avec succes !`);
-        resetForm();
-        await loadClasses();
-        setTimeout(() => setSuccess(null), 3000);
+        // Passer à l'étape périodes même en édition
+        setCreatedClassId(editingClass.id);
+        setStep('periods');
       } else {
         const created: any = await invoke('create_class', {
           schoolId,
@@ -194,18 +219,68 @@ export default function Classes() {
     setError(null);
     try {
       const valid = periods.filter(p => p.name.trim());
-      for (const p of valid) {
-        await invoke('create_grading_period', {
+
+      if (editingClass) {
+        // 1. Récupérer les périodes actuelles en BD pour cette classe
+        const existingDbPeriods = await invoke<GradingPeriod[]>('get_grading_periods', {
           schoolId,
           academicYearId: selectedYear.id,
-          classId: createdClassId,
-          name: p.name.trim(),
-          periodOrder: p.period_order,
-          startDate: p.start_date || null,
-          endDate: p.end_date || null,
+          classId: editingClass.id,
         });
+
+        const validIds = valid.map(p => p.id).filter(Boolean);
+
+        // 2. Supprimer uniquement les périodes qui ont été retirées par l'utilisateur
+        for (const dbP of existingDbPeriods) {
+          if (!validIds.includes(dbP.id)) {
+            try { await invoke('delete_grading_period', { id: dbP.id, schoolId }); } catch (err) { console.error(err); }
+          }
+        }
+
+        // 3. Mettre à jour les existantes, créer les nouvelles
+        for (const p of valid) {
+          if (p.id) {
+            await invoke('update_grading_period', {
+              id: p.id,
+              schoolId,
+              classId: editingClass.id,
+              name: p.name.trim(),
+              periodOrder: p.period_order,
+              startDate: p.start_date || null,
+              endDate: p.end_date || null,
+              isActive: true,
+            });
+          } else {
+            await invoke('create_grading_period', {
+              schoolId,
+              academicYearId: selectedYear.id,
+              classId: editingClass.id,
+              name: p.name.trim(),
+              periodOrder: p.period_order,
+              startDate: p.start_date || null,
+              endDate: p.end_date || null,
+            });
+          }
+        }
+      } else {
+        // Création : juste créer
+        for (const p of valid) {
+          await invoke('create_grading_period', {
+            schoolId,
+            academicYearId: selectedYear.id,
+            classId: createdClassId,
+            name: p.name.trim(),
+            periodOrder: p.period_order,
+            startDate: p.start_date || null,
+            endDate: p.end_date || null,
+          });
+        }
       }
-      setSuccess(`Classe "${form.name}" creee avec ${valid.length} periode(s) !`);
+
+      const msg = editingClass
+        ? `Classe "${form.name}" et périodes modifiées avec succès !`
+        : `Classe "${form.name}" créée avec ${valid.length} période(s) !`;
+      setSuccess(msg);
       resetForm();
       await loadClasses();
       setTimeout(() => setSuccess(null), 4000);
@@ -225,7 +300,16 @@ export default function Classes() {
 
   const applyTemplate = (tplIdx: number) => {
     const tpl = PERIOD_TEMPLATES[tplIdx];
-    setPeriods(tpl.periods.map(p => ({ ...p, start_date: '', end_date: '' })));
+    // Conserver les IDs existants pour éviter d'écraser et perdre les notes
+    setPeriods(tpl.periods.map((p, i) => {
+      const existing = periods[i];
+      return {
+        ...p,
+        id: existing?.id,
+        start_date: existing?.start_date || '',
+        end_date: existing?.end_date || '',
+      };
+    }));
   };
 
   const updatePeriod = (idx: number, patch: Partial<PeriodDraft>) => {
@@ -254,7 +338,7 @@ export default function Classes() {
     setError(null);
   };
 
-  const openEdit = (cls: Class) => {
+  const openEdit = async (cls: Class) => {
     setEditingClass(cls);
     const clsLevel = levels.find(l => l.id === cls.level_id);
     setForm({
@@ -264,6 +348,32 @@ export default function Classes() {
       series_id: cls.series_id ?? '',
       section_id: clsLevel?.section_id ?? '',
     });
+    // Charger les périodes DIRECTEMENT depuis la BD pour cette classe
+    try {
+      const dbPeriods = await invoke<GradingPeriod[]>('get_grading_periods', {
+        schoolId, academicYearId: selectedYear!.id, classId: cls.id,
+      });
+      const existing = dbPeriods
+        .sort((a, b) => a.period_order - b.period_order)
+        .map(p => ({
+          id: p.id,
+          name: p.name,
+          period_order: p.period_order,
+          start_date: '',
+          end_date: '',
+        }));
+      setPeriods(existing.length > 0 ? existing : [
+        { name: 'Trimestre 1', period_order: 1, start_date: '', end_date: '' },
+        { name: 'Trimestre 2', period_order: 2, start_date: '', end_date: '' },
+        { name: 'Trimestre 3', period_order: 3, start_date: '', end_date: '' },
+      ]);
+    } catch (_) {
+      setPeriods([
+        { name: 'Trimestre 1', period_order: 1, start_date: '', end_date: '' },
+        { name: 'Trimestre 2', period_order: 2, start_date: '', end_date: '' },
+        { name: 'Trimestre 3', period_order: 3, start_date: '', end_date: '' },
+      ]);
+    }
     setStep('class');
     setShowForm(true);
   };
@@ -312,7 +422,7 @@ export default function Classes() {
 
       <div className="mb-5 flex items-start justify-between gap-4 flex-shrink-0">
         <div>
-          <h2 className="text-2xl font-bold text-[#1e293b] tracking-tight">Gestionnaire des classes</h2>
+          <h2 className="text-2xl font-bold text-[#1e293b] tracking-tight">Gestion des classes</h2>
           <p className="text-slate-500 mt-0.5 text-[13px]">
             {selectedYear
               ? <>Année : <span className="font-semibold text-[#4f46e5]">{selectedYear.name}</span> · Toutes les classes de l’année</>
@@ -414,30 +524,69 @@ export default function Classes() {
                     <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Niveau</th>
                     <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Série</th>
                     <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Élèves</th>
+                    <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Périodes</th>
                     <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredList.map(cls => {
+                  {filteredList.map((cls, idx) => {
                     const levelName = resolveLevelName(cls);
                     const series = allSeries.find(s => s.id === cls.series_id);
+                    const color = ROW_COLORS[idx % ROW_COLORS.length];
+                    // Périodes propres à la classe uniquement
+                    const perds = classPeriods.filter(p => p.class_id === cls.id)
+                      .sort((a, b) => a.period_order - b.period_order);
+                    // Détection trimestre vs semestre : nom OU nombre de périodes
+                    const firstName = perds[0]?.name?.toLowerCase() ?? '';
+                    const isSemestre = firstName.includes('sem') || (perds.length === 2 && !firstName.includes('trim'));
+                    const prefix = isSemestre ? 'S' : 'T';
                     return (
-                      <tr key={cls.id} className="border-b border-slate-50 hover:bg-slate-50/60 transition-colors">
+                      <tr
+                        key={cls.id}
+                        className="border-b border-white/60 transition-all duration-200"
+                        style={{ backgroundColor: color.bg }}
+                        onMouseEnter={e => {
+                          const row = e.currentTarget;
+                          row.style.backgroundColor = color.bg;
+                          row.style.boxShadow = `inset 3px 0 0 ${color.bar}`;
+                          row.style.paddingLeft = '4px';
+                          const bar = row.querySelector('.row-bar') as HTMLElement;
+                          if (bar) { bar.style.transform = 'scaleY(1.2)'; bar.style.boxShadow = `0 0 8px ${color.bar}88`; }
+                          const badges = row.querySelectorAll('.row-badge');
+                          badges.forEach((b: any) => { b.style.transform = 'scale(1.06)'; b.style.transition = 'transform 0.15s ease'; });
+                          const actions = row.querySelector('.row-actions') as HTMLElement;
+                          if (actions) { actions.style.gap = '8px'; }
+                        }}
+                        onMouseLeave={e => {
+                          const row = e.currentTarget;
+                          row.style.boxShadow = '';
+                          row.style.paddingLeft = '';
+                          const bar = row.querySelector('.row-bar') as HTMLElement;
+                          if (bar) { bar.style.transform = ''; bar.style.boxShadow = ''; }
+                          const badges = row.querySelectorAll('.row-badge');
+                          badges.forEach((b: any) => { b.style.transform = ''; });
+                          const actions = row.querySelector('.row-actions') as HTMLElement;
+                          if (actions) { actions.style.gap = ''; }
+                        }}
+                      >
                         <td className="py-2 px-4">
-                          <p className="font-semibold text-slate-800 leading-tight">{cls.name}</p>
+                          <div className="flex items-center gap-2">
+                            <div className="row-bar w-1.5 h-7 rounded-full flex-shrink-0 transition-all duration-200" style={{ backgroundColor: color.bar }} />
+                            <p className="font-semibold text-slate-800 leading-tight">{cls.name}</p>
+                          </div>
                         </td>
                         <td className="py-2 px-4">
                           {levelName === 'Sans niveau' ? (
                             <span className="text-slate-300">—</span>
                           ) : (
-                            <span className="inline-block px-2 py-0.5 rounded-md bg-[#e0f2fe] text-[#0369a1] text-[11px] font-bold">
+                            <span className="row-badge inline-block px-2 py-0.5 rounded-md bg-[#e0f2fe] text-[#0369a1] text-[11px] font-bold">
                               {levelName}
                             </span>
                           )}
                         </td>
                         <td className="py-2 px-4">
                           {series ? (
-                            <span className="inline-block px-2 py-0.5 rounded-md bg-[#ede9fe] text-[#6d28d9] text-[11px] font-bold">
+                            <span className="row-badge inline-block px-2 py-0.5 rounded-md bg-[#ede9fe] text-[#6d28d9] text-[11px] font-bold">
                               {series.name}
                             </span>
                           ) : (
@@ -451,20 +600,44 @@ export default function Classes() {
                           </span>
                         </td>
                         <td className="py-2 px-4">
-                          <div className="flex items-center justify-end gap-1.5">
+                          {perds.length === 0 ? (
+                            <span className="text-slate-300 text-[11px]">—</span>
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              {perds.map((p) => (
+                                <span
+                                  key={p.id}
+                                  title={p.name}
+                                  className="inline-flex items-center justify-center w-6 h-6 rounded-md text-[10px] font-black transition-transform hover:scale-110"
+                                  style={{
+                                    backgroundColor: p.is_active ? color.bar : '#e2e8f0',
+                                    color: p.is_active ? '#ffffff' : '#94a3b8',
+                                    boxShadow: p.is_active ? `0 2px 6px ${color.bar}55` : 'none',
+                                  }}
+                                >
+                                  {prefix}{p.period_order}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2 px-4">
+                          <div className="row-actions flex items-center justify-end gap-2 transition-all duration-200">
                             <button
                               onClick={() => openEdit(cls)}
                               title="Modifier"
-                              className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-[#eef2ff] hover:text-[#4f46e5] text-slate-400 transition-colors"
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-[#4f46e5] bg-[#eef2ff] border border-[#c7d2fe] hover:bg-[#4f46e5] hover:text-white hover:border-[#4f46e5] transition-all duration-150 shadow-sm"
                             >
-                              <Pencil size={14} />
+                              <Pencil size={12} />
+                              Modifier
                             </button>
                             <button
                               onClick={() => setClassToDelete(cls)}
                               title="Supprimer"
-                              className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 hover:bg-red-50 hover:text-red-500 text-slate-400 transition-colors"
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-red-500 bg-red-50 border border-red-200 hover:bg-red-500 hover:text-white hover:border-red-500 transition-all duration-150 shadow-sm"
                             >
-                              <Trash2 size={14} />
+                              <Trash2 size={12} />
+                              Supprimer
                             </button>
                           </div>
                         </td>
@@ -484,12 +657,10 @@ export default function Classes() {
             className="bg-white rounded-2xl w-full shadow-2xl animate-scale-in"
             style={{ maxWidth: step === 'periods' ? '560px' : '460px' }}
           >
-            {!editingClass && (
-              <div className="flex items-center bg-slate-50 border-b border-slate-100 px-6 py-3.5 gap-4 rounded-t-2xl">
+            <div className="flex items-center bg-slate-50 border-b border-slate-100 px-6 py-3.5 gap-4 rounded-t-2xl">
                 <div className={`flex items-center gap-2 text-[12px] font-semibold transition-colors ${step === 'class' ? 'text-[#4f46e5]' : 'text-emerald-500'}`}>
-                  <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all ${
-                    step === 'class' ? 'bg-[#4f46e5] text-white shadow-md shadow-indigo-200' : 'bg-emerald-500 text-white'
-                  }`}>
+                  <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all ${step === 'class' ? 'bg-[#4f46e5] text-white shadow-md shadow-indigo-200' : 'bg-emerald-500 text-white'
+                    }`}>
                     {step === 'class' ? '1' : <Check size={11} />}
                   </span>
                   Informations
@@ -501,13 +672,11 @@ export default function Classes() {
                   />
                 </div>
                 <div className={`flex items-center gap-2 text-[12px] font-semibold transition-colors ${step === 'periods' ? 'text-[#4f46e5]' : 'text-slate-400'}`}>
-                  <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all ${
-                    step === 'periods' ? 'bg-[#4f46e5] text-white shadow-md shadow-indigo-200' : 'bg-slate-200 text-slate-500'
-                  }`}>2</span>
+                  <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all ${step === 'periods' ? 'bg-[#4f46e5] text-white shadow-md shadow-indigo-200' : 'bg-slate-200 text-slate-500'
+                    }`}>2</span>
                   Périodes
                 </div>
               </div>
-            )}
 
             <div className="p-6">
               <div className="flex justify-between items-start mb-6">
@@ -680,16 +849,23 @@ export default function Classes() {
                   )}
 
                   <div className="flex gap-3 pt-1">
-                    <button onClick={handleSkipPeriods} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-500 text-sm font-medium hover:bg-slate-50 transition-colors">
-                      Ignorer
-                    </button>
+                    {!editingClass && (
+                      <button onClick={handleSkipPeriods} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-500 text-sm font-medium hover:bg-slate-50 transition-colors">
+                        Ignorer
+                      </button>
+                    )}
+                    {editingClass && (
+                      <button onClick={resetForm} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-500 text-sm font-medium hover:bg-slate-50 transition-colors">
+                        Annuler
+                      </button>
+                    )}
                     <button
                       onClick={handleSavePeriods}
                       disabled={savingPeriods || periods.filter(p => p.name.trim()).length === 0}
                       className="flex-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#4f46e5] to-[#6366f1] hover:from-[#4338ca] hover:to-[#4f46e5] text-white text-sm font-semibold transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed shadow-md shadow-indigo-200"
                     >
                       <Check size={15} />
-                      {savingPeriods ? 'Enregistrement...' : `Créer avec ${periods.filter(p => p.name.trim()).length} période(s)`}
+                      {savingPeriods ? 'Enregistrement...' : editingClass ? 'Enregistrer' : `Créer avec ${periods.filter(p => p.name.trim()).length} période(s)`}
                     </button>
                   </div>
                 </div>

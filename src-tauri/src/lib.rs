@@ -84,6 +84,8 @@ pub fn run() {
             commands::get_grading_periods,
             commands::create_grading_period,
             commands::update_grading_period,
+            commands::delete_grading_period,
+            commands::activate_all_grading_periods,
             commands::get_grade_types,
             commands::create_grade_type,
             commands::update_grade_type,

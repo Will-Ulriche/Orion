@@ -11,7 +11,7 @@ import YearSelector from './YearSelector';
 // tout en gardant vos routes.
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord' },
-  { to: '/classes', icon: GraduationCap, label: 'Gestionnaire des classes' },
+  { to: '/classes', icon: GraduationCap, label: 'Gestion des classes' },
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions' },
   { to: '/finances', icon: Coins, label: 'Finances & Paiements' },
   { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Notes' },
@@ -82,7 +82,7 @@ export default function Sidebar() {
           >
             MANAGE
           </p>
-          <div className="flex flex-col gap-0 relative">
+          <div className="flex flex-col gap-1 relative">
             {manageItems.map((item) => (
               <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
@@ -96,7 +96,7 @@ export default function Sidebar() {
           >
             SETTINGS
           </p>
-          <div className="flex flex-col gap-0 relative">
+          <div className="flex flex-col gap-1 relative">
             {settingsItems.map((item) => (
               <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
