@@ -1063,6 +1063,7 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
   const selectedClassName  = classes.find((c) => c.id === selClass)?.name;
   const selectedSubjectName = classSubjects.find((cs) => cs.id === selSubject)?.subject_name;
+  const selectedCoefficient = classSubjects.find((cs) => cs.id === selSubject)?.coefficient ?? 1;
   const selectedPeriodName  = periods.find((p) => p.id === selPeriod)?.name;
   const selectedTypeName    = gradeTypes.find((gt) => gt.id === selGradeType)?.name;
 
@@ -1130,6 +1131,7 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
             <span>{selectedPeriodName}</span>
             <span className="text-slate-300">·</span>
             <span>{selectedTypeName}</span>
+            <Badge tone="slate" className="ml-1">coef. {selectedCoefficient}</Badge>
             <Badge tone="slate" className="ml-1">note sur {maxScore}</Badge>
             {savedGrades.length > 0 && (
               <Badge tone="emerald" className="ml-1">
@@ -1180,6 +1182,7 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
                     <tr>
                       <Th className="w-10 text-center">#</Th>
                       <Th>Élève</Th>
+                      <Th className="w-20 text-center">Coef.</Th>
                       <Th className="w-32 text-center">Note /{maxScore}</Th>
                       <Th className="w-24 text-center">/20</Th>
                       <Th className="w-28 text-center">Statut</Th>
@@ -1217,6 +1220,9 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
                                 )}
                               </div>
                             </div>
+                          </Td>
+                          <Td className="text-center text-sm font-semibold tabular-nums text-slate-500">
+                            {selectedCoefficient}
                           </Td>
                           <Td className="text-center">
                             <input
