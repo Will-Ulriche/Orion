@@ -53,6 +53,10 @@ pub struct Class {
     /// Nombre d'élèves inscrits et actifs dans cette classe pour l'année en cours.
     /// Calculé à la lecture, jamais stocké.
     pub student_count: i64,
+    /// Professeur titulaire de la classe (optionnel)
+    pub homeroom_teacher_id: Option<String>,
+    /// Nom du titulaire (jointure, non stocké)
+    pub homeroom_teacher_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

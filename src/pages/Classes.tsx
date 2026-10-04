@@ -19,6 +19,14 @@ interface Class {
   level_id: string | null;
   series_id: string | null;
   student_count: number;
+  homeroom_teacher_id: string | null;
+  homeroom_teacher_name: string | null;
+}
+
+interface Staff {
+  id: string;
+  nom: string;
+  prenoms: string;
 }
 
 interface Section {
@@ -96,6 +104,7 @@ export default function Classes() {
   const [levels, setLevels] = useState<Level[]>([]);
   const [allSeries, setAllSeries] = useState<Series[]>([]);
   const [classPeriods, setClassPeriods] = useState<GradingPeriod[]>([]);
+  const [staff, setStaff] = useState<Staff[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -113,6 +122,7 @@ export default function Classes() {
     level_id: '',
     series_id: '',
     section_id: '',
+    homeroom_teacher_id: '',
   });
 
   const [periods, setPeriods] = useState<PeriodDraft[]>([
@@ -159,14 +169,21 @@ export default function Classes() {
   const loadStructure = async () => {
     if (!schoolId) return;
     try {
-      const [sects, lvls, srs] = await Promise.all([
+      const [sects, lvls, srs, stf] = await Promise.all([
         invoke<Section[]>('get_sections', { schoolId }),
         invoke<Level[]>('get_levels', { schoolId, sectionId: null }),
         invoke<Series[]>('get_series', { schoolId, levelId: null }),
+        invoke<Staff[]>('get_staff', { schoolId }),
       ]);
       setSections(sects);
       setLevels(lvls);
       setAllSeries(srs);
+      // Garder uniquement les enseignants
+      setStaff(stf.filter((s: any) => {
+        const t = (s.type_personnel || '').toLowerCase();
+        const f = (s.fonction || '').toLowerCase();
+        return t === 'enseignant' || f.includes('prof');
+      }));
     } catch (e: any) {
       console.warn('Structure pedagogique non disponible:', e);
     }
@@ -192,8 +209,8 @@ export default function Classes() {
           level: form.level || null,
           levelId: form.level_id || null,
           seriesId: form.series_id || null,
+          homeroomTeacherId: form.homeroom_teacher_id || null,
         });
-        // Passer à l'étape périodes même en édition
         setCreatedClassId(editingClass.id);
         setStep('periods');
       } else {
@@ -204,6 +221,7 @@ export default function Classes() {
           level: form.level || null,
           levelId: form.level_id || null,
           seriesId: form.series_id || null,
+          homeroomTeacherId: form.homeroom_teacher_id || null,
         });
         setCreatedClassId(created.id ?? created);
         setStep('periods');
@@ -325,7 +343,7 @@ export default function Classes() {
   };
 
   const resetForm = () => {
-    setForm({ name: '', level: '', level_id: '', series_id: '', section_id: '' });
+    setForm({ name: '', level: '', level_id: '', series_id: '', section_id: '', homeroom_teacher_id: '' });
     setPeriods([
       { name: 'Trimestre 1', period_order: 1, start_date: '', end_date: '' },
       { name: 'Trimestre 2', period_order: 2, start_date: '', end_date: '' },
@@ -347,6 +365,7 @@ export default function Classes() {
       level_id: cls.level_id ?? '',
       series_id: cls.series_id ?? '',
       section_id: clsLevel?.section_id ?? '',
+      homeroom_teacher_id: cls.homeroom_teacher_id ?? '',
     });
     // Charger les périodes DIRECTEMENT depuis la BD pour cette classe
     try {
@@ -525,6 +544,7 @@ export default function Classes() {
                     <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Série</th>
                     <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Élèves</th>
                     <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Périodes</th>
+                    <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Titulaire</th>
                     <th className="py-2.5 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider text-right">Actions</th>
                   </tr>
                 </thead>
@@ -619,6 +639,15 @@ export default function Classes() {
                                 </span>
                               ))}
                             </div>
+                          )}
+                        </td>
+                        <td className="py-2 px-4">
+                          {cls.homeroom_teacher_name ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
+                              <GraduationCap size={11} /> {cls.homeroom_teacher_name}
+                            </span>
+                          ) : (
+                            <span className="text-slate-300 text-[11px]">—</span>
                           )}
                         </td>
                         <td className="py-2 px-4">
@@ -721,6 +750,29 @@ export default function Classes() {
                       value={form.level}
                       onChange={level => setForm({ ...form, level })}
                     />
+                  </div>
+
+                  {/* Professeur titulaire */}
+                  <div>
+                    <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">
+                      Professeur titulaire <span className="text-slate-400 font-normal">(optionnel)</span>
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={form.homeroom_teacher_id}
+                        onChange={e => setForm({ ...form, homeroom_teacher_id: e.target.value })}
+                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-700 appearance-none transition-all"
+                      >
+                        <option value="">— Aucun titulaire —</option>
+                        {staff.map(s => (
+                          <option key={s.id} value={s.id}>{s.prenoms} {s.nom}</option>
+                        ))}
+                      </select>
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><ChevronDown size={15} /></div>
+                    </div>
+                    {staff.length === 0 && (
+                      <p className="mt-1 text-[11px] text-slate-400">Ajoutez des enseignants dans le module Personnel pour les sélectionner ici.</p>
+                    )}
                   </div>
 
                   {hasStructure && (

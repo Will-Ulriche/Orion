@@ -823,15 +823,19 @@ fn ensure_year_is_open(conn: &rusqlite::Connection, school_id: &str, year_id: &s
 
 #[tauri::command]
 pub fn get_classes(school_id: String, academic_year_id: String, state: State<'_, DbState>) -> Result<Vec<Class>, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let conn = state.0.lock().map_err(|_ | "Impossible de verrouiller la base de données".to_string())?;
     
     let mut stmt = conn.prepare("
         SELECT c.id, c.school_id, c.academic_year_id, c.name, c.level,
                (SELECT COUNT(*) FROM enrollments e
                  WHERE e.class_id = c.id
                    AND e.academic_year_id = c.academic_year_id
-                   AND e.status = 'ACTIVE') AS student_count
+                   AND e.status = 'ACTIVE') AS student_count,
+               c.level_id, c.series_id,
+               c.homeroom_teacher_id,
+               (st.prenoms || ' ' || st.nom) AS homeroom_teacher_name
         FROM classes c
+        LEFT JOIN staff st ON c.homeroom_teacher_id = st.id
         WHERE c.school_id = ?1 AND c.academic_year_id = ?2
         ORDER BY c.name ASC
     ").map_err(|e| e.to_string())?;
@@ -843,8 +847,10 @@ pub fn get_classes(school_id: String, academic_year_id: String, state: State<'_,
             name: row.get(3)?,
             level: row.get(4)?,
             student_count: row.get(5)?,
-            level_id: None,
-            series_id: None,
+            level_id: row.get(6)?,
+            series_id: row.get(7)?,
+            homeroom_teacher_id: row.get(8)?,
+            homeroom_teacher_name: row.get(9)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -864,6 +870,7 @@ pub fn create_class(
     level: Option<String>,
     level_id: Option<String>,
     series_id: Option<String>,
+    homeroom_teacher_id: Option<String>,
     state: State<'_, DbState>
 ) -> Result<Class, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
@@ -871,14 +878,15 @@ pub fn create_class(
     let id = uuid::Uuid::new_v4().to_string();
     
     conn.execute(
-        "INSERT INTO classes (id, school_id, academic_year_id, name, level, level_id, series_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![id, school_id, academic_year_id, name, level, level_id, series_id],
+        "INSERT INTO classes (id, school_id, academic_year_id, name, level, level_id, series_id, homeroom_teacher_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![id, school_id, academic_year_id, name, level, level_id, series_id, homeroom_teacher_id],
     ).map_err(|e| e.to_string())?;
 
     enqueue_entity(&conn, "classes", &school_id, &id);
 
     Ok(Class {
-        id, school_id, academic_year_id, name, level, student_count: 0, level_id, series_id
+        id, school_id, academic_year_id, name, level, student_count: 0,
+        level_id, series_id, homeroom_teacher_id, homeroom_teacher_name: None,
     })
 }
 
@@ -889,6 +897,7 @@ pub fn update_class(
     level: Option<String>,
     level_id: Option<String>,
     series_id: Option<String>,
+    homeroom_teacher_id: Option<String>,
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
@@ -901,8 +910,8 @@ pub fn update_class(
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     conn.execute(
-        "UPDATE classes SET name = ?1, level = ?2, level_id = ?3, series_id = ?4 WHERE id = ?5",
-        rusqlite::params![name, level, level_id, series_id, id],
+        "UPDATE classes SET name = ?1, level = ?2, level_id = ?3, series_id = ?4, homeroom_teacher_id = ?5 WHERE id = ?6",
+        rusqlite::params![name, level, level_id, series_id, homeroom_teacher_id, id],
     ).map_err(|e| e.to_string())?;
 
     enqueue_entity(&conn, "classes", &school_id, &id);
