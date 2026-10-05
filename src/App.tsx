@@ -16,6 +16,7 @@ import SyncCenter from './pages/SyncCenter';
 import Finances from './pages/Finances';
 import Pedagogie from './pages/Pedagogie';
 import Personnel from './pages/Personnel';
+import Archives from './pages/Archives';
 import './App.css';
 
 // Route protégée : redirige vers /login si non connecté
@@ -58,6 +59,7 @@ function AppRoutes() {
         <Route path="/finances" element={<Finances />} />
         <Route path="/pedagogie" element={<Pedagogie />} />
         <Route path="/personnel" element={<Personnel />} />
+        <Route path="/archives" element={<Archives />} />
         <Route path="/sync" element={<SyncCenter />} />
       </Route>
 
