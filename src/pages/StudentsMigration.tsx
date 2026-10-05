@@ -110,7 +110,7 @@ export default function StudentsMigration() {
   // Modals
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
-  const [newStudent, setNewStudent] = useState({ firstName: '', lastName: '', level: '' });
+  const [newStudent, setNewStudent] = useState({ firstName: '', lastName: '', level: '', classId: '' });
   const [viewingProfile, setViewingProfile] = useState<{ id: string; className: string | null, enrollmentId?: string } | null>(null);
   const [migratingStudent, setMigratingStudent] = useState<StudentEnrollment | null>(null);
   const [migrationTargetClass, setMigrationTargetClass] = useState('');
@@ -169,10 +169,10 @@ export default function StudentsMigration() {
         academicYearId: currentYear!.id,
         firstName: newStudent.firstName,
         lastName: newStudent.lastName,
-        classId: null,
+        classId: newStudent.classId || null,
       });
       setShowAddForm(false);
-      setNewStudent({ firstName: '', lastName: '', level: '' });
+      setNewStudent({ firstName: '', lastName: '', level: '', classId: '' });
       fetchStudents();
       showSuccess('Élève inscrit avec succès.');
     } catch (err: any) {
@@ -240,6 +240,11 @@ export default function StudentsMigration() {
 
   // Niveaux uniques pour le filtre
   const levels = [...new Set(students.map(s => s.class_level).filter(Boolean))] as string[];
+
+  // Classes proposées au formulaire d'inscription (filtrées par niveau choisi)
+  const classesForLevel = newStudent.level
+    ? classes.filter(c => (c.level ?? '') === newStudent.level)
+    : classes;
 
   // Filtrage
   const filtered = students.filter(s => {
@@ -318,9 +323,9 @@ export default function StudentsMigration() {
         <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm mb-5 flex-shrink-0">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-[15px] font-bold text-slate-800">Nouvelle inscription — {currentYear.name}</h3>
-            <button onClick={() => { setShowAddForm(false); setNewStudent({ firstName: '', lastName: '', level: '' }); }} className="text-slate-400 hover:text-slate-600 p-1"><X size={18} /></button>
+            <button onClick={() => { setShowAddForm(false); setNewStudent({ firstName: '', lastName: '', level: '', classId: '' }); }} className="text-slate-400 hover:text-slate-600 p-1"><X size={18} /></button>
           </div>
-          <form onSubmit={handleAddStudent} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+          <form onSubmit={handleAddStudent} className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
             <div>
               <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Prénom <span className="text-[#4f46e5]">*</span></label>
               <input required placeholder="Ex : Mamadou" value={newStudent.firstName} onChange={e => setNewStudent({ ...newStudent, firstName: e.target.value })}
@@ -335,11 +340,32 @@ export default function StudentsMigration() {
               <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Niveau scolaire</label>
               <LevelDropdown
                 value={newStudent.level}
-                onChange={level => setNewStudent({ ...newStudent, level })}
+                onChange={level => setNewStudent(s => {
+                  const cls = classes.find(c => c.id === s.classId);
+                  const keep = cls !== undefined && (!level || cls.level === level);
+                  return { ...s, level, classId: keep ? s.classId : '' };
+                })}
               />
             </div>
+            <div>
+              <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Classe <span className="text-[#4f46e5]">*</span></label>
+              <select
+                required
+                value={newStudent.classId}
+                onChange={e => {
+                  const cls = classes.find(c => c.id === e.target.value);
+                  setNewStudent({ ...newStudent, classId: e.target.value, level: cls?.level ?? newStudent.level });
+                }}
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]"
+              >
+                <option value="">{classesForLevel.length > 0 ? '— Choisir une classe —' : 'Aucune classe disponible'}</option>
+                {classesForLevel.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}{c.level ? ` — ${c.level}` : ''}</option>
+                ))}
+              </select>
+            </div>
             <div className="flex gap-2">
-              <button type="button" onClick={() => { setShowAddForm(false); setNewStudent({ firstName: '', lastName: '', level: '' }); }}
+              <button type="button" onClick={() => { setShowAddForm(false); setNewStudent({ firstName: '', lastName: '', level: '', classId: '' }); }}
                 className="flex-1 px-4 py-2 border border-slate-200 rounded-xl text-slate-600 text-[13px] font-medium hover:bg-slate-50 transition-colors">
                 Annuler
               </button>
