@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
+import { ConfirmDialog } from '../components/ui';
 import {
   User, Phone, Briefcase, MapPin, BookOpen,
   Shield, FileText, Info, Search, ChevronRight,
@@ -9,7 +10,7 @@ import {
   Baby, GraduationCap, Award,
   UserCheck, LogOut, Plus,
   CheckCircle, XCircle, Loader2, Trash2, Save,
-  Eye, Printer, Download
+  Eye, Printer, Download, X
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────
@@ -134,9 +135,9 @@ const SECTIONS = [
 function SectionTitle({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <div className="mb-6">
-      <h2 className="text-lg font-bold text-slate-800">{title}</h2>
-      {subtitle && <p className="text-sm text-slate-400 mt-0.5">{subtitle}</p>}
-      <div className="mt-3 h-px bg-gradient-to-r from-[#4f46e5]/30 to-transparent" />
+      <h2 className="text-[17px] font-bold tracking-tight text-slate-800">{title}</h2>
+      {subtitle && <p className="text-[13px] text-slate-400 mt-1">{subtitle}</p>}
+      <div className="mt-3 h-px bg-gradient-to-r from-[#4f46e5]/40 via-[#4f46e5]/10 to-transparent" />
     </div>
   );
 }
@@ -170,7 +171,7 @@ function Field({ label, value, onChange, type = 'text', placeholder, icon: Icon,
           value={value ?? ''}
           onChange={e => onChange(e.target.value)}
           placeholder={placeholder ?? '—'}
-          className={`w-full ${Icon ? 'pl-8' : 'pl-3'} pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] text-slate-700 placeholder:text-slate-300 outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] transition-all`}
+          className={`w-full ${Icon ? 'pl-9' : 'pl-3.5'} pr-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] text-slate-700 placeholder:text-slate-300 outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] transition-all duration-200`}
         />
       </div>
     </div>
@@ -188,7 +189,7 @@ function Select({ label, value, onChange, options, icon: Icon }: {
         <select
           value={value ?? ''}
           onChange={e => onChange(e.target.value)}
-          className={`w-full ${Icon ? 'pl-8' : 'pl-3'} pr-8 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] text-slate-700 outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] appearance-none transition-all`}
+          className={`w-full ${Icon ? 'pl-9' : 'pl-3.5'} pr-9 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] text-slate-700 outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] appearance-none transition-all duration-200`}
         >
           <option value="">— Selectionner —</option>
           {options.map(o => <option key={o} value={o}>{o}</option>)}
@@ -206,9 +207,9 @@ function SectionInfosPerso({ form, set }: { form: Staff; set: (k: keyof Staff, v
   const initials = (form.prenoms?.[0] ?? '?') + (form.nom?.[0] ?? '?');
   return (
     <div className="space-y-5">
-      <SectionTitle title="Informations personnelles" subtitle="Identite et etat civil" />
-      <div className="flex items-center gap-5 p-4 bg-slate-50 border border-slate-200 rounded-xl">
-        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] flex items-center justify-center text-white text-2xl font-bold flex-shrink-0 shadow-lg">
+      <SectionTitle title="Informations personnelles" subtitle="Identité et état civil" />
+      <div className="flex items-center gap-5 rounded-2xl border border-[#4f46e5]/10 bg-gradient-to-r from-[#f8f9fe] via-white to-[#ede9fe]/50 p-4">
+        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] flex items-center justify-center text-white text-2xl font-bold flex-shrink-0 shadow-lg ring-4 ring-white">
           {initials.toUpperCase()}
         </div>
         <div>
@@ -240,7 +241,7 @@ function SectionInfosPerso({ form, set }: { form: Staff; set: (k: keyof Staff, v
 function SectionCoordonnees({ form, set }: { form: Staff; set: (k: keyof Staff, v: any) => void }) {
   return (
     <div className="space-y-5">
-      <SectionTitle title="Coordonnees" subtitle="Contacts et adresse" />
+      <SectionTitle title="Coordonnées" subtitle="Contacts et adresse" />
       <Grid>
         <Field label="Telephone principal" type="tel" value={form.telephone_principal ?? ''} onChange={v => set('telephone_principal', v || null)} icon={Phone} />
         <Field label="Telephone secondaire" type="tel" value={form.telephone_secondaire ?? ''} onChange={v => set('telephone_secondaire', v || null)} icon={Phone} />
@@ -334,7 +335,7 @@ function SectionAffectation({ form, set }: { form: Staff; set: (k: keyof Staff, 
 function SectionEnseignement({ form, set }: { form: Staff; set: (k: keyof Staff, v: any) => void }) {
   return (
     <div className="space-y-5">
-      <SectionTitle title="Enseignement" subtitle="Matieres et charge horaire" />
+      <SectionTitle title="Enseignement" subtitle="Matières et charge horaire" />
       <Grid>
         <Field label="Matiere principale" value={form.matiere_principale ?? ''} onChange={v => set('matiere_principale', v || null)} icon={BookOpen} />
         <div className="sm:col-span-2">
@@ -372,9 +373,9 @@ function SectionSituationAdmin({ form, set }: { form: Staff; set: (k: keyof Staf
   };
   return (
     <div className="space-y-5">
-      <SectionTitle title="Situation administrative" subtitle="Etat et historique administratif" />
+      <SectionTitle title="Situation administrative" subtitle="État et historique administratif" />
       <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl">
-        <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-3">Etat actuel du personnel</p>
+        <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-3">État actuel du personnel</p>
         <div className="flex flex-wrap gap-2">
           {statuses.map(s => (
             <button key={s} onClick={() => set('statut_administratif', s)}
@@ -401,8 +402,8 @@ function SectionSituationAdmin({ form, set }: { form: Staff; set: (k: keyof Staf
       <div>
         <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Observations</label>
         <textarea rows={3} value={form.observations ?? ''} onChange={e => set('observations', e.target.value || null)}
-          placeholder="Observations generales..."
-          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] text-slate-700 placeholder:text-slate-300 outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] resize-none" />
+          placeholder="Observations générales..."
+          className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] text-slate-700 placeholder:text-slate-300 outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] resize-none transition-all duration-200" />
       </div>
     </div>
   );
@@ -484,16 +485,6 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
       <p>a rempli toutes les obligations administratives vis-à-vis de ${etablissement} et qu'il/elle
       ne doit rien à l'établissement au titre de ses fonctions de <strong>${fonction}</strong>.</p>
       <p>En foi de quoi, le présent quitus lui est délivré pour servir et valoir ce que de droit.</p>`,
-
-    'Attestation de salaire': `
-      <p>Le Directeur de ${etablissement} atteste que :</p>
-      <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
-        ${nom_complet} — Matricule : ${matricule}
-      </p>
-      <p>employé(e) en qualité de <strong>${fonction}</strong>, perçoit une rémunération mensuelle
-      conformément à sa grille indiciaire
-      ${staff.grade ? `(Grade : <strong>${staff.grade}</strong>${staff.echelon ? `, Echelon : <strong>${staff.echelon}</strong>` : ''})` : ''}.</p>
-      <p>Cette attestation est délivrée à la demande de l'intéressé(e) pour servir et valoir ce que de droit.</p>`,
 
     'Certificat de salaire': `
       <p>Nous certifions que :</p>
@@ -658,8 +649,8 @@ function DocumentPreviewModal({ docName, staff, onClose, onDownload }: {
   }, [blobUrl]);
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-4xl h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+      <div className="bg-white rounded-2xl w-full max-w-4xl h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-scale-in">
         {/* En-tête du modal */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 flex-shrink-0">
           <div className="flex items-center gap-3">
@@ -725,7 +716,7 @@ function SectionDocuments({ staff }: { staff: Staff }) {
 
   const categories = [
     { label: 'Attestations de service', color: 'blue', docs: ['Attestation de service', 'Certificat de service', 'Attestation de prise de service', 'Attestation de reprise de service', 'Attestation de fin de contrat', 'Quitus administratif'] },
-    { label: 'Documents salariaux', color: 'green', docs: ['Attestation de salaire', 'Certificat de salaire', 'Bulletin de salaire'] },
+    { label: 'Documents salariaux', color: 'green', docs: ['Certificat de salaire', 'Bulletin de salaire'] },
     { label: 'Autorisations & conges', color: 'amber', docs: ["Autorisation d'absence", "Autorisation de conge"] },
     { label: 'Formation & stage', color: 'purple', docs: ['Attestation de formation', 'Attestation de stage'] },
   ];
@@ -817,7 +808,7 @@ function SectionDocuments({ staff }: { staff: Staff }) {
 function SectionInfosSysteme({ staff }: { staff: Staff }) {
   return (
     <div className="space-y-6">
-      <SectionTitle title="Informations systeme" subtitle="Metadonnees et traçabilite" />
+      <SectionTitle title="Informations système" subtitle="Métadonnées et traçabilité" />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {[
           { label: 'Identifiant du personnel', value: staff.id || '—' },
@@ -874,8 +865,8 @@ function CreateModal({ schoolId, onClose, onCreate }: { schoolId: string; onClos
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl p-6">
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl p-6 animate-scale-in">
         <div className="flex items-center justify-between mb-5">
           <h3 className="text-lg font-bold text-slate-800">Nouveau membre du personnel</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-full p-1.5"><XCircle size={18} /></button>
@@ -884,35 +875,35 @@ function CreateModal({ schoolId, onClose, onCreate }: { schoolId: string; onClos
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Nom <span className="text-[#4f46e5]">*</span></label>
-              <input value={nom} onChange={e => setNom(e.target.value)} placeholder="NOM" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]" />
+              <input value={nom} onChange={e => setNom(e.target.value)} placeholder="NOM" className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] transition-all duration-200" />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Prenoms <span className="text-[#4f46e5]">*</span></label>
-              <input value={prenoms} onChange={e => setPrenoms(e.target.value)} placeholder="Prenoms" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]" />
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Prénoms <span className="text-[#4f46e5]">*</span></label>
+              <input value={prenoms} onChange={e => setPrenoms(e.target.value)} placeholder="Prénoms" className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] transition-all duration-200" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Sexe</label>
-              <select value={sexe} onChange={e => setSexe(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] appearance-none">
+              <select value={sexe} onChange={e => setSexe(e.target.value)} className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] appearance-none transition-all duration-200">
                 <option value="">—</option><option value="M">M</option><option value="F">F</option>
               </select>
             </div>
             <div>
               <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Matricule</label>
-              <input value={matricule} onChange={e => setMatricule(e.target.value)} placeholder="MAT-001" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]" />
+              <input value={matricule} onChange={e => setMatricule(e.target.value)} placeholder="MAT-001" className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] transition-all duration-200" />
             </div>
           </div>
           <div>
             <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Type de personnel</label>
-            <select value={type_personnel} onChange={e => setType(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] appearance-none">
-              <option value="">— Selectionner —</option>
+            <select value={type_personnel} onChange={e => setType(e.target.value)} className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] appearance-none transition-all duration-200">
+              <option value="">— Sélectionner —</option>
               {['Enseignant', 'Administratif', 'Technique', 'De service'].map(o => <option key={o} value={o}>{o}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Fonction</label>
-            <input value={fonction} onChange={e => setFonction(e.target.value)} placeholder="Ex: Professeur de Mathematiques" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]" />
+            <input value={fonction} onChange={e => setFonction(e.target.value)} placeholder="Ex : Professeur de Mathématiques" className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] transition-all duration-200" />
           </div>
           {error && <div className="text-red-600 text-xs bg-red-50 border border-red-100 rounded-lg p-2.5">{error}</div>}
           <div className="flex gap-3 mt-2">
@@ -923,6 +914,28 @@ function CreateModal({ schoolId, onClose, onCreate }: { schoolId: string; onClos
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────
+// Toast animé (succès / erreur)
+// ─────────────────────────────────────────────────────
+function Toast({ type, message, onClose }: { type: 'success' | 'error'; message: string; onClose: () => void }) {
+  const isSuccess = type === 'success';
+  return (
+    <div
+      role="status"
+      className={`fixed bottom-6 right-6 z-[70] flex max-w-sm animate-toast-in items-start gap-3 rounded-2xl border px-4 py-3.5 shadow-raise backdrop-blur-sm
+        ${isSuccess ? 'border-emerald-200 bg-emerald-50/95 text-emerald-800' : 'border-red-200 bg-red-50/95 text-red-700'}`}
+    >
+      <span className={`mt-px flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full ${isSuccess ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
+        {isSuccess ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
+      </span>
+      <p className="flex-1 text-[13px] leading-relaxed">{message}</p>
+      <button onClick={onClose} aria-label="Fermer" className="mt-0.5 flex-shrink-0 rounded-md p-0.5 opacity-50 transition-opacity hover:opacity-100">
+        <X size={14} />
+      </button>
     </div>
   );
 }
@@ -939,10 +952,19 @@ export default function Personnel() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Staff | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = useCallback((type: 'success' | 'error', message: string) => {
+    setToast({ type, message });
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), type === 'success' ? 3500 : 7000);
+  }, []);
+
+  useEffect(() => () => { if (toastTimer.current) window.clearTimeout(toastTimer.current); }, []);
 
   const loadStaff = useCallback(async () => {
     if (!schoolId) return;
@@ -954,9 +976,9 @@ export default function Personnel() {
         setSelected(data[0]);
         setForm(structuredClone(data[0]));
       }
-    } catch (e: any) { setError(e.toString()); }
+    } catch (e: any) { showToast('error', e.toString()); }
     finally { setLoading(false); }
-  }, [schoolId]);
+  }, [schoolId, showToast]);
 
   useEffect(() => { loadStaff(); }, [loadStaff]);
 
@@ -969,21 +991,19 @@ export default function Personnel() {
     setSelected(s);
     setForm(structuredClone(s));
     setDirty(false);
-    setError(null);
-    setSuccess(null);
+    setToast(null);
   };
 
   const handleSave = async () => {
     if (!form) return;
-    setSaving(true); setError(null);
+    setSaving(true);
     try {
       await invoke('update_staff', { staff: form });
       setStaffList(prev => prev.map(s => s.id === form.id ? form : s));
       setSelected(form);
       setDirty(false);
-      setSuccess('Modifications enregistrees avec succes !');
-      setTimeout(() => setSuccess(null), 3000);
-    } catch (e: any) { setError(e.toString()); }
+      showToast('success', 'Modifications enregistrées avec succès !');
+    } catch (e: any) { showToast('error', e.toString()); }
     finally { setSaving(false); }
   };
 
@@ -991,15 +1011,20 @@ export default function Personnel() {
     if (selected) { setForm(structuredClone(selected)); setDirty(false); }
   };
 
-  const handleDelete = async (s: Staff) => {
-    if (!window.confirm(`Supprimer le dossier de "${s.nom} ${s.prenoms}" ? Cette action est irreversible.`)) return;
+  const handleDelete = (s: Staff) => setPendingDelete(s);
+
+  const confirmDelete = async () => {
+    const s = pendingDelete;
+    setPendingDelete(null);
+    if (!s) return;
     try {
       await invoke('delete_staff', { id: s.id, schoolId });
       const remaining = staffList.filter(x => x.id !== s.id);
       setStaffList(remaining);
       if (remaining.length > 0) { handleSelect(remaining[0]); }
       else { setSelected(null); setForm(null); }
-    } catch (e: any) { setError(e.toString()); }
+      showToast('success', `Dossier de ${s.nom} ${s.prenoms} supprimé.`);
+    } catch (e: any) { showToast('error', e.toString()); }
   };
 
   const filtered = useMemo(() =>
@@ -1013,6 +1038,27 @@ export default function Personnel() {
     if (s === 'En conge') return 'bg-amber-100 text-amber-700';
     return 'bg-slate-100 text-slate-500';
   };
+
+  // Progression du dossier : une section est considérée comme renseignée
+  // dès que ses champs principaux sont remplis.
+  const isSectionDone = (id: string, f: Staff): boolean => {
+    switch (id) {
+      case 'infos_perso':     return !!(f.date_naissance && f.sexe);
+      case 'coordonnees':     return !!(f.telephone_principal || f.email);
+      case 'infos_pro':       return !!(f.type_personnel && f.fonction);
+      case 'affectation':     return !!(f.etablissement || f.date_affectation);
+      case 'enseignement':    return !!(f.matiere_principale || f.volume_horaire_hebdo);
+      case 'situation_admin': return f.statut_administratif !== 'Actif' || !!(f.date_debut_conge || f.date_depart || f.observations);
+      case 'documents':       return true;
+      case 'infos_systeme':   return true;
+      default:                return false;
+    }
+  };
+
+  const doneCount = form ? SECTIONS.filter(s => isSectionDone(s.id, form)).length : 0;
+  const completion = Math.round((doneCount / SECTIONS.length) * 100);
+  const RING_RADIUS = 16;
+  const RING_CIRC = 2 * Math.PI * RING_RADIUS;
 
   const renderSection = () => {
     if (!form) return null;
@@ -1030,40 +1076,52 @@ export default function Personnel() {
   };
 
   return (
-    <div className="flex h-full bg-[#f8f9fc] overflow-hidden">
+    <div className="flex h-full bg-gradient-to-b from-slate-50 to-[#f8f9fc] overflow-hidden">
 
       {/* ── Colonne gauche : liste ── */}
-      <div className="w-72 flex-shrink-0 border-r border-slate-200 bg-white flex flex-col h-full">
+      <div className="w-72 flex-shrink-0 border-r border-slate-200/70 bg-white flex flex-col h-full">
         <div className="px-4 pt-5 pb-3 border-b border-slate-100">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-bold text-slate-800">Personnel</h2>
-            <button onClick={() => setShowCreate(true)} className="flex items-center gap-1 px-2.5 py-1.5 bg-[#4f46e5] text-white rounded-lg text-[11px] font-semibold hover:bg-[#4338ca] transition-colors">
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] text-white shadow-sm">
+                <Users size={14} />
+              </span>
+              <h2 className="text-[15px] font-bold tracking-tight text-slate-800">Personnel</h2>
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">{staffList.length}</span>
+            </div>
+            <button onClick={() => setShowCreate(true)} className="flex items-center gap-1 rounded-lg bg-gradient-to-br from-[#4f46e5] to-[#6d28d9] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-sm transition-all duration-200 hover:shadow-md hover:brightness-110">
               <Plus size={12} /> Nouveau
             </button>
           </div>
           <div className="relative">
-            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input type="text" placeholder="Rechercher..." value={search} onChange={e => setSearch(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[12.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] placeholder:text-slate-300" />
+              className="w-full pl-8 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[12.5px] outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] placeholder:text-slate-300 transition-all duration-200" />
+            {search && (
+              <button onClick={() => setSearch('')} title="Effacer la recherche"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500 transition-colors">
+                <X size={13} />
+              </button>
+            )}
           </div>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-3 border-b border-slate-100">
+        <div className="grid grid-cols-3 gap-2 px-3 py-3 border-b border-slate-100">
           {[
-            { label: 'Total', value: staffList.length, color: 'text-[#4f46e5]' },
-            { label: 'Actifs', value: staffList.filter(s => s.statut_administratif === 'Actif').length, color: 'text-green-600' },
-            { label: 'Autres', value: staffList.filter(s => s.statut_administratif !== 'Actif').length, color: 'text-amber-600' },
+            { label: 'Total', value: staffList.length, tint: 'bg-[#eef2ff] text-[#4f46e5]' },
+            { label: 'Actifs', value: staffList.filter(s => s.statut_administratif === 'Actif').length, tint: 'bg-emerald-50 text-emerald-600' },
+            { label: 'Autres', value: staffList.filter(s => s.statut_administratif !== 'Actif').length, tint: 'bg-amber-50 text-amber-600' },
           ].map(stat => (
-            <div key={stat.label} className="text-center py-3 border-r border-slate-100 last:border-r-0">
-              <p className={`text-base font-bold ${stat.color}`}>{stat.value}</p>
-              <p className="text-[10px] text-slate-400 font-medium">{stat.label}</p>
+            <div key={stat.label} className={`rounded-xl ${stat.tint} px-2 py-2 text-center transition-transform duration-200 hover:-translate-y-0.5`}>
+              <p className="text-[15px] font-bold leading-none">{stat.value}</p>
+              <p className="mt-1 text-[9px] font-bold uppercase tracking-wider opacity-70">{stat.label}</p>
             </div>
           ))}
         </div>
 
         {/* Liste */}
-        <div className="flex-1 overflow-y-auto py-1">
+        <div className="flex-1 overflow-y-auto bg-slate-50/60 border-t border-slate-100 px-2.5 py-2.5 space-y-1.5">
           {loading ? (
             <div className="flex items-center justify-center py-12 text-slate-400">
               <Loader2 size={20} className="animate-spin" />
@@ -1075,8 +1133,8 @@ export default function Personnel() {
             </div>
           ) : filtered.map(s => (
             <div key={s.id} onClick={() => handleSelect(s)}
-              className={`w-full text-left px-4 py-3 flex items-center gap-3 transition-all border-l-2 cursor-pointer group ${selected?.id === s.id ? 'bg-[#ede9fe] border-l-[#6d28d9]' : 'border-l-transparent hover:bg-slate-50'}`}>
-              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold flex-shrink-0 ${selected?.id === s.id ? 'bg-[#6d28d9] text-white' : 'bg-slate-100 text-slate-500'}`}>
+              className={`w-full text-left px-3 py-2.5 flex items-center gap-3 rounded-xl cursor-pointer group transition-all duration-200 ring-1 ${selected?.id === s.id ? 'bg-white shadow-raise ring-[#4f46e5]/25' : 'bg-transparent hover:bg-white hover:shadow-card ring-transparent'}`}>
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold flex-shrink-0 transition-all duration-200 ${selected?.id === s.id ? 'bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] text-white shadow-md ring-2 ring-[#ede9fe]' : 'bg-slate-200/70 text-slate-500 group-hover:bg-slate-200'}`}>
                 {(s.prenoms[0] ?? '?').toUpperCase()}{(s.nom[0] ?? '?').toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
@@ -1102,55 +1160,85 @@ export default function Personnel() {
         <div className="flex-1 flex overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             {/* Bandeau sticky */}
-            <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between">
+            <div className="sticky top-0 z-10 bg-white/85 backdrop-blur-md border-b border-slate-200/70 px-8 py-4 flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] flex items-center justify-center text-white text-base font-bold shadow">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] flex items-center justify-center text-white text-base font-bold shadow-lg ring-4 ring-white">
                   {(form.prenoms[0] ?? '?').toUpperCase()}{(form.nom[0] ?? '?').toUpperCase()}
                 </div>
                 <div>
-                  <h1 className="text-base font-bold text-slate-800">{form.nom} {form.prenoms}</h1>
+                  <h1 className="text-[15px] font-bold tracking-tight text-slate-800">{form.nom} {form.prenoms}</h1>
                   <div className="flex items-center gap-2 mt-0.5">
-                    {form.matricule && <span className="text-[12px] text-slate-400">{form.matricule}</span>}
-                    {form.matricule && form.fonction && <span className="text-slate-300">·</span>}
+                    {form.matricule && <span className="font-mono text-[11px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md">{form.matricule}</span>}
                     {form.fonction && <span className="text-[12px] text-slate-500">{form.fonction}</span>}
                     <span className={`ml-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColor(form.statut_administratif)}`}>
                       {form.statut_administratif}
                     </span>
-                    {dirty && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-600">Modifie</span>}
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {error && <span className="text-red-500 text-[12px]">{error}</span>}
-                {success && <span className="text-green-600 text-[12px] flex items-center gap-1"><CheckCircle size={13} />{success}</span>}
                 {dirty && (
-                  <button onClick={handleDiscard} className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[12px] text-slate-500 hover:bg-slate-100 font-medium transition-colors">
+                  <span className="animate-scale-in text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-600">Modifié</span>
+                )}
+                {dirty && (
+                  <button onClick={handleDiscard} className="animate-scale-in px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[12px] text-slate-500 hover:bg-slate-100 hover:text-slate-700 font-medium transition-all duration-200">
                     Annuler
                   </button>
                 )}
                 <button onClick={handleSave} disabled={saving || !dirty}
-                  className="px-4 py-1.5 bg-[#4f46e5] text-white rounded-lg text-[12px] font-semibold hover:bg-[#4338ca] transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  className={`px-4 py-1.5 bg-[#4f46e5] text-white rounded-lg text-[12px] font-semibold hover:bg-[#4338ca] transition-all duration-200 flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed ${dirty ? 'animate-scale-in shadow-sm hover:shadow-md' : ''}`}>
                   {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
                   Enregistrer
                 </button>
               </div>
             </div>
 
-            <div className="px-8 py-6">{renderSection()}</div>
+            <div key={activeSection} className="px-6 py-6 animate-slide-in">
+              <div className="mx-auto max-w-4xl rounded-2xl border border-slate-200/70 bg-white p-6 shadow-card sm:p-7 lg:p-8">
+                {renderSection()}
+              </div>
+            </div>
           </div>
 
           {/* ── Colonne droite : navigation sections ── */}
           <div className="w-56 flex-shrink-0 border-l border-slate-200 bg-white flex flex-col py-4">
+            {form && (
+              <div className="mx-4 mb-4 overflow-hidden rounded-2xl bg-gradient-to-br from-[#4f46e5] via-[#6366f1] to-[#7c3aed] px-3 py-3 text-white shadow-lg">
+                <div className="flex items-center gap-3">
+                  <svg width="42" height="42" viewBox="0 0 42 42" className="-rotate-90 flex-shrink-0">
+                    <circle cx="21" cy="21" r={RING_RADIUS} fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="5" />
+                    <circle
+                      cx="21" cy="21" r={RING_RADIUS} fill="none" stroke="#ffffff" strokeWidth="5" strokeLinecap="round"
+                      strokeDasharray={RING_CIRC}
+                      strokeDashoffset={RING_CIRC * (1 - completion / 100)}
+                      className="transition-all duration-700 ease-out"
+                    />
+                  </svg>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-bold">Dossier complété</p>
+                    <p className="text-[10px] text-white/75">{completion}% · {doneCount}/{SECTIONS.length} sections</p>
+                  </div>
+                </div>
+              </div>
+            )}
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-4 mb-3">Sections</p>
             <div className="flex flex-col gap-0.5 px-2">
               {SECTIONS.map(sec => {
                 const isActive = activeSection === sec.id;
+                const done = form ? isSectionDone(sec.id, form) : false;
                 return (
                   <button key={sec.id} onClick={() => setActiveSection(sec.id)}
-                    className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-all w-full ${isActive ? 'bg-[#ede9fe] text-[#6d28d9]' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}>
+                    className={`relative flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-all duration-200 w-full ${isActive ? 'bg-[#ede9fe] text-[#6d28d9] shadow-sm' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}>
                     <sec.icon size={14} className={`flex-shrink-0 ${isActive ? 'text-[#7c3aed]' : 'text-slate-400'}`} />
                     <span className={`text-[12px] leading-tight ${isActive ? 'font-semibold' : 'font-medium'}`}>{sec.label}</span>
-                    {isActive && <ChevronRight size={11} className="ml-auto flex-shrink-0 text-[#7c3aed]" />}
+                    {isActive ? (
+                      <>
+                        <span className="absolute -left-2 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-[#7c3aed]" />
+                        <ChevronRight size={11} className="ml-auto flex-shrink-0 text-[#7c3aed]" />
+                      </>
+                    ) : (
+                      <span className={`ml-auto h-1.5 w-1.5 flex-shrink-0 rounded-full transition-colors ${done ? 'bg-green-400' : 'bg-slate-200'}`} />
+                    )}
                   </button>
                 );
               })}
@@ -1158,11 +1246,14 @@ export default function Personnel() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex items-center justify-center text-slate-400">
-          <div className="text-center">
-            <Users size={48} strokeWidth={1} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm font-medium">Aucun personnel enregistre</p>
-            <button onClick={() => setShowCreate(true)} className="mt-4 flex items-center gap-2 bg-[#4f46e5] text-white px-4 py-2 rounded-xl text-sm font-medium mx-auto">
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="max-w-sm text-center rounded-3xl border border-dashed border-slate-300 bg-white/70 px-8 py-10 backdrop-blur-sm">
+            <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] text-white shadow-lg">
+              <Users size={24} />
+            </span>
+            <p className="text-[15px] font-bold text-slate-700">Aucun personnel sélectionné</p>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-slate-400">Sélectionnez un membre dans la liste à gauche ou créez un nouveau dossier.</p>
+            <button onClick={() => setShowCreate(true)} className="mt-5 inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-[#4f46e5] to-[#6d28d9] px-4 py-2 text-sm font-semibold text-white shadow-md transition-all duration-200 hover:shadow-lg hover:brightness-110 mx-auto">
               <Plus size={14} /> Ajouter un membre
             </button>
           </div>
@@ -1176,6 +1267,20 @@ export default function Personnel() {
           handleSelect(s);
         }} />
       )}
+
+      {/* Confirmation de suppression */}
+      {pendingDelete && (
+        <ConfirmDialog
+          title="Supprimer le dossier"
+          message={`Le dossier de « ${pendingDelete.nom} ${pendingDelete.prenoms} » sera définitivement supprimé. Cette action est irréversible.`}
+          confirmLabel="Supprimer"
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {/* Toasts */}
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
     </div>
   );
 }
