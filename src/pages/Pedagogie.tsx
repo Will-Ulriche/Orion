@@ -193,6 +193,7 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
   const [subjectForm, setSubjectForm] = useState({ name: '', code: '', color: '#6366f1' });
   const [periodForm, setPeriodForm] = useState({ name: '', period_order: 1, start_date: '', end_date: '', class_id: '' });
   const [gtForm, setGtForm] = useState({ name: '', max_score: 20.0 });
+  const [editGt, setEditGt] = useState<GradeType | null>(null);
   // Multi-affectation : map subjectId -> { selected, coefficient, weekly_hours, subject_type, is_mandatory }
   const [assignSelections, setAssignSelections] = useState<Record<string, {
     selected: boolean; coefficient: number; weekly_hours: number;
@@ -235,7 +236,7 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
 
   const closeModal = () => {
-    setModal(null); setEditSubject(null);
+    setModal(null); setEditSubject(null); setEditGt(null);
     setSubjectForm({ name: '', code: '', color: '#6366f1' });
     setGtForm({ name: '', max_score: 20.0 });
     setAssignSelections({});
@@ -245,6 +246,12 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
     setEditSubject(s);
     setSubjectForm({ name: s?.name ?? '', code: s?.code ?? '', color: s?.color ?? '#6366f1' });
     setModal('subject');
+  };
+
+  const openGtModal = (gt: GradeType | null) => {
+    setEditGt(gt);
+    setGtForm({ name: gt?.name ?? '', max_score: gt?.max_score ?? 20.0 });
+    setModal('gradeType');
   };
 
   const saveSubject = async () => {
@@ -270,7 +277,11 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
   const saveGt = async () => {
     try {
-      await invoke('create_grade_type', { schoolId, name: gtForm.name, maxScore: gtForm.max_score });
+      if (editGt) {
+        await invoke('update_grade_type', { id: editGt.id, schoolId, name: gtForm.name, maxScore: gtForm.max_score });
+      } else {
+        await invoke('create_grade_type', { schoolId, name: gtForm.name, maxScore: gtForm.max_score });
+      }
       closeModal(); load();
     } catch (e: any) { setError(String(e)); }
   };
@@ -417,7 +428,7 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
 
           {leftSection === 'gradeTypes' && (
-            <PanelGradeTypes gradeTypes={gradeTypes} onAdd={() => setModal('gradeType')} />
+            <PanelGradeTypes gradeTypes={gradeTypes} onAdd={() => openGtModal(null)} onEdit={openGtModal} />
           )}
 
           {leftSection === 'professeurs' && (
@@ -484,14 +495,14 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
       {modal === 'gradeType' && (
         <Modal
-          title="Nouveau type d'évaluation"
-          description="Définissez le nom et la note maximale pour ce type d'évaluation."
+          title={editGt ? "Modifier le type d'évaluation" : "Nouveau type d'évaluation"}
+          description={editGt ? "Modifiez le nom et la note maximale de ce type d'évaluation." : "Définissez le nom et la note maximale pour ce type d'évaluation."}
           onClose={closeModal}
           footer={
             <>
               <Btn onClick={closeModal}>Annuler</Btn>
               <Btn variant="primary" onClick={saveGt} disabled={!gtForm.name}>
-                <Save size={15} /> Créer
+                <Save size={15} /> {editGt ? 'Enregistrer' : 'Créer'}
               </Btn>
             </>
           }
@@ -891,7 +902,7 @@ function PanelClass({
 }
 
 
-function PanelGradeTypes({ gradeTypes, onAdd }: { gradeTypes: GradeType[]; onAdd: () => void }) {
+function PanelGradeTypes({ gradeTypes, onAdd, onEdit }: { gradeTypes: GradeType[]; onAdd: () => void; onEdit: (gt: GradeType) => void }) {
   return (
     <div className="space-y-6">
       <PanelHeader
@@ -915,11 +926,18 @@ function PanelGradeTypes({ gradeTypes, onAdd }: { gradeTypes: GradeType[]; onAdd
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {gradeTypes.map((gt) => (
-            <Card key={gt.id} interactive className="p-4">
+            <Card key={gt.id} interactive className="group p-4">
               <div className="flex items-start justify-between gap-3">
                 <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
                   <Star size={17} />
                 </span>
+                <button
+                  onClick={() => onEdit(gt)}
+                  className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                  title="Modifier"
+                >
+                  <Pencil size={14} />
+                </button>
               </div>
               <p className="mt-3 truncate text-sm font-bold text-slate-800">{gt.name}</p>
               <p className="mt-0.5 text-[11px] text-slate-400">Note sur {gt.max_score}</p>
