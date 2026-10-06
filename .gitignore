@@ -17,6 +17,10 @@ dist-ssr
 .env.*
 !.env.example
 
+# Fichiers temporaires d'analyse
+.tmp*
+.tmp-*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

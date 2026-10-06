@@ -3021,6 +3021,80 @@ pub fn delete_staff(id: String, school_id: String, state: State<'_, DbState>) ->
 
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Emploi du temps
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TimetableSlot {
+    pub id: String,
+    pub class_id: String,
+    pub day_of_week: i64,
+    pub slot_index: i64,
+    pub subject_id: Option<String>,
+    pub subject_code: Option<String>,
+    pub subject_name: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_timetable(
+    school_id: String,
+    academic_year_id: String,
+    class_id: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<TimetableSlot>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.class_id, t.day_of_week, t.slot_index, t.subject_id,
+                s.code, s.name
+         FROM timetable_slots t
+         LEFT JOIN subjects s ON s.id = t.subject_id
+         WHERE t.school_id=?1 AND t.academic_year_id=?2 AND t.class_id=?3
+         ORDER BY t.day_of_week, t.slot_index"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map(
+        rusqlite::params![school_id, academic_year_id, class_id],
+        |row| Ok(TimetableSlot {
+            id: row.get(0)?,
+            class_id: row.get(1)?,
+            day_of_week: row.get(2)?,
+            slot_index: row.get(3)?,
+            subject_id: row.get(4)?,
+            subject_code: row.get(5)?,
+            subject_name: row.get(6)?,
+        }),
+    ).map_err(|e| e.to_string())?;
+
+    rows.map(|r| r.map_err(|e| e.to_string())).collect()
+}
+
+#[tauri::command]
+pub fn save_timetable_slot(
+    school_id: String,
+    academic_year_id: String,
+    class_id: String,
+    day_of_week: i64,
+    slot_index: i64,
+    subject_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = uuid::Uuid::new_v4().to_string();
+
+    conn.execute(
+        "INSERT INTO timetable_slots (id, school_id, academic_year_id, class_id, day_of_week, slot_index, subject_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+         ON CONFLICT(academic_year_id, class_id, day_of_week, slot_index)
+         DO UPDATE SET subject_id=excluded.subject_id, updated_at=excluded.updated_at",
+        rusqlite::params![id, school_id, academic_year_id, class_id, day_of_week, slot_index, subject_id, now],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod finance_tests {
     use super::*;

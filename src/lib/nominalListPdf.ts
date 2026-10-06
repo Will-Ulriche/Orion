@@ -198,7 +198,9 @@ function renderPage(page: NominalListPage, assets: NominalListAssets): string {
     const top = ROW_EDGES[i + 1];
     const cell = (value: string, col: number) =>
       text(esc(value), { kind: 'x', x: COL_EDGES[col] + PAD_X }, baseline, BODY_SIZE, 'sans');
-    return `<div class="row" style="top:${px(top)};height:${px(ROW_EDGES[i + 2] - top)}">${cell(row.number, 0)}${cell(row.fullName, 1)}${cell(row.gender, 2)}</div>`;
+    const centerCell = (value: string, col: number) =>
+      text(esc(value), { kind: 'center', at: (COL_EDGES[col] + COL_EDGES[col + 1]) / 2 }, baseline, BODY_SIZE, 'sans');
+    return `<div class="row" style="top:${px(top)};height:${px(ROW_EDGES[i + 2] - top)}">${centerCell(row.number, 0)}${cell(row.fullName, 1)}${centerCell(row.gender, 2)}</div>`;
   }).join('');
 
   return `
@@ -241,6 +243,8 @@ export interface NominalListDocOptions {
   pages: NominalListClassData[];
   assets: NominalListAssets;
   groupLabel: string;
+  documentType?: 'nominative' | 'notes';
+  subjectName?: string;
 }
 
 /**
@@ -376,7 +380,7 @@ function drawHeadCell(doc: jsPDF, col: HeadColumn, from: number, to: number): vo
 }
 
 /** Dessine une page complète : images, titres, encadrés, trame, élèves, filigrane. */
-function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets): void {
+function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets, opts: NominalListDocOptions): void {
   const { data, offset } = page;
 
   // ── Images ──
@@ -392,18 +396,31 @@ function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets):
   doc.setTextColor(0, 0, 0);
   useFont(doc, 'serif');
   doc.setFontSize(TEXT.title.size);
-  doc.text(TEXT.title.label, TEXT.title.x, TEXT.title.baseline);
-
-  // Filet de soulignement : ancré sur le même bord gauche, large comme le texte
-  // réellement rendu (les Times de jsPDF sont un cheveu plus étroites).
-  doc.setFillColor(0, 0, 0);
-  doc.rect(
-    TEXT.title.x,
-    TEXT.title.baseline + TEXT.title.underline.dy,
-    doc.getTextWidth(TEXT.title.label),
-    TEXT.title.underline.thickness,
-    'F',
-  );
+  
+  if (opts.documentType === 'notes') {
+    const titleText = 'LISTE DE NOTES';
+    drawCentered(doc, titleText, TITLE_BAND.left, TITLE_BAND.right, TEXT.title.baseline);
+    const w = doc.getTextWidth(titleText);
+    const x0 = TITLE_BAND_CENTER - w / 2;
+    doc.setFillColor(0, 0, 0);
+    doc.rect(
+      x0,
+      TEXT.title.baseline + TEXT.title.underline.dy,
+      w,
+      TEXT.title.underline.thickness,
+      'F',
+    );
+  } else {
+    doc.text(TEXT.title.label, TEXT.title.x, TEXT.title.baseline);
+    doc.setFillColor(0, 0, 0);
+    doc.rect(
+      TEXT.title.x,
+      TEXT.title.baseline + TEXT.title.underline.dy,
+      doc.getTextWidth(TEXT.title.label),
+      TEXT.title.underline.thickness,
+      'F',
+    );
+  }
 
   useFont(doc, 'serif', 'bold');
   doc.setFontSize(TEXT.classLabel.size);
@@ -414,6 +431,13 @@ function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets):
   useFont(doc, 'serif', 'italic');
   doc.setFontSize(TEXT.footer.size);
   doc.text(TEXT.footer.label, TEXT.footer.x, TEXT.footer.baseline);
+
+  if (opts.documentType === 'notes' && opts.subjectName) {
+    useFont(doc, 'sans', 'bold');
+    doc.setFontSize(12);
+    const textStr = `Matière : ${opts.subjectName}`;
+    doc.text(textStr, COL_EDGES[1] + PAD_X, TRIMESTERS.baseline);
+  }
 
   // ── Trame ──
   doc.setDrawColor(0, 0, 0);
@@ -450,9 +474,29 @@ function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets):
   for (let i = 0; i < count; i += 1) {
     const row = data.rows[offset + i];
     const baseline = ROW_BASELINES[i];
-    doc.text(row.number, COL_EDGES[0] + PAD_X, baseline);
+    drawCentered(doc, row.number, COL_EDGES[0], COL_EDGES[1], baseline);
     doc.text(row.fullName, COL_EDGES[1] + PAD_X, baseline);
-    doc.text(row.gender, COL_EDGES[2] + PAD_X, baseline);
+    drawCentered(doc, row.gender, COL_EDGES[2], COL_EDGES[3], baseline);
+
+    if (row.periodGrades) {
+      for (let p = 1; p <= 3; p++) {
+        const pGrades = row.periodGrades[p];
+        if (pGrades) {
+          const colOffset = 3 + (p - 1) * 4;
+          if (pGrades.i) drawCentered(doc, pGrades.i, COL_EDGES[colOffset], COL_EDGES[colOffset + 1], baseline);
+          if (pGrades.d) drawCentered(doc, pGrades.d, COL_EDGES[colOffset + 1], COL_EDGES[colOffset + 2], baseline);
+          if (pGrades.c) drawCentered(doc, pGrades.c, COL_EDGES[colOffset + 2], COL_EDGES[colOffset + 3], baseline);
+          
+          if (pGrades.mg) {
+            useFont(doc, 'sans', 'bold');
+            doc.setTextColor(220, 38, 38); // Tailwind red-600
+            drawCentered(doc, pGrades.mg, COL_EDGES[colOffset + 3], COL_EDGES[colOffset + 4], baseline);
+            doc.setTextColor(0, 0, 0);
+            useFont(doc, 'sans'); // reset for next iterations
+          }
+        }
+      }
+    }
   }
 
   // ── Filigrane : posé après la trame, comme dans le document d'origine ──
@@ -469,13 +513,13 @@ export function buildNominalListPdf(opts: NominalListDocOptions): jsPDF {
   const doc = new jsPDF({ unit: 'pt', format: FORMAT, orientation: 'landscape' });
   doc.setProperties({
     title: pages.length === 1 ? `Liste nominative — ${pages[0].name}` : `Listes nominatives — ${opts.groupLabel}`,
-    subject: 'Liste nominative de la classe',
+    subject: opts.documentType === 'notes' ? 'Liste de notes' : 'Liste nominative de la classe',
   });
 
   const sheet = layoutNominalList(pages);
   sheet.forEach((page, i) => {
     if (i > 0) doc.addPage(FORMAT, 'landscape');
-    drawPage(doc, page, assets);
+    drawPage(doc, page, assets, opts);
   });
 
   return doc;

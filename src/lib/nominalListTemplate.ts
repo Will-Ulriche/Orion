@@ -232,12 +232,16 @@ export interface NominalListClassInput {
 
 /** Une ligne du tableau, prête à être dessinée. */
 export interface NominalListRow {
+  /** L'identifiant de l'élève pour faire correspondre les notes. */
+  studentId: string;
   /** Numéro d'ordre, tel qu'affiché. */
   number: string;
   /** « NOM Prénoms ». */
   fullName: string;
   /** 'M', 'F' ou chaîne vide si le sexe n'est pas renseigné. */
   gender: string;
+  /** Notes par trimestre (1, 2, 3). */
+  periodGrades?: Record<number, { i?: string; d?: string; c?: string; mg?: string }>;
 }
 
 /** Une page = une classe, prête à être rendue. */
@@ -285,6 +289,7 @@ export function buildNominalListRows(students: NominalListStudent[]): NominalLis
     const first = (s.firstName ?? '').trim();
     const fullName = `${last ? upperFr(last) : ''}${first ? ` ${first}` : ''}`.trim();
     return {
+      studentId: s.id ?? '',
       number: String(i + 1),
       fullName: fullName || '—',
       gender: genderCode(s.gender),
@@ -327,10 +332,12 @@ export function sanitizeFileName(value: string, maxLength = 60): string {
  * Nom du PDF : `Liste_nominative_6eme_A_2025-2026.pdf` pour une classe,
  * `Listes_nominatives_College_2025-2026.pdf` pour un export groupé.
  */
-export function nominalListFileName(pages: NominalListClassData[], groupLabel: string, yearName: string): string {
+export function nominalListFileName(pages: NominalListClassData[], groupLabel: string, yearName: string, documentType?: 'nominative' | 'notes'): string {
   const year = sanitizeFileName(yearName, 30) || 'annee';
+  const prefix = documentType === 'notes' ? 'Liste_de_notes_' : 'Liste_nominative_';
+  const groupPrefix = documentType === 'notes' ? 'Listes_de_notes_' : 'Listes_nominatives_';
   if (pages.length === 1) {
-    return `Liste_nominative_${sanitizeFileName(pages[0].name) || 'classe'}_${year}.pdf`;
+    return `${prefix}${sanitizeFileName(pages[0].name) || 'classe'}_${year}.pdf`;
   }
-  return `Listes_nominatives_${sanitizeFileName(groupLabel) || 'ecole'}_${year}.pdf`;
+  return `${groupPrefix}${sanitizeFileName(groupLabel) || 'ecole'}_${year}.pdf`;
 }

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { invoke } from '@tauri-apps/api/core';
 import {
-  AlertTriangle, ChevronLeft, ChevronRight, Download, GraduationCap,
-  LoaderCircle, Printer, Search, Users, X,
+  AlertTriangle, Download, GraduationCap,
+  LoaderCircle, Search, Users, X,
 } from 'lucide-react';
 import {
   buildNominalListData, nominalListFileName,
   type NominalListClassInput,
 } from '../lib/nominalListTemplate';
 import {
-  buildNominalListHtml, buildNominalListPdf, layoutNominalList, loadNominalListAssets,
+  buildNominalListPdf, loadNominalListAssets,
   type NominalListAssets,
 } from '../lib/nominalListPdf';
 
@@ -18,29 +19,55 @@ interface NominalListModalProps {
   classes: NominalListClassInput[];
   groupLabel: string;
   yearName: string;
+  documentType?: 'nominative' | 'notes';
+  schoolId?: string;
+  yearId?: string;
   onClose: () => void;
   onError: (message: string) => void;
   onSuccess?: (message: string) => void;
 }
 
-/** Une page d'aperçu, rattachée à sa classe. */
-interface PreviewPage {
-  key: string;
-  label: string;
-  count: number;
-}
 
 const deaccent = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 export default function NominalListModal({
-  classes, groupLabel, yearName, onClose, onError, onSuccess,
+  classes, groupLabel, yearName, documentType, schoolId, yearId, onClose, onError, onSuccess,
 }: NominalListModalProps) {
+  const isNotes = documentType === 'notes';
+  const titleStr = isNotes ? 'Liste de notes' : 'Liste nominative de la classe';
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [activePage, setActivePage] = useState(0);
   const [assets, setAssets] = useState<NominalListAssets | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Real data states for 'notes'
+  const [selSubject, setSelSubject] = useState<string>('');
+  const [selPeriods, setSelPeriods] = useState<number[]>([1]);
+
+  const [subjects, setSubjects] = useState<{id: string, name: string}[]>([]);
+  const [realGrades, setRealGrades] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    if (isNotes && schoolId) {
+      invoke<{id: string, name: string}[]>('get_subjects', { schoolId })
+        .then(subs => {
+          setSubjects(subs);
+          if (subs.length > 0 && !selSubject) setSelSubject(subs[0].id);
+        })
+        .catch(console.error);
+    }
+  }, [isNotes, schoolId, selSubject]);
+
+  const togglePeriod = useCallback((p: number) => {
+    setSelPeriods(prev => {
+      if (prev.includes(p)) {
+        if (prev.length === 1) return prev; // Keep at least one selected
+        return prev.filter(x => x !== p);
+      }
+      return [...prev, p];
+    });
+  }, []);
 
   const frameRef = useRef<HTMLIFrameElement>(null);
 
@@ -69,22 +96,6 @@ export default function NominalListModal({
 
   const data = useMemo(() => buildNominalListData(selectedClasses), [selectedClasses]);
 
-  // Une entrée par feuille, dans l'ordre du PDF (le même découpage).
-  const previewPages = useMemo<PreviewPage[]>(
-    () =>
-      layoutNominalList(data).map(p => ({
-        key: `${p.data.id}:${p.offset}`,
-        label: p.parts > 1 ? `${p.data.name} · ${p.part}/${p.parts}` : p.data.name,
-        count: p.data.rows.length,
-      })),
-    [data],
-  );
-
-  // Toute modification de la sélection ramène l'aperçu sur une page existante.
-  useEffect(() => {
-    setActivePage(p => Math.min(p, Math.max(0, previewPages.length - 1)));
-  }, [previewPages.length]);
-
   const toggle = useCallback((id: string) => {
     setSelected(prev => {
       const next = new Set(prev);
@@ -108,45 +119,137 @@ export default function NominalListModal({
   const selectAll = useCallback(() => setSelected(new Set(classes.map(c => c.id))), [classes]);
   const clearAll = useCallback(() => setSelected(new Set()), []);
 
-  // ── Aperçu : un seul document, toutes les pages sélectionnées ─────────────
-  const docOptions = useMemo(
-    () => (assets && data.length > 0 ? { pages: data, assets, groupLabel } : null),
-    [assets, data, groupLabel],
-  );
-
-  const html = useMemo(
-    () => (docOptions ? buildNominalListHtml(docOptions) : ''),
-    [docOptions],
-  );
-
-  const blobUrl = useMemo(() => {
-    if (!html) return null;
-    return URL.createObjectURL(new Blob([html], { type: 'text/html; charset=utf-8' }));
-  }, [html]);
-
-  useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl); }, [blobUrl]);
-
-  // Positionne l'aperçu sur la page active.
   useEffect(() => {
-    const doc = frameRef.current?.contentDocument;
-    if (!doc) return;
-    const page = doc.querySelectorAll('.page')[activePage] as HTMLElement | undefined;
-    page?.scrollIntoView({ block: 'start' });
-  }, [activePage, blobUrl]);
+    if (!isNotes || !schoolId || !yearId || !selSubject || selectedClasses.length === 0) return;
+    
+    let cancelled = false;
+    setBusy(true);
+
+    async function loadGrades() {
+      try {
+        const gradesMap: Record<string, Record<string, any>> = {};
+
+        for (const cls of selectedClasses) {
+          const periods = await invoke<any[]>('get_grading_periods', { schoolId, academicYearId: yearId, classId: cls.id });
+          const classSubjects = await invoke<any[]>('get_class_subjects', { schoolId, academicYearId: yearId, classId: cls.id });
+          const cs = classSubjects.find((cs: any) => cs.subject_id === selSubject);
+          if (!cs) continue;
+          
+          for (const periodNum of selPeriods) {
+            const period = periods.find((p: any) => p.period_order === periodNum);
+            if (!period) continue;
+            
+            const grades = await invoke<any[]>('get_grades_by_class', { 
+              schoolId, 
+              academicYearId: yearId, 
+              classSubjectId: cs.id, 
+              gradingPeriodId: period.id 
+            });
+            
+            for (const g of grades) {
+              if (!gradesMap[g.student_id]) gradesMap[g.student_id] = {};
+              if (!gradesMap[g.student_id][periodNum]) gradesMap[g.student_id][periodNum] = { i: [], d: [], c: [], mg: null };
+              
+              const gName = (g.grade_type_name || '').toLowerCase();
+              const scoreOn20 = (g.score / g.max_score) * 20;
+              
+              if (gName.includes('interro')) {
+                 gradesMap[g.student_id][periodNum].i.push(scoreOn20);
+              } else if (gName.includes('devoir') || gName.includes('d')) {
+                 gradesMap[g.student_id][periodNum].d.push(scoreOn20);
+              } else if (gName.includes('compo') || gName.includes('c')) {
+                 gradesMap[g.student_id][periodNum].c.push(scoreOn20);
+              } else {
+                 gradesMap[g.student_id][periodNum].i.push(scoreOn20);
+              }
+            }
+          }
+        }
+        
+        for (const sId in gradesMap) {
+          for (const pNum in gradesMap[sId]) {
+            const pData = gradesMap[sId][pNum];
+            const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+            const iAvg = avg(pData.i);
+            const dAvg = avg(pData.d);
+            const cAvg = avg(pData.c);
+            
+            const formatGrade = (val: number) => {
+              const str = val.toFixed(2).replace('.', ',');
+              return val < 10 ? `0${str}` : str;
+            };
+            
+            pData.i = formatGrade(iAvg);
+            pData.d = formatGrade(dAvg);
+            pData.c = formatGrade(cAvg);
+            
+            pData.mg = formatGrade((iAvg + dAvg + cAvg) / 3);
+          }
+        }
+        
+        if (!cancelled) {
+          setRealGrades(gradesMap);
+          setBusy(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+          setBusy(false);
+        }
+      }
+    }
+    
+    loadGrades();
+    return () => { cancelled = true; };
+  }, [isNotes, schoolId, yearId, selSubject, selPeriods, selectedClasses]);
+
+  const docOptions = useMemo(() => {
+    if (!assets || data.length === 0) return null;
+    
+    // Inject real grades if it's "notes"
+    const finalData = isNotes ? data.map(cls => ({
+      ...cls,
+      rows: cls.rows.map(r => {
+        const periodGrades: Record<number, any> = {};
+        selPeriods.forEach(p => {
+          if (realGrades[r.studentId] && realGrades[r.studentId][p]) {
+            periodGrades[p] = realGrades[r.studentId][p];
+          } else {
+            periodGrades[p] = { i: '00,00', d: '00,00', c: '00,00', mg: '00,00' };
+          }
+        });
+        return { ...r, periodGrades };
+      })
+    })) : data;
+
+    const selSubj = isNotes ? subjects.find(s => s.id === selSubject) : undefined;
+    return { pages: finalData, assets, groupLabel, documentType, subjectName: selSubj?.name };
+  }, [assets, data, groupLabel, documentType, isNotes, selPeriods, selSubject, subjects, realGrades]);
+
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!docOptions) {
+      setBlobUrl(null);
+      return;
+    }
+    try {
+      const doc = buildNominalListPdf(docOptions);
+      const url = URL.createObjectURL(doc.output('blob'));
+      setBlobUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      setBlobUrl(null);
+    }
+  }, [docOptions]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
-  const handlePrint = () => {
-    const win = frameRef.current?.contentWindow;
-    if (!win) { onError("Impossible d'ouvrir la fenêtre d'impression."); return; }
-    win.focus();
-    win.print(); // @page { size: A4 landscape } dans l'aperçu
-  };
-
   const handleDownload = () => {
     if (!docOptions) return;
     setBusy(true);
     try {
-      const fileName = nominalListFileName(data, groupLabel, yearName);
+      const fileName = nominalListFileName(data, groupLabel, yearName, documentType);
       buildNominalListPdf(docOptions).save(fileName);
       const students = data.reduce((sum, c) => sum + c.rows.length, 0);
       onSuccess?.(
@@ -164,16 +267,13 @@ export default function NominalListModal({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
-      if (e.key === 'ArrowRight') setActivePage(p => Math.min(p + 1, previewPages.length - 1));
-      if (e.key === 'ArrowLeft') setActivePage(p => Math.max(p - 1, 0));
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, previewPages.length]);
+  }, [onClose]);
 
   const container = useMemo(() => document.querySelector('main') ?? document.body, []);
   const totalStudents = data.reduce((sum, c) => sum + c.rows.length, 0);
-  const current = previewPages[activePage];
 
   return createPortal(
     <div
@@ -183,7 +283,7 @@ export default function NominalListModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Liste nominative de la classe"
+        aria-label={titleStr}
         className="flex h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl animate-scale-in"
       >
         {/* ── En-tête ── */}
@@ -193,12 +293,43 @@ export default function NominalListModal({
               <GraduationCap size={16} />
             </span>
             <div>
-              <h3 className="text-[14px] font-bold text-slate-800">Liste nominative de la classe</h3>
+              <h3 className="text-[14px] font-bold text-slate-800">{titleStr}</h3>
               <p className="text-[11px] text-slate-400">
                 Aperçu avant impression · A4 paysage · {groupLabel} · {yearName}
               </p>
             </div>
           </div>
+          {isNotes && (
+            <div className="flex items-center gap-3 ml-auto">
+              <span className="text-[10px] text-slate-400">
+                {Object.keys(realGrades).length} élèves notés
+              </span>
+              <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-lg border border-slate-200">
+                {[1, 2, 3].map(p => (
+                  <button
+                    key={p}
+                    onClick={() => togglePeriod(p)}
+                    className={`px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors ${
+                      selPeriods.includes(p) 
+                        ? 'bg-white text-indigo-600 shadow-sm' 
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'
+                    }`}
+                  >
+                    T{p}
+                  </button>
+                ))}
+              </div>
+              <select
+                value={selSubject}
+                onChange={e => setSelSubject(e.target.value)}
+                className="h-8 rounded-lg border-slate-200 bg-slate-50 px-3 text-[12px] font-medium text-slate-700 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+              >
+                {subjects.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <button
             onClick={onClose}
             aria-label="Fermer"
@@ -318,33 +449,22 @@ export default function NominalListModal({
                 </p>
               </div>
 
-              {previewPages.length > 1 && current && (
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => setActivePage(p => Math.max(p - 1, 0))}
-                    disabled={activePage === 0}
-                    aria-label="Page précédente"
-                    className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50 disabled:opacity-40"
-                  >
-                    <ChevronLeft size={13} />
-                  </button>
-                  <span className="min-w-40 truncate text-center text-[11.5px] font-medium text-slate-500">
-                    {current.label}
-                  </span>
-                  <span className="text-[11px] text-slate-400">
-                    {activePage + 1}/{previewPages.length}
-                  </span>
-                  <button
-                    onClick={() => setActivePage(p => Math.min(p + 1, previewPages.length - 1))}
-                    disabled={activePage >= previewPages.length - 1}
-                    aria-label="Page suivante"
-                    className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50 disabled:opacity-40"
-                  >
-                    <ChevronRight size={13} />
-                  </button>
-                </div>
-              )}
             </div>
+
+            {isNotes && Object.keys(realGrades).length === 0 && selectedClasses.length > 0 && !busy && (
+              <div className="mx-4 mt-4 rounded-lg bg-amber-50 p-3 border border-amber-200 flex items-start gap-3">
+                <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={18} />
+                <div className="text-sm text-amber-800">
+                  <p className="font-semibold mb-1">Aucune note trouvée</p>
+                  <p>Aucune note n'a été trouvée pour la matière et le(s) trimestre(s) sélectionnés.</p>
+                  <ul className="list-disc ml-5 mt-1 text-amber-700 opacity-90 text-[13px]">
+                    <li>Vérifiez la matière sélectionnée en haut à droite.</li>
+                    <li>Vérifiez le(s) trimestre(s) sélectionné(s) (T1, T2, T3).</li>
+                    <li>Assurez-vous que les notes ont été saisies pour cette classe.</li>
+                  </ul>
+                </div>
+              </div>
+            )}
 
             <div className="min-h-0 flex-1 overflow-hidden bg-slate-200 p-4">
               {!assets ? (
@@ -368,9 +488,9 @@ export default function NominalListModal({
                 <div className="h-full overflow-hidden rounded-xl bg-white shadow-lg">
                   <iframe
                     ref={frameRef}
-                    src={blobUrl}
+                    src={`${blobUrl}#view=FitH`}
                     className="h-full w-full border-0 bg-slate-200"
-                    title={`Aperçu — Liste nominative ${current?.label ?? ''}`}
+                    title="Aperçu PDF de la liste nominative"
                   />
                 </div>
               ) : null}
@@ -395,13 +515,6 @@ export default function NominalListModal({
             )}
           </p>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handlePrint}
-              disabled={data.length === 0 || !assets}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-[12px] font-medium text-slate-600 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Printer size={13} /> Imprimer
-            </button>
             <button
               onClick={handleDownload}
               disabled={data.length === 0 || !assets || busy}

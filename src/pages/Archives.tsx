@@ -10,6 +10,7 @@ import {
 import { EmptyState, Loader } from '../components/ui';
 import StaffIdentityModal from '../components/StaffIdentityModal';
 import NominalListModal from '../components/NominalListModal';
+import TimetableModal from '../components/TimetableModal';
 import type { NominalListClassInput } from '../lib/nominalListTemplate';
 import { saveFinanceReportPdf, type FinanceReportData } from '../lib/financeReportPdf';
 import type { ReceiptSchoolInfo } from '../lib/receiptPdf';
@@ -216,6 +217,8 @@ export default function Archives() {
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [identityOpen, setIdentityOpen] = useState(false);
   const [nominalListOpen, setNominalListOpen] = useState(false);
+  const [notesListOpen, setNotesListOpen] = useState(false);
+  const [timetableOpen, setTimetableOpen] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
   const showToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
@@ -292,6 +295,7 @@ export default function Archives() {
       if (!s.class_id) continue;
       const list = byClass.get(s.class_id);
       const entry = {
+        id: s.student_id,
         lastName: s.last_name,
         firstName: s.first_name,
         gender: s.gender,
@@ -638,6 +642,22 @@ export default function Archives() {
                       else setIdentityOpen(true);
                       return;
                     }
+                    if (a.label === 'Emploi du temps') {
+                      if (groupClasses.length === 0) {
+                        showToast('error', 'Aucune classe disponible dans cet onglet.');
+                        return;
+                      }
+                      setTimetableOpen(true);
+                      return;
+                    }
+                    if (a.label === 'Liste de notes') {
+                      if (nominalListClasses.length === 0) {
+                        showToast('error', 'Aucune classe à imprimer dans cet onglet.');
+                        return;
+                      }
+                      setNotesListOpen(true);
+                      return;
+                    }
                     if (a.label === 'Liste nominative de la classe') {
                       if (nominalListClasses.length === 0) {
                         showToast('error', 'Aucune classe à imprimer dans cet onglet.');
@@ -680,12 +700,42 @@ export default function Archives() {
       {/* ═══ POPUP : LISTE NOMINATIVE DE LA CLASSE ═══ */}
       {nominalListOpen && (
         <NominalListModal
+          schoolId={schoolId}
+          yearId={selectedYear.id}
           classes={nominalListClasses}
           groupLabel={groupLabel}
           yearName={selectedYear.name}
+          documentType="nominative"
           onClose={() => setNominalListOpen(false)}
           onError={msg => showToast('error', msg)}
           onSuccess={msg => showToast('success', msg)}
+        />
+      )}
+
+      {/* ═══ POPUP : LISTE DE NOTES ═══ */}
+      {notesListOpen && (
+        <NominalListModal
+          schoolId={schoolId}
+          yearId={selectedYear.id}
+          classes={nominalListClasses}
+          groupLabel={groupLabel}
+          yearName={selectedYear.name}
+          documentType="notes"
+          onClose={() => setNotesListOpen(false)}
+          onError={msg => showToast('error', msg)}
+          onSuccess={msg => showToast('success', msg)}
+        />
+      )}
+
+      {/* ═══ POPUP : EMPLOI DU TEMPS ═══ */}
+      {timetableOpen && (
+        <TimetableModal
+          schoolId={schoolId}
+          academicYearId={selectedYear.id}
+          yearName={selectedYear.name}
+          schoolName={schoolInfo.name || 'Établissement'}
+          classes={groupClasses.map(c => ({ id: c.id, name: c.name }))}
+          onClose={() => setTimetableOpen(false)}
         />
       )}
 

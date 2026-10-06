@@ -114,7 +114,10 @@ pub fn run() {
             commands::get_staff,
             commands::create_staff,
             commands::update_staff,
-            commands::delete_staff
+            commands::delete_staff,
+            // ── Emploi du temps ──
+            commands::get_timetable,
+            commands::save_timetable_slot
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");
