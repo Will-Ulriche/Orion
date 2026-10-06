@@ -1,5 +1,6 @@
-import jsPDF from 'jspdf';
+import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import type { ReceiptSchoolInfo } from '../lib/receiptPdf';
 
 // ─────────────────────────────────────────────────────
 // Générateurs PDF de la page Archives
@@ -233,3 +234,294 @@ export const generateStaffListPdf = (opts: {
   addFooter(doc, 'Liste du personnel');
   doc.save(`Liste_personnel_${sanitize(opts.yearName)}.pdf`);
 };
+
+// ── Fiche d'identité du personnel (A4) ────────────────
+
+/** Type miroir des champs utiles du modèle Rust Staff (module personnel). */
+export interface StaffIdentityData {
+  id: string;
+  matricule?: string | null;
+  nom: string;
+  prenoms: string;
+  sexe?: string | null;
+  date_naissance?: string | null;
+  lieu_naissance?: string | null;
+  nationalite?: string | null;
+  situation_matrimoniale?: string | null;
+  nombre_enfants?: number | null;
+  telephone_principal?: string | null;
+  telephone_secondaire?: string | null;
+  email?: string | null;
+  adresse?: string | null;
+  region?: string | null;
+  commune?: string | null;
+  quartier?: string | null;
+  urgence_nom?: string | null;
+  urgence_telephone?: string | null;
+  type_personnel?: string | null;
+  fonction?: string | null;
+  statut_professionnel?: string | null;
+  matricule_professionnel?: string | null;
+  categorie?: string | null;
+  grade?: string | null;
+  diplome_academique?: string | null;
+  diplome_professionnel?: string | null;
+  specialite?: string | null;
+  date_recrutement?: string | null;
+  date_prise_service?: string | null;
+  date_affectation?: string | null;
+  etablissement?: string | null;
+  statut_administratif?: string | null;
+  observations?: string | null;
+}
+
+export interface StaffIdentityDocOptions {
+  staff: StaffIdentityData;
+  school: ReceiptSchoolInfo;
+  yearName: string;
+}
+
+type IdPair = [string, string];
+interface IdSection { title: string; rows: IdPair[]; }
+
+const idVal = (v?: string | number | null): string => {
+  if (v === null || v === undefined) return '—';
+  const s = String(v).trim();
+  return s || '—';
+};
+
+const idDate = (d?: string | null): string => {
+  if (!d) return '—';
+  const iso = d.split('T')[0];
+  const [y, m, day] = iso.split('-');
+  if (!y || !m || !day) return d;
+  return `${day}/${m}/${y}`;
+};
+
+export const staffFullName = (s: StaffIdentityData): string =>
+  `${(s.nom || '').toLocaleUpperCase('fr-FR')} ${s.prenoms || ''}`.trim();
+
+function identitySections(s: StaffIdentityData): IdSection[] {
+  const adresse = [s.adresse, s.quartier, s.commune, s.region].filter(Boolean).join(', ');
+  return [
+    {
+      title: 'Informations personnelles',
+      rows: [
+        ['Matricule', idVal(s.matricule)],
+        ['Sexe', idVal(s.sexe)],
+        ['Date de naissance', idDate(s.date_naissance)],
+        ['Lieu de naissance', idVal(s.lieu_naissance)],
+        ['Nationalité', idVal(s.nationalite)],
+        ['Situation matrimoniale', idVal(s.situation_matrimoniale)],
+        ['Nombre d\'enfants', idVal(s.nombre_enfants)],
+        ['Statut administratif', idVal(s.statut_administratif)],
+      ],
+    },
+    {
+      title: 'Coordonnées',
+      rows: [
+        ['Téléphone', idVal(s.telephone_principal)],
+        ['Téléphone secondaire', idVal(s.telephone_secondaire)],
+        ['Email', idVal(s.email)],
+        ['Adresse', idVal(adresse)],
+        ['Contact d\'urgence', idVal(s.urgence_nom)],
+        ['Téléphone d\'urgence', idVal(s.urgence_telephone)],
+      ],
+    },
+    {
+      title: 'Informations professionnelles',
+      rows: [
+        ['Type de personnel', idVal(s.type_personnel)],
+        ['Fonction', idVal(s.fonction)],
+        ['Statut professionnel', idVal(s.statut_professionnel)],
+        ['Catégorie', idVal(s.categorie)],
+        ['Grade', idVal(s.grade)],
+        ['Matricule professionnel', idVal(s.matricule_professionnel)],
+        ['Diplôme académique', idVal(s.diplome_academique)],
+        ['Diplôme professionnel', idVal(s.diplome_professionnel)],
+        ['Spécialité', idVal(s.specialite)],
+      ],
+    },
+    {
+      title: 'Affectation & situation',
+      rows: [
+        ['Établissement', idVal(s.etablissement)],
+        ['Date de recrutement', idDate(s.date_recrutement)],
+        ['Date de prise de service', idDate(s.date_prise_service)],
+        ['Date d\'affectation', idDate(s.date_affectation)],
+        ['Observations', idVal(s.observations)],
+      ],
+    },
+  ];
+}
+
+const idEscape = (s: string): string =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * Aperçu HTML de la fiche d'identité, mis en page au format A4 (210 × 297 mm).
+ * Utilisé dans l'iframe d'aperçu : `iframe.contentWindow.print()` produit un PDF A4
+ * grâce à `@page { size: A4; }`.
+ */
+export function buildStaffIdentityHtml(opts: StaffIdentityDocOptions): string {
+  const { staff, school, yearName } = opts;
+  const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
+  const schoolMeta = [school.address, school.city, school.phone].filter(Boolean).join(' · ');
+
+  const blocks = identitySections(staff).map(sec => `
+      <section class="block">
+        <h2>${idEscape(sec.title)}</h2>
+        <div class="grid">
+${sec.rows.map(([k, v]) => `          <div class="field"><span class="k">${idEscape(k)}</span><span class="v">${idEscape(v)}</span></div>`).join('\n')}
+        </div>
+      </section>`).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>Fiche d'identité — ${idEscape(staffFullName(staff))}</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: #e2e8f0; color: #1e293b; font-family: 'Segoe UI', Arial, Helvetica, sans-serif; font-size: 11pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 14mm 16mm; background: #fff; }
+  .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8mm; }
+  .school-name { font-size: 16pt; font-weight: 700; color: #4f46e5; line-height: 1.2; }
+  .school-meta { font-size: 8.5pt; color: #64748b; margin-top: 1mm; }
+  .year { text-align: right; font-size: 8.5pt; color: #64748b; white-space: nowrap; }
+  .year strong { display: block; font-size: 10.5pt; color: #1e293b; }
+  h1 { margin: 7mm 0 0; font-size: 15pt; font-weight: 700; letter-spacing: 0.04em; text-align: center; color: #1e293b; }
+  .rule { height: 0.6mm; background: #4f46e5; margin: 3mm 0 5mm; }
+  .identity { display: flex; align-items: center; justify-content: space-between; gap: 6mm; background: #eef2ff; border: 0.3mm solid #c7d2fe; border-radius: 2mm; padding: 3.5mm 4.5mm; }
+  .identity .name { font-size: 13pt; font-weight: 700; color: #312e81; }
+  .identity .meta { font-size: 9pt; color: #475569; margin-top: 1mm; }
+  .identity .status { font-size: 8.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #4f46e5; white-space: nowrap; }
+  .block { margin-top: 5mm; }
+  .block h2 { margin: 0 0 2mm; font-size: 9.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #4f46e5; border-bottom: 0.3mm solid #e2e8f0; padding-bottom: 1.2mm; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5mm 8mm; }
+  .field { border-bottom: 0.2mm dotted #cbd5e1; padding-bottom: 1.2mm; }
+  .k { display: block; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; }
+  .v { display: block; font-size: 10pt; color: #1e293b; font-weight: 600; word-break: break-word; }
+  .foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 8mm; margin-top: 10mm; font-size: 8pt; color: #94a3b8; }
+  .sign { text-align: center; font-size: 8.5pt; color: #64748b; border-top: 0.3mm solid #cbd5e1; border-radius: 1mm; padding: 2mm 4mm 0; width: 62mm; }
+  @media print {
+    body { background: #fff; }
+    .page { margin: 0; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="head">
+      <div>
+        <div class="school-name">${idEscape(school.name || 'Établissement scolaire')}</div>
+        ${school.ministry_name ? `<div class="school-meta">${idEscape(school.ministry_name)}</div>` : ''}
+        ${schoolMeta ? `<div class="school-meta">${idEscape(schoolMeta)}</div>` : ''}
+      </div>
+      <div class="year">Année académique<strong>${idEscape(yearName)}</strong></div>
+    </div>
+
+    <h1>FICHE D'IDENTITÉ</h1>
+    <div class="rule"></div>
+
+    <div class="identity">
+      <div>
+        <div class="name">${idEscape(staffFullName(staff))}</div>
+        <div class="meta">Matricule : ${idEscape(idVal(staff.matricule))} — Fonction : ${idEscape(idVal(staff.fonction))}</div>
+      </div>
+      <div class="status">${idEscape(idVal(staff.statut_administratif))}</div>
+    </div>
+${blocks}
+
+    <div class="foot">
+      <span>Document généré le ${today} — ${idEscape(school.short_name || school.name || 'Orion')}</span>
+      <span class="sign">Signature &amp; cachet</span>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+/** Fiche d'identité au format A4 portrait (210 × 297 mm). */
+export function buildStaffIdentityPdf(opts: StaffIdentityDocOptions): jsPDF {
+  const { staff, school, yearName } = opts;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const centerX = pageW / 2;
+  const y = addHeader(doc, centerX, school.name || 'Établissement scolaire', yearName, "FICHE D'IDENTITÉ");
+
+  // Bandeau identité
+  const bandY = y;
+  doc.setFillColor(238, 242, 255);
+  doc.setDrawColor(199, 210, 254);
+  doc.roundedRect(14, bandY, 182, 17, 2.5, 2.5, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(49, 46, 129);
+  doc.text(staffFullName(staff), 18, bandY + 7);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(71, 85, 105);
+  doc.text(`Matricule : ${idVal(staff.matricule)}   ·   Fonction : ${idVal(staff.fonction)}`, 18, bandY + 13);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(79, 70, 229);
+  doc.text(idVal(staff.statut_administratif).toUpperCase(), 192, bandY + 10, { align: 'right' });
+
+  // Sections en 4 colonnes : libellé/valeur ×2
+  const body: any[] = [];
+  for (const sec of identitySections(staff)) {
+    body.push([{
+      content: sec.title.toUpperCase(),
+      colSpan: 4,
+      styles: { fillColor: PRIMARY, textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 9.5 },
+    }]);
+    for (let i = 0; i < sec.rows.length; i += 2) {
+      const left = sec.rows[i];
+      const right = sec.rows[i + 1];
+      body.push([
+        { content: left[0], styles: { fontStyle: 'bold', fillColor: SLATE_100_ROW } },
+        left[1],
+        right ? { content: right[0], styles: { fontStyle: 'bold', fillColor: SLATE_100_ROW } } : '',
+        right ? right[1] : '',
+      ]);
+    }
+  }
+
+  autoTable(doc, {
+    startY: bandY + 24,
+    body,
+    theme: 'grid',
+    margin: { left: 14, right: 14, bottom: 16 },
+    styles: { fontSize: 9.5, cellPadding: 2.6, lineColor: SLATE_200_LINE, valign: 'middle', overflow: 'linebreak' },
+    columnStyles: {
+      0: { cellWidth: 40 },
+      1: { cellWidth: 51 },
+      2: { cellWidth: 40 },
+      3: { cellWidth: 51 },
+    },
+  });
+
+  const finalY = (doc as any).lastAutoTable.finalY as number;
+  const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
+  if (finalY + 40 < pageH - 14) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Fait le ${today}`, 14, finalY + 12);
+    doc.text('Signature du demandeur', pageW - 14, finalY + 12, { align: 'right' });
+    doc.setDrawColor(SLATE_200_LINE[0], SLATE_200_LINE[1], SLATE_200_LINE[2]);
+    doc.line(pageW - 78, finalY + 30, pageW - 14, finalY + 30);
+    doc.text('Le Directeur / La Directrice — cachet', pageW - 14, finalY + 35, { align: 'right' });
+  }
+
+  addFooter(doc, `Fiche d'identité — ${staffFullName(staff)}`);
+  return doc;
+}
+
+export function saveStaffIdentityPdf(opts: StaffIdentityDocOptions): void {
+  buildStaffIdentityPdf(opts).save(`Fiche_identite_${sanitize(staffFullName(opts.staff))}.pdf`);
+}
