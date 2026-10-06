@@ -4,10 +4,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { useYear } from '../contexts/YearContext';
 import {
   Archive, BookOpen, GraduationCap, Coins, UserCog, FileText, Download,
-  CalendarDays, Users, Loader2, CheckCircle, AlertCircle, X, Search, ClipboardList,
+  CalendarDays, Users, Loader2, CheckCircle, AlertCircle, X, Search, ClipboardList, ClipboardCheck,
   User, CreditCard, ChevronRight, Info,
 } from 'lucide-react';
 import { EmptyState, Loader } from '../components/ui';
+import StaffIdentityModal from '../components/StaffIdentityModal';
+import NominalListModal from '../components/NominalListModal';
+import type { NominalListClassInput } from '../lib/nominalListTemplate';
 import { saveFinanceReportPdf, type FinanceReportData } from '../lib/financeReportPdf';
 import type { ReceiptSchoolInfo } from '../lib/receiptPdf';
 
@@ -28,6 +31,37 @@ interface StudentRow {
 interface StaffRow {
   id: string; matricule: string | null; nom: string; prenoms: string;
   type_personnel: string | null; fonction: string | null; statut_administratif: string;
+}
+
+/** get_staff renvoie le modèle Staff complet : on élargit StaffRow pour la fiche d'identité. */
+interface StaffRecord extends StaffRow {
+  sexe: string | null;
+  date_naissance: string | null;
+  lieu_naissance: string | null;
+  nationalite: string | null;
+  situation_matrimoniale: string | null;
+  nombre_enfants: number | null;
+  telephone_principal: string | null;
+  telephone_secondaire: string | null;
+  email: string | null;
+  adresse: string | null;
+  region: string | null;
+  commune: string | null;
+  quartier: string | null;
+  urgence_nom: string | null;
+  urgence_telephone: string | null;
+  statut_professionnel: string | null;
+  matricule_professionnel: string | null;
+  categorie: string | null;
+  grade: string | null;
+  diplome_academique: string | null;
+  diplome_professionnel: string | null;
+  specialite: string | null;
+  date_recrutement: string | null;
+  date_prise_service: string | null;
+  date_affectation: string | null;
+  etablissement: string | null;
+  observations: string | null;
 }
 
 // ─────────────────────────────────────────────────────
@@ -68,13 +102,22 @@ const TABS: { id: Tab; label: string; icon: typeof Users }[] = [
 ];
 
 // Boutons de documents de la colonne de droite
-const RIGHT_ACTIONS: { label: string; icon: typeof Users; tint: string }[] = [
+// `schoolOnly: true` → affiché uniquement sur les onglets Collège et Lycée
+const RIGHT_ACTIONS: { label: string; icon: typeof Users; tint: string; schoolOnly?: boolean }[] = [
   { label: 'Emploi du temps', icon: CalendarDays, tint: 'bg-violet-50 text-violet-600' },
   { label: 'Bulletin de notes', icon: ClipboardList, tint: 'bg-amber-50 text-amber-600' },
   { label: 'Liste de notes', icon: FileText, tint: 'bg-indigo-50 text-indigo-600' },
   { label: "Fiche d'identité", icon: User, tint: 'bg-sky-50 text-sky-600' },
   { label: 'Carte scolaire', icon: CreditCard, tint: 'bg-emerald-50 text-emerald-600' },
-  { label: 'Liste de classe', icon: GraduationCap, tint: 'bg-rose-50 text-rose-600' },
+  { label: 'Liste nominative de la classe', icon: GraduationCap, tint: 'bg-rose-50 text-rose-600' },
+  { label: 'Liste de présence', icon: ClipboardCheck, tint: 'bg-teal-50 text-teal-600', schoolOnly: true },
+];
+
+// Boutons de documents de la colonne de droite — onglet Personnel
+const RIGHT_ACTIONS_PERSONNEL: { label: string; icon: typeof Users; tint: string }[] = [
+  { label: "Fiche d'identité", icon: User, tint: 'bg-sky-50 text-sky-600' },
+  { label: 'Liste du personnel', icon: Users, tint: 'bg-indigo-50 text-indigo-600' },
+  { label: 'Badge du personnel', icon: CreditCard, tint: 'bg-emerald-50 text-emerald-600' },
 ];
 
 interface FeeStructureRow {
@@ -167,10 +210,12 @@ export default function Archives() {
   const [levels, setLevels] = useState<LevelRow[]>([]);
   const [classes, setClasses] = useState<ClassRow[]>([]);
   const [students, setStudents] = useState<StudentRow[]>([]);
-  const [staff, setStaff] = useState<StaffRow[]>([]);
+  const [staff, setStaff] = useState<StaffRecord[]>([]);
   const [schoolInfo, setSchoolInfo] = useState<ReceiptSchoolInfo>(EMPTY_SCHOOL_INFO);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [identityOpen, setIdentityOpen] = useState(false);
+  const [nominalListOpen, setNominalListOpen] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
   const showToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
@@ -193,7 +238,7 @@ export default function Archives() {
           invoke<LevelRow[]>('get_levels', { schoolId, sectionId: null }),
           invoke<ClassRow[]>('get_classes', { schoolId, academicYearId: selectedYear.id }),
           invoke<StudentRow[]>('get_students', { schoolId, academicYearId: selectedYear.id, classId: null }),
-          invoke<StaffRow[]>('get_staff', { schoolId }),
+          invoke<StaffRecord[]>('get_staff', { schoolId }),
           invoke<Partial<ReceiptSchoolInfo>>('get_school_settings').catch(() => ({} as Partial<ReceiptSchoolInfo>)),
         ]);
         if (cancelled) return;
@@ -212,6 +257,8 @@ export default function Archives() {
   const isSchoolTab = tab === 'college' || tab === 'lycee';
   const group: Group = tab === 'lycee' ? 'lycee' : 'college';
   const groupLabel = group === 'college' ? 'Collège' : 'Lycée';
+  // Libellé utilisé dans les messages des boutons « Documents »
+  const docScopeLabel = isSchoolTab ? groupLabel : tab === 'personnel' ? 'Personnel' : 'Archives';
 
   const belongsTo = (cls: ClassRow, g: Group): boolean => {
     const lvl = cls.level_id ? levels.find(l => l.id === cls.level_id) : undefined;
@@ -237,6 +284,27 @@ export default function Archives() {
     const ids = new Set(groupClasses.map(c => c.id));
     return students.filter(s => s.class_id !== null && ids.has(s.class_id));
   }, [students, groupClasses]);
+
+  // ── Liste nominative : classes de l'onglet, élèves rattachés ──────────────
+  const nominalListClasses = useMemo(() => {
+    const byClass = new Map<string, NominalListClassInput['students']>();
+    for (const s of groupStudents) {
+      if (!s.class_id) continue;
+      const list = byClass.get(s.class_id);
+      const entry = {
+        lastName: s.last_name,
+        firstName: s.first_name,
+        gender: s.gender,
+      };
+      if (list) list.push(entry);
+      else byClass.set(s.class_id, [entry]);
+    }
+    return groupClasses.map(c => ({
+      id: c.id,
+      name: c.name,
+      students: byClass.get(c.id) ?? [],
+    }));
+  }, [groupClasses, groupStudents]);
 
   // ── Générateurs ──
 
@@ -558,10 +626,28 @@ export default function Archives() {
               <p className="text-[11px] text-slate-400">Actions rapides</p>
             </div>
             <div className="space-y-1 p-3">
-              {RIGHT_ACTIONS.map(a => (
+              {(tab === 'personnel'
+                ? RIGHT_ACTIONS_PERSONNEL
+                : RIGHT_ACTIONS.filter(a => !a.schoolOnly || isSchoolTab)
+              ).map(a => (
                 <button
                   key={a.label}
-                  onClick={() => showToast('info', `${a.label} — ${isSchoolTab ? groupLabel : 'Archives'} : fonctionnalité à venir.`)}
+                  onClick={() => {
+                    if (tab === 'personnel' && a.label === "Fiche d'identité") {
+                      if (staff.length === 0) showToast('error', 'Aucun membre du personnel à imprimer.');
+                      else setIdentityOpen(true);
+                      return;
+                    }
+                    if (a.label === 'Liste nominative de la classe') {
+                      if (nominalListClasses.length === 0) {
+                        showToast('error', 'Aucune classe à imprimer dans cet onglet.');
+                        return;
+                      }
+                      setNominalListOpen(true);
+                      return;
+                    }
+                    showToast('info', `${a.label} — ${docScopeLabel} : fonctionnalité à venir.`);
+                  }}
                   className="group flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-left transition-all duration-200 hover:border-slate-200 hover:bg-slate-50"
                 >
                   <span className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg ${a.tint}`}>
@@ -579,6 +665,29 @@ export default function Archives() {
         </div>{/* / rangée contenu + colonne */}
 
       </div>
+
+      {/* ═══ POPUP : FICHE D'IDENTITÉ DU PERSONNEL ═══ */}
+      {identityOpen && (
+        <StaffIdentityModal
+          staffList={staff}
+          school={schoolInfo}
+          yearName={selectedYear.name}
+          onClose={() => setIdentityOpen(false)}
+          onError={msg => showToast('error', msg)}
+        />
+      )}
+
+      {/* ═══ POPUP : LISTE NOMINATIVE DE LA CLASSE ═══ */}
+      {nominalListOpen && (
+        <NominalListModal
+          classes={nominalListClasses}
+          groupLabel={groupLabel}
+          yearName={selectedYear.name}
+          onClose={() => setNominalListOpen(false)}
+          onError={msg => showToast('error', msg)}
+          onSuccess={msg => showToast('success', msg)}
+        />
+      )}
 
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
     </div>
