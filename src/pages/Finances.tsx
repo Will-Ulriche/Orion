@@ -648,7 +648,7 @@ export default function Finances() {
       )}
 
       {/* Contenu */}
-      <div className="flex-1 overflow-y-auto min-h-0 pb-6">
+      <div className="flex flex-col flex-1 overflow-y-auto min-h-0 pb-6">
         {!selectedYear ? (
           <div className="flex flex-col items-center justify-center h-64 text-slate-400">
             <CalendarClock size={48} strokeWidth={1} className="mb-3 opacity-40" />
@@ -775,10 +775,10 @@ export default function Finances() {
 
             {/* ─────────── PAIEMENTS ÉLÈVE ─────────── */}
             {activeTab === 'paiements' && (
-              <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 items-start">
+              <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 lg:flex-1 lg:min-h-0">
                 {/* Liste des élèves */}
-                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col overflow-hidden">
-                  <div className="p-4 border-b border-slate-100 space-y-3">
+                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col">
+                  <div className="sticky top-0 z-10 shrink-0 bg-white rounded-t-2xl p-4 border-b border-slate-100 space-y-3">
                     <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
                       <Users size={15} className="text-[#4f46e5]" /> Élèves inscrits
                     </h3>
@@ -806,7 +806,7 @@ export default function Finances() {
                       <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                     </div>
                   </div>
-                  <div className="max-h-[520px] overflow-y-auto">
+                  <div className="max-h-[520px] overflow-y-auto overflow-x-hidden overscroll-contain rounded-b-2xl custom-scrollbar lg:max-h-none lg:min-h-0 lg:flex-1">
                     {filteredStudents.length === 0 ? (
                       <p className="p-8 text-center text-slate-400 text-sm">Aucun élève inscrit.</p>
                     ) : (
@@ -831,7 +831,7 @@ export default function Finances() {
                 </div>
 
                 {/* Situation de l'élève */}
-                <div className="space-y-4">
+                <div className="space-y-4 max-h-[70vh] overflow-y-auto overscroll-contain pr-2 custom-scrollbar lg:max-h-none lg:min-h-0">
                   {!selectedStudent ? (
                     <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center h-64 text-slate-400">
                       <UserX size={40} strokeWidth={1} className="mb-3 opacity-40" />
