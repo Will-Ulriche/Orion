@@ -11,12 +11,12 @@ import YearSelector from './YearSelector';
 // tout en gardant vos routes.
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord' },
+  { to: '/archives', icon: Archive, label: 'Archives' },
   { to: '/classes', icon: GraduationCap, label: 'Gestion des classes' },
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions' },
   { to: '/finances', icon: Coins, label: 'Finances & Paiements' },
   { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Notes' },
   { to: '/personnel', icon: UserCog, label: 'Personnel' },
-  { to: '/archives', icon: Archive, label: 'Archives' },
   { to: '/profils', icon: Wallet, label: 'Profils & Rôles' },
   { to: '/appareils', icon: Calendar, label: 'Appareils' },
   { to: '/licences', icon: ArrowDownUp, label: 'Licence' },
