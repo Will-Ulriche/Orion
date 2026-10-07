@@ -10,6 +10,7 @@ import {
 import { EmptyState, Loader } from '../components/ui';
 import StaffIdentityModal from '../components/StaffIdentityModal';
 import NominalListModal from '../components/NominalListModal';
+import PresenceListModal from '../components/PresenceListModal';
 import TimetableModal from '../components/TimetableModal';
 import type { NominalListClassInput } from '../lib/nominalListTemplate';
 import { saveFinanceReportPdf, type FinanceReportData } from '../lib/financeReportPdf';
@@ -218,6 +219,7 @@ export default function Archives() {
   const [identityOpen, setIdentityOpen] = useState(false);
   const [nominalListOpen, setNominalListOpen] = useState(false);
   const [notesListOpen, setNotesListOpen] = useState(false);
+  const [presenceListOpen, setPresenceListOpen] = useState(false);
   const [timetableOpen, setTimetableOpen] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
@@ -666,6 +668,14 @@ export default function Archives() {
                       setNominalListOpen(true);
                       return;
                     }
+                    if (a.label === 'Liste de présence') {
+                      if (nominalListClasses.length === 0) {
+                        showToast('error', 'Aucune classe à imprimer dans cet onglet.');
+                        return;
+                      }
+                      setPresenceListOpen(true);
+                      return;
+                    }
                     showToast('info', `${a.label} — ${docScopeLabel} : fonctionnalité à venir.`);
                   }}
                   className="group flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-left transition-all duration-200 hover:border-slate-200 hover:bg-slate-50"
@@ -722,6 +732,18 @@ export default function Archives() {
           yearName={selectedYear.name}
           documentType="notes"
           onClose={() => setNotesListOpen(false)}
+          onError={msg => showToast('error', msg)}
+          onSuccess={msg => showToast('success', msg)}
+        />
+      )}
+
+      {/* ═══ POPUP : LISTE DE PRÉSENCE ═══ */}
+      {presenceListOpen && (
+        <PresenceListModal
+          classes={nominalListClasses}
+          groupLabel={groupLabel}
+          yearName={selectedYear.name}
+          onClose={() => setPresenceListOpen(false)}
           onError={msg => showToast('error', msg)}
           onSuccess={msg => showToast('success', msg)}
         />

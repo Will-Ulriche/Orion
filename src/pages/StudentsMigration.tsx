@@ -5,8 +5,8 @@ import { useYear } from '../contexts/YearContext';
 import StudentProfileModal from '../components/StudentProfileModal';
 import BulkMigrationModal from '../components/BulkMigrationModal';
 import {
-  Search, UserPlus, Pencil, Trash2, Users, Eye, MapPin,
-  GraduationCap, BookOpen, ChevronDown, ArrowRight, ArrowRightLeft,
+  Search, UserPlus, Pencil, Trash2, Users, Eye,
+  GraduationCap, BookOpen, ArrowRight, ArrowRightLeft,
   GraduationCap as RepeatIcon, X, Check, AlertCircle
 } from 'lucide-react';
 import { LevelDropdown, AnimatedSelect } from '../components/ui';
@@ -43,12 +43,6 @@ interface Class {
 }
 
 const SCHOOL_ID = 'school-1';
-
-/** Niveaux scolaires prédéfinis */
-const PREDEFINED_LEVELS: { group: string; levels: string[] }[] = [
-  { group: 'Collège', levels: ['6ème', '5ème', '4ème', '3ème'] },
-  { group: 'Lycée', levels: ['Seconde', 'Première', 'Terminale'] },
-];
 
 function formatDate(d: string | null): string {
   if (!d) return '—';

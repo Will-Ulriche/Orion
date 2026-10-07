@@ -5,13 +5,13 @@ import { useYear } from '../contexts/YearContext';
 import {
   BarChart3, BookOpen, CalendarDays, CheckCircle2, ClipboardList, FileText,
   GraduationCap, Layers, Pencil, Plus, Save, Search, SlidersHorizontal, Star,
-  Trash2, Trophy, UserX, Users, UserCheck, ChevronDown, X, Check,
+  Trash2, Trophy, UserX, Users, UserCheck, X, Check,
 } from 'lucide-react';
 import { generateClassReport } from '../utils/pdfGenerator';
 import {
-  Alert, Avatar, Badge, Btn, Card, ConfirmDialog, EmptyState, Field, IconBtn, Kpi,
-  Loader, Modal, NumberInput, PanelHeader, SearchInput, Segmented, Select, Switch,
-  TableShell, Td, Th, TextInput, type Tone, TONES, cx,
+  Alert, Avatar, Badge, Btn, Card, ConfirmDialog, EmptyState, Field, Kpi,
+  Loader, Modal, NumberInput, PanelHeader, SearchInput, Segmented, Select,
+  TableShell, Td, Th, TextInput, type Tone, cx,
 } from '../components/ui';
 
 // ─── Types ──────────────────────────────────────────────────
@@ -102,11 +102,6 @@ function initials(label: string, fallback = '??') {
   return (label || fallback).slice(0, 2);
 }
 
-function formatDateRange(start: string | null, end: string | null) {
-  if (!start) return 'Dates non définies';
-  return `${start} → ${end ?? '?'}`;
-}
-
 // ═══════════════════════════════════════════════════════════
 // PAGE
 // ═══════════════════════════════════════════════════════════
@@ -177,7 +172,6 @@ interface ConfirmState {
 function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
   const [subjects,   setSubjects]   = useState<Subject[]>([]);
   const [classes,    setClasses]    = useState<ClassItem[]>([]);
-  const [periods,    setPeriods]    = useState<GradingPeriod[]>([]);
   const [gradeTypes, setGradeTypes] = useState<GradeType[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState('');
@@ -191,7 +185,6 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
   const [editSubject, setEditSubject] = useState<Subject | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [subjectForm, setSubjectForm] = useState({ name: '', code: '', color: '#6366f1' });
-  const [periodForm, setPeriodForm] = useState({ name: '', period_order: 1, start_date: '', end_date: '', class_id: '' });
   const [gtForm, setGtForm] = useState({ name: '', max_score: 20.0 });
   const [editGt, setEditGt] = useState<GradeType | null>(null);
   // Multi-affectation : map subjectId -> { selected, coefficient, weekly_hours, subject_type, is_mandatory }
@@ -395,7 +388,7 @@ function TabConfig({ schoolId, yearId }: { schoolId: string; yearId: string }) {
           <Segmented<LeftSection>
             value={leftSection}
             onChange={setLeftSection}
-            options={navItems.map(n => ({ value: n.id, label: n.label, icon: n.icon, count: n.count }))}
+            options={navItems.map(n => ({ value: n.id, label: n.label, icon: n.icon, count: n.count ?? undefined }))}
           />
         </div>
 

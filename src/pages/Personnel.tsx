@@ -88,33 +88,6 @@ interface Staff {
   updated_at: string;
 }
 
-const EMPTY_STAFF = (schoolId: string): Staff => ({
-  id: '', school_id: schoolId,
-  matricule: null, nom: '', prenoms: '', sexe: null,
-  date_naissance: null, lieu_naissance: null, nationalite: null, photo_url: null,
-  situation_matrimoniale: null, nombre_enfants: null,
-  telephone_principal: null, telephone_secondaire: null, email: null, adresse: null,
-  region: null, prefecture: null, commune: null, quartier: null,
-  urgence_nom: null, urgence_telephone: null,
-  type_personnel: null, fonction: null, statut_professionnel: null,
-  matricule_professionnel: null, categorie: null, grade: null, classe_grade: null,
-  echelon: null, indice: null, diplome_academique: null, diplome_professionnel: null,
-  specialite: null, date_recrutement: null, date_entree_fonction_pub: null,
-  etablissement: null, annee_scolaire_id: null, fonction_etablissement: null,
-  decision_affectation_num: null, date_affectation: null, date_prise_service: null,
-  date_arrivee_region: null, date_arrivee_etablissement: null,
-  ancien_etablissement: null, service_direction: null,
-  matiere_principale: null, matieres_secondaires: null, classes_principales: null,
-  volume_horaire_hebdo: null, est_prof_principal: false, est_responsable_classe: false,
-  heures_prevues: null, heures_effectuees: null,
-  statut_administratif: 'Actif',
-  date_debut_conge: null, date_fin_conge: null, date_disponibilite: null,
-  date_mutation: null, date_suspension: null, date_retraite: null,
-  date_depart: null, motif_depart: null, observations: null,
-  est_actif: true, created_by: null, updated_by: null,
-  created_at: '', updated_at: '',
-});
-
 // ─────────────────────────────────────────────────────
 // Sections
 // ─────────────────────────────────────────────────────
@@ -423,9 +396,6 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
     : '___________';
   const date_affectation = staff.date_affectation
     ? new Date(staff.date_affectation).toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })
-    : '___________';
-  const date_recrutement = staff.date_recrutement
-    ? new Date(staff.date_recrutement).toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })
     : '___________';
 
   // Corps spécifique selon le type de document
