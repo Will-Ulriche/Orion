@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check, ArrowRight, Trophy } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check, ArrowRight, Trophy, LoaderCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useYear } from '../contexts/YearContext';
 import { generateStudentBulletin } from '../utils/pdfGenerator';
+import { nextPaint } from '../utils/ui';
 
 export interface Student {
   id: string;
@@ -64,6 +65,7 @@ export default function StudentProfileModal({ studentId, enrollmentId, className
   const [selPeriod, setSelPeriod] = useState('');
   const [averages, setAverages] = useState<StudentAverages | null>(null);
   const [loadingResults, setLoadingResults] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     loadStudent();
@@ -132,7 +134,7 @@ export default function StudentProfileModal({ studentId, enrollmentId, className
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-full bg-slate-200 overflow-hidden flex items-center justify-center border-2 border-white shadow-sm">
               {student.photo_url ? (
-                <img src={student.photo_url} alt="Photo" className="w-full h-full object-cover" />
+                <img src={student.photo_url} alt="Photo" loading="lazy" decoding="async" className="w-full h-full object-cover" />
               ) : (
                 <User size={24} className="text-slate-400" />
               )}
@@ -297,22 +299,29 @@ export default function StudentProfileModal({ studentId, enrollmentId, className
                     </div>
                     {averages && selectedYear && (
                       <button 
-                        onClick={() => {
-                          const p = periods.find(x => x.id === selPeriod);
-                          generateStudentBulletin(
-                            "ORION ÉDUCATION", 
-                            selectedYear.name, 
-                            p ? p.name : 'Période', 
-                            `${student.first_name} ${student.last_name}`, 
-                            student.matricule, 
-                            className || 'Classe', 
-                            averages
-                          );
+                        onClick={async () => {
+                          setGenerating(true);
+                          await nextPaint();
+                          try {
+                            const p = periods.find(x => x.id === selPeriod);
+                            generateStudentBulletin(
+                              "ORION ÉDUCATION", 
+                              selectedYear.name, 
+                              p ? p.name : 'Période', 
+                              `${student.first_name} ${student.last_name}`, 
+                              student.matricule, 
+                              className || 'Classe', 
+                              averages
+                            );
+                          } finally {
+                            setGenerating(false);
+                          }
                         }}
-                        className="px-4 py-2 bg-indigo-50 text-[#4f46e5] hover:bg-indigo-100 font-semibold rounded-xl text-[13px] flex items-center gap-2 transition-colors"
+                        disabled={generating}
+                        className="px-4 py-2 bg-indigo-50 text-[#4f46e5] hover:bg-indigo-100 font-semibold rounded-xl text-[13px] flex items-center gap-2 transition-colors disabled:opacity-60"
                       >
-                        <FileText size={16} />
-                        Télécharger le bulletin
+                        {generating ? <LoaderCircle size={16} className="animate-spin" /> : <FileText size={16} />}
+                        {generating ? 'Génération…' : 'Télécharger le bulletin'}
                       </button>
                     )}
                   </div>

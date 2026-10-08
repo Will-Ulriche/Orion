@@ -53,7 +53,7 @@ export default function BulkMigrationModal({ onClose, onMigrated }: { onClose: (
       return;
     }
     setLoading(true);
-    invoke<StudentEnrollment[]>('get_students', { schoolId: schoolId || 'school-1', academicYearId: currentYear.id, classId: sourceClassId })
+    invoke<StudentEnrollment[]>('get_students', { schoolId: schoolId || 'school-1', academicYearId: currentYear.id, classId: sourceClassId, includePhotos: false })
       .then(res => {
         setStudents(res);
         setSelectedStudents(new Set(res.map(s => s.student_id))); // Select all by default

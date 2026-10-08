@@ -53,9 +53,38 @@ function ImageUploadZone({
     input.onchange = (ev: any) => {
       const file = ev.target.files?.[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => onSet(fieldKey, reader.result as string);
-      reader.readAsDataURL(file);
+
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const max = 800;
+        let { width, height } = img;
+        
+        if (width > max || height > max) {
+          const ratio = Math.min(max / width, max / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          // Compress as WebP for transparency + small size
+          const dataUrl = canvas.toDataURL('image/webp', 0.8);
+          onSet(fieldKey, dataUrl);
+        } else {
+          // Fallback
+          const reader = new FileReader();
+          reader.onload = () => onSet(fieldKey, reader.result as string);
+          reader.readAsDataURL(file);
+        }
+      };
+      img.src = url;
     };
     input.click();
   };
@@ -69,7 +98,7 @@ function ImageUploadZone({
       >
         {value ? (
           <>
-            <img src={value} alt={label} className="absolute inset-0 w-full h-full object-contain p-2" />
+            <img src={value} alt={label} loading="lazy" decoding="async" className="absolute inset-0 w-full h-full object-contain p-2" />
             <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 flex items-center justify-center transition-all">
               <span className="text-white text-xs font-semibold opacity-0 group-hover:opacity-100">Changer</span>
             </div>
@@ -237,7 +266,7 @@ export default function Settings() {
               <div className="relative flex items-center gap-4">
                 {formData.logo_url ? (
                   <div className="w-16 h-16 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center overflow-hidden flex-shrink-0 ring-1 ring-white/25">
-                    <img src={formData.logo_url} alt="Logo de l'établissement" className="w-full h-full object-contain p-1.5" />
+                    <img src={formData.logo_url} alt="Logo de l'établissement" loading="lazy" decoding="async" className="w-full h-full object-contain p-1.5" />
                   </div>
                 ) : (
                   <div className="w-16 h-16 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center flex-shrink-0 ring-1 ring-white/25">
@@ -275,9 +304,9 @@ export default function Settings() {
                 title="Établissement" subtitle="Dénomination et identité légale"
               >
                 <Field label="Dénomination du ministère de tutelle">
-                  <input name="ministry_name" value={formData.ministry_name} onChange={handleChange}
+                  <textarea name="ministry_name" value={formData.ministry_name} onChange={handleChange}
                     placeholder="Ex : Ministère des Enseignements Primaire et Secondaire"
-                    className={fieldClass} />
+                    className={fieldClass} rows={2} />
                 </Field>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <Field label="Nom de l'établissement" required>

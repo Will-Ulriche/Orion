@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useYear } from '../contexts/YearContext';
 import { saveReceiptPdf, type ReceiptSchoolInfo } from '../lib/receiptPdf';
 import { saveFinanceReportPdf } from '../lib/financeReportPdf';
+import { nextPaint } from '../utils/ui';
 import {
   AlertCircle, Banknote, CalendarClock, Check, CheckCircle2, ChevronDown, Coins,
   FileDown, List, Loader2, Lock, Pencil, Plus, Receipt, RefreshCw, Search, Trash2,
@@ -180,7 +181,7 @@ export default function Finances() {
     try {
       const [c, s] = await Promise.all([
         invoke('get_classes', { schoolId, academicYearId: selectedYear.id }) as Promise<ClassItem[]>,
-        invoke('get_students', { schoolId, academicYearId: selectedYear.id, classId: null }) as Promise<StudentRow[]>,
+        invoke('get_students', { schoolId, academicYearId: selectedYear.id, classId: null, includePhotos: false }) as Promise<StudentRow[]>,
       ]);
       setClasses(c);
       setStudents(s);
@@ -395,9 +396,10 @@ export default function Finances() {
     loadStudentData(student);
   };
 
-  const handlePrintReceipt = (p: Payment) => {
+  const handlePrintReceipt = async (p: Payment) => {
     setError(null);
     setPrintingId(p.id);
+    await nextPaint();
     try {
       const fee = p.fee_structure_id ? fees.find(f => f.id === p.fee_structure_id) : null;
       saveReceiptPdf({
@@ -446,6 +448,7 @@ export default function Finances() {
   const handleExportReport = async () => {
     setError(null);
     setExportingReport(true);
+    await nextPaint();
     try {
       const data = dashboard ?? (await invoke<FinancialDashboard>('get_financial_dashboard', {
         schoolId, academicYearId: selectedYear?.id,

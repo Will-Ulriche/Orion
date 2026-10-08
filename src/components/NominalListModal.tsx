@@ -74,8 +74,19 @@ export default function NominalListModal({
   // ── Images du modèle (logo, QR, filigrane) ────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    loadNominalListAssets()
-      .then(a => { if (!cancelled) setAssets(a); })
+    Promise.all([
+      loadNominalListAssets(),
+      invoke<any>("get_school_settings").catch(() => null)
+    ])
+      .then(([a, school]) => {
+        if (!cancelled) {
+          if (school && school.logo_url) {
+            setAssets({ ...a, logo: school.logo_url });
+          } else {
+            setAssets(a);
+          }
+        }
+      })
       .catch(e => onError(`Aperçu impossible : ${String(e)}`));
     return () => { cancelled = true; };
   }, [onError]);
@@ -227,30 +238,42 @@ export default function NominalListModal({
   }, [assets, data, groupLabel, documentType, isNotes, selPeriods, selSubject, subjects, realGrades]);
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
 
   useEffect(() => {
     if (!docOptions) {
       setBlobUrl(null);
+      setPdfBlob(null);
       return;
     }
     try {
       const doc = buildNominalListPdf(docOptions);
-      const url = URL.createObjectURL(doc.output('blob'));
+      const blob = doc.output('blob');
+      const url = URL.createObjectURL(blob);
+      setPdfBlob(blob);
       setBlobUrl(url);
       return () => URL.revokeObjectURL(url);
     } catch (e) {
       console.error(e);
       setBlobUrl(null);
+      setPdfBlob(null);
     }
   }, [docOptions]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleDownload = () => {
-    if (!docOptions) return;
+    if (!pdfBlob) return;
     setBusy(true);
     try {
       const fileName = nominalListFileName(data, groupLabel, yearName, documentType);
-      buildNominalListPdf(docOptions).save(fileName);
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       const students = data.reduce((sum, c) => sum + c.rows.length, 0);
       onSuccess?.(
         data.length === 1
@@ -493,6 +516,11 @@ export default function NominalListModal({
                     title="Aperçu PDF de la liste nominative"
                   />
                 </div>
+              ) : docOptions ? (
+                <div className="flex h-full flex-col items-center justify-center text-slate-400">
+                  <LoaderCircle size={34} strokeWidth={1} className="mb-3 animate-spin opacity-50" />
+                  <p className="text-sm">Génération de l'aperçu…</p>
+                </div>
               ) : null}
             </div>
           </div>
@@ -517,7 +545,7 @@ export default function NominalListModal({
           <div className="flex items-center gap-2">
             <button
               onClick={handleDownload}
-              disabled={data.length === 0 || !assets || busy}
+              disabled={data.length === 0 || !assets || busy || !pdfBlob}
               className="flex items-center gap-1.5 rounded-lg bg-[#4f46e5] px-4 py-2 text-[12px] font-semibold text-white transition-colors hover:bg-[#4338ca] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}

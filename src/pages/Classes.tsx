@@ -173,7 +173,7 @@ export default function Classes() {
         invoke<Section[]>('get_sections', { schoolId }),
         invoke<Level[]>('get_levels', { schoolId, sectionId: null }),
         invoke<Series[]>('get_series', { schoolId, levelId: null }),
-        invoke<Staff[]>('get_staff', { schoolId }),
+        invoke<Staff[]>('get_staff', { schoolId, includePhotos: false }),
       ]);
       setSections(sects);
       setLevels(lvls);

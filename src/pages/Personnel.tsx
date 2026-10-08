@@ -176,24 +176,127 @@ function Select({ label, value, onChange, options, icon: Icon }: {
 // ─────────────────────────────────────────────────────
 // Sections de contenu (toutes contrôlées)
 // ─────────────────────────────────────────────────────
+
+function compressImage(file: File, callback: (compressedBase64: string) => void) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const MAX_WIDTH = 500;
+      const MAX_HEIGHT = 500;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height = Math.round((height * MAX_WIDTH) / width);
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width = Math.round((width * MAX_HEIGHT) / height);
+          height = MAX_HEIGHT;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(img, 0, 0, width, height);
+      callback(canvas.toDataURL('image/jpeg', 0.8));
+    };
+    img.src = e.target?.result as string;
+  };
+  reader.readAsDataURL(file);
+}
+
 function SectionInfosPerso({ form, set }: { form: Staff; set: (k: keyof Staff, v: any) => void }) {
+  const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
   const initials = (form.prenoms?.[0] ?? '?') + (form.nom?.[0] ?? '?');
   return (
     <div className="space-y-5">
+      {previewPhoto && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setPreviewPhoto(null)}>
+          <div className="relative max-w-2xl max-h-[90vh] rounded-2xl overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+            <img src={previewPhoto} alt="Aperçu de la photo" className="max-w-full max-h-[90vh] object-contain" />
+            <button onClick={() => setPreviewPhoto(null)} className="absolute top-3 right-3 p-2 bg-black/50 hover:bg-black/80 text-white rounded-full transition-colors">
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+      )}
       <SectionTitle title="Informations personnelles" subtitle="Identité et état civil" />
       <div className="flex items-center gap-5 rounded-2xl border border-[#4f46e5]/10 bg-gradient-to-r from-[#f8f9fe] via-white to-[#ede9fe]/50 p-4">
-        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] flex items-center justify-center text-white text-2xl font-bold flex-shrink-0 shadow-lg ring-4 ring-white">
-          {initials.toUpperCase()}
+        <div 
+          className={`w-20 h-20 rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] flex items-center justify-center text-white text-2xl font-bold flex-shrink-0 shadow-lg ring-4 ring-white overflow-hidden ${form.photo_url ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+          onClick={() => { if (form.photo_url) setPreviewPhoto(form.photo_url); }}
+          title={form.photo_url ? "Cliquez pour agrandir" : undefined}
+        >
+          {form.photo_url ? (
+            <img src={form.photo_url} alt="Photo du personnel" loading="lazy" decoding="async" className="w-full h-full object-cover" />
+          ) : (
+            initials.toUpperCase()
+          )}
         </div>
         <div>
           <p className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Photo du personnel</p>
-          <button className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[12px] text-slate-600 hover:bg-[#ede9fe] hover:text-[#6d28d9] hover:border-[#c4b5fd] transition-all font-medium">
-            <Camera size={13} /> Changer la photo
-          </button>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[12px] text-slate-600 hover:bg-[#ede9fe] hover:text-[#6d28d9] hover:border-[#c4b5fd] transition-all font-medium cursor-pointer w-fit">
+              <Camera size={13} /> Changer la photo
+              <input 
+                type="file" 
+                accept="image/*" 
+                className="hidden" 
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    compressImage(file, (compressedBase64) => {
+                      set('photo_url', compressedBase64);
+                    });
+                  }
+                }}
+              />
+            </label>
+            {form.photo_url && (
+              <button
+                type="button"
+                onClick={() => set('photo_url', null)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-white border border-red-200 rounded-lg text-[12px] text-red-600 hover:bg-red-50 hover:border-red-300 transition-all font-medium"
+              >
+                <Trash2 size={13} /> Supprimer
+              </button>
+            )}
+          </div>
         </div>
       </div>
       <Grid>
-        <Field label="Matricule" value={form.matricule ?? ''} onChange={v => set('matricule', v || null)} icon={Hash} />
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Matricule</label>
+            <button 
+              type="button"
+              onClick={() => {
+                const year = new Date().getFullYear();
+                const random = Math.floor(1000 + Math.random() * 9000);
+                set('matricule', `PERS-${year}-${random}`);
+              }}
+              className="text-[10px] font-bold text-[#4f46e5] hover:text-[#4338ca] hover:underline"
+            >
+              Générer auto.
+            </button>
+          </div>
+          <div className="relative">
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none"><Hash size={13} /></div>
+            <input
+              type="text"
+              value={form.matricule ?? ''}
+              onChange={e => set('matricule', e.target.value || null)}
+              placeholder="—"
+              className="w-full pl-9 pr-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] text-slate-700 placeholder:text-slate-300 outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] transition-all duration-200"
+            />
+          </div>
+        </div>
         <Field label="Nom" value={form.nom} onChange={v => set('nom', v)} icon={User} />
         <Field label="Prenoms" value={form.prenoms} onChange={v => set('prenoms', v)} />
       </Grid>
@@ -218,9 +321,9 @@ function SectionCoordonnees({ form, set }: { form: Staff; set: (k: keyof Staff, 
       <Grid>
         <Field label="Telephone principal" type="tel" value={form.telephone_principal ?? ''} onChange={v => set('telephone_principal', v || null)} icon={Phone} />
         <Field label="Telephone secondaire" type="tel" value={form.telephone_secondaire ?? ''} onChange={v => set('telephone_secondaire', v || null)} icon={Phone} />
-        <Field label="Adresse e-mail" type="email" value={form.email ?? ''} onChange={v => set('email', v || null)} icon={Mail} />
+        <Field label="Adresse" value={form.adresse ?? ''} onChange={v => set('adresse', v || null)} icon={MapPin} />
       </Grid>
-      <Field label="Adresse" value={form.adresse ?? ''} onChange={v => set('adresse', v || null)} icon={MapPin} span />
+      <Field label="Adresse e-mail" type="email" value={form.email ?? ''} onChange={v => set('email', v || null)} icon={Mail} span />
       <Grid>
         <Field label="Region" value={form.region ?? ''} onChange={v => set('region', v || null)} />
         <Field label="Prefecture" value={form.prefecture ?? ''} onChange={v => set('prefecture', v || null)} />
@@ -317,17 +420,21 @@ function SectionEnseignement({ form, set }: { form: Staff; set: (k: keyof Staff,
       </Grid>
       <Grid>
         <div className="sm:col-span-2">
-          <Field label="Classes principales" placeholder="Ex: 4eme A, 3eme B" value={form.classes_principales ?? ''} onChange={v => set('classes_principales', v || null)} />
+          <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Classes principales</label>
+          <div className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] text-slate-500 min-h-[42px] flex items-center gap-2">
+            {form.classes_principales ? (
+              <span className="flex flex-wrap gap-1.5">
+                {form.classes_principales.split(',').map((c, i) => (
+                  <span key={i} className="px-2 py-0.5 bg-[#ede9fe] text-[#6d28d9] rounded-md text-[12px] font-medium">{c.trim()}</span>
+                ))}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-slate-400 italic text-[12px]">
+                <BookOpen size={12} /> Renseigné automatiquement via Pédagogie &amp; Notes
+              </span>
+            )}
+          </div>
         </div>
-        <Field label="Volume horaire hebdomadaire" type="number" value={form.volume_horaire_hebdo?.toString() ?? ''} onChange={v => set('volume_horaire_hebdo', v ? parseFloat(v) : null)} icon={Clock} />
-      </Grid>
-      <Grid cols={2}>
-        <Select label="Professeur principal" value={form.est_prof_principal ? 'Oui' : 'Non'} onChange={v => set('est_prof_principal', v === 'Oui')} options={['Oui', 'Non']} icon={UserCheck} />
-        <Select label="Responsable de classe" value={form.est_responsable_classe ? 'Oui' : 'Non'} onChange={v => set('est_responsable_classe', v === 'Oui')} options={['Oui', 'Non']} />
-      </Grid>
-      <Grid cols={2}>
-        <Field label="Nombre d'heures prevues" type="number" value={form.heures_prevues?.toString() ?? ''} onChange={v => set('heures_prevues', v ? parseFloat(v) : null)} icon={Clock} />
-        <Field label="Nombre d'heures effectuees" type="number" value={form.heures_effectuees?.toString() ?? ''} onChange={v => set('heures_effectuees', v ? parseFloat(v) : null)} icon={Clock} />
       </Grid>
     </div>
   );
@@ -812,7 +919,11 @@ function CreateModal({ schoolId, onClose, onCreate }: { schoolId: string; onClos
   const [nom, setNom] = useState('');
   const [prenoms, setPrenoms] = useState('');
   const [sexe, setSexe] = useState('');
-  const [matricule, setMatricule] = useState('');
+  const [matricule, setMatricule] = useState(() => {
+    const year = new Date().getFullYear();
+    const random = Math.floor(1000 + Math.random() * 9000);
+    return `PERS-${year}-${random}`;
+  });
   const [type_personnel, setType] = useState('');
   const [fonction, setFonction] = useState('');
   const [saving, setSaving] = useState(false);
@@ -860,7 +971,20 @@ function CreateModal({ schoolId, onClose, onCreate }: { schoolId: string; onClos
               </select>
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Matricule</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Matricule</label>
+                <button 
+                  type="button"
+                  onClick={() => {
+                    const year = new Date().getFullYear();
+                    const random = Math.floor(1000 + Math.random() * 9000);
+                    setMatricule(`PERS-${year}-${random}`);
+                  }}
+                  className="text-[10px] font-bold text-[#4f46e5] hover:text-[#4338ca] hover:underline"
+                >
+                  Générer auto.
+                </button>
+              </div>
               <input value={matricule} onChange={e => setMatricule(e.target.value)} placeholder="MAT-001" className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-[13px] outline-none hover:border-slate-300 focus:ring-2 focus:ring-[#4f46e5]/15 focus:border-[#4f46e5] transition-all duration-200" />
             </div>
           </div>
@@ -936,15 +1060,29 @@ export default function Personnel() {
 
   useEffect(() => () => { if (toastTimer.current) window.clearTimeout(toastTimer.current); }, []);
 
+  /** Charge la photo complète d'un membre (la liste n'embarque plus les photos). */
+  const loadPhoto = async (s: Staff): Promise<Staff | null> => {
+    try {
+      const photo_url = await invoke<Staff['photo_url']>('get_staff_photo', { staffId: s.id });
+      return { ...s, photo_url };
+    } catch (e: any) {
+      showToast('error', `Impossible de charger la photo : ${e.toString()}`);
+      return null;
+    }
+  };
+
   const loadStaff = useCallback(async () => {
     if (!schoolId) return;
     setLoading(true);
     try {
-      const data = await invoke<Staff[]>('get_staff', { schoolId });
+      const data = await invoke<Staff[]>('get_staff', { schoolId, includePhotos: false });
       setStaffList(data);
       if (data.length > 0 && !selected) {
-        setSelected(data[0]);
-        setForm(structuredClone(data[0]));
+        const full = await loadPhoto(data[0]);
+        if (full) {
+          setSelected(full);
+          setForm(structuredClone(full));
+        }
       }
     } catch (e: any) { showToast('error', e.toString()); }
     finally { setLoading(false); }
@@ -957,9 +1095,11 @@ export default function Personnel() {
     setDirty(true);
   }, []);
 
-  const handleSelect = (s: Staff) => {
-    setSelected(s);
-    setForm(structuredClone(s));
+  const handleSelect = async (s: Staff) => {
+    const full = await loadPhoto(s);
+    if (!full) return;
+    setSelected(full);
+    setForm(structuredClone(full));
     setDirty(false);
     setToast(null);
   };
@@ -991,7 +1131,7 @@ export default function Personnel() {
       await invoke('delete_staff', { id: s.id, schoolId });
       const remaining = staffList.filter(x => x.id !== s.id);
       setStaffList(remaining);
-      if (remaining.length > 0) { handleSelect(remaining[0]); }
+      if (remaining.length > 0) { await handleSelect(remaining[0]); }
       else { setSelected(null); setForm(null); }
       showToast('success', `Dossier de ${s.nom} ${s.prenoms} supprimé.`);
     } catch (e: any) { showToast('error', e.toString()); }
@@ -1017,7 +1157,7 @@ export default function Personnel() {
       case 'coordonnees':     return !!(f.telephone_principal || f.email);
       case 'infos_pro':       return !!(f.type_personnel && f.fonction);
       case 'affectation':     return !!(f.etablissement || f.date_affectation);
-      case 'enseignement':    return !!(f.matiere_principale || f.volume_horaire_hebdo);
+      case 'enseignement':    return !!(f.matiere_principale || f.matieres_secondaires || f.classes_principales);
       case 'situation_admin': return f.statut_administratif !== 'Actif' || !!(f.date_debut_conge || f.date_depart || f.observations);
       case 'documents':       return true;
       case 'infos_systeme':   return true;

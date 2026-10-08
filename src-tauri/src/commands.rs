@@ -439,7 +439,7 @@ pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Resul
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_school_settings(state: State<'_, DbState>) -> Result<serde_json::Value, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données")?;
     let mut stmt = conn.prepare(
@@ -821,7 +821,8 @@ fn ensure_year_is_open(conn: &rusqlite::Connection, school_id: &str, year_id: &s
 }
 
 
-#[tauri::command]
+// `async` : exécuté sur un thread séparé pour ne jamais bloquer l'interface.
+#[tauri::command(async)]
 pub fn get_classes(school_id: String, academic_year_id: String, state: State<'_, DbState>) -> Result<Vec<Class>, String> {
     let conn = state.0.lock().map_err(|_ | "Impossible de verrouiller la base de données".to_string())?;
     
@@ -1019,8 +1020,14 @@ pub fn delete_enrollment(id: String, state: State<'_, DbState>) -> Result<(), St
     Ok(())
 }
 
-#[tauri::command]
-pub fn get_students(school_id: String, academic_year_id: String, class_id: Option<String>, state: State<'_, DbState>) -> Result<Vec<StudentEnrollment>, String> {
+#[tauri::command(async)]
+pub fn get_students(
+    school_id: String,
+    academic_year_id: String,
+    class_id: Option<String>,
+    include_photos: Option<bool>,
+    state: State<'_, DbState>,
+) -> Result<Vec<StudentEnrollment>, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     
     let mut query = "
@@ -1071,7 +1078,14 @@ pub fn get_students(school_id: String, academic_year_id: String, class_id: Optio
     for student in iter {
         students.push(student.map_err(|e| e.to_string())?);
     }
-    
+
+    // Les photos (base64) pèsent plusieurs Mo : on les écarte quand l'appelant n'en a pas besoin.
+    if include_photos == Some(false) {
+        for s in students.iter_mut() {
+            s.photo_url = None;
+        }
+    }
+
     Ok(students)
 }
 
@@ -1668,7 +1682,7 @@ pub fn create_payment(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_financial_dashboard(
     school_id: String,
     academic_year_id: String,
@@ -2648,7 +2662,7 @@ pub fn assign_teacher_to_class_subject(
 
 // ── STRUCTURE PÉDAGOGIQUE (Sections → Niveaux → Séries) ──────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_sections(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::Section>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     let mut stmt = conn.prepare("SELECT id, school_id, name FROM sections WHERE school_id = ? ORDER BY name").map_err(|e| e.to_string())?;
@@ -2695,7 +2709,7 @@ pub fn delete_section(id: String, school_id: String, state: State<'_, DbState>) 
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_levels(school_id: String, section_id: Option<String>, state: State<'_, DbState>) -> Result<Vec<crate::models::Level>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     let mut levels = Vec::new();
@@ -2888,36 +2902,53 @@ fn row_to_staff(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::models::Staf
 }
 
 const STAFF_SELECT: &str = "
-    SELECT id, school_id,
-        matricule, nom, prenoms, sexe, date_naissance, lieu_naissance,
-        nationalite, photo_url, situation_matrimoniale, nombre_enfants,
-        telephone_principal, telephone_secondaire, email, adresse,
-        region, prefecture, commune, quartier, urgence_nom, urgence_telephone,
-        type_personnel, fonction, statut_professionnel, matricule_professionnel,
-        categorie, grade, classe_grade, echelon, indice,
-        diplome_academique, diplome_professionnel, specialite,
-        date_recrutement, date_entree_fonction_pub,
-        etablissement, annee_scolaire_id, fonction_etablissement,
-        decision_affectation_num, date_affectation, date_prise_service,
-        date_arrivee_region, date_arrivee_etablissement, ancien_etablissement, service_direction,
-        matiere_principale, matieres_secondaires, classes_principales,
-        volume_horaire_hebdo, est_prof_principal, est_responsable_classe,
-        heures_prevues, heures_effectuees,
-        statut_administratif, date_debut_conge, date_fin_conge, date_disponibilite,
-        date_mutation, date_suspension, date_retraite, date_depart, motif_depart, observations,
-        est_actif, created_by, updated_by, created_at, updated_at
+    SELECT staff.id, staff.school_id,
+        staff.matricule, staff.nom, staff.prenoms, staff.sexe, staff.date_naissance, staff.lieu_naissance,
+        staff.nationalite, staff.photo_url, staff.situation_matrimoniale, staff.nombre_enfants,
+        staff.telephone_principal, staff.telephone_secondaire, staff.email, staff.adresse,
+        staff.region, staff.prefecture, staff.commune, staff.quartier, staff.urgence_nom, staff.urgence_telephone,
+        staff.type_personnel, staff.fonction, staff.statut_professionnel, staff.matricule_professionnel,
+        staff.categorie, staff.grade, staff.classe_grade, staff.echelon, staff.indice,
+        staff.diplome_academique, staff.diplome_professionnel, staff.specialite,
+        staff.date_recrutement, staff.date_entree_fonction_pub,
+        staff.etablissement, staff.annee_scolaire_id, staff.fonction_etablissement,
+        staff.decision_affectation_num, staff.date_affectation, staff.date_prise_service,
+        staff.date_arrivee_region, staff.date_arrivee_etablissement, staff.ancien_etablissement, staff.service_direction,
+        staff.matiere_principale, staff.matieres_secondaires, 
+        (SELECT GROUP_CONCAT(DISTINCT c.name) FROM class_subjects cs JOIN classes c ON cs.class_id = c.id WHERE cs.teacher_id = staff.id AND cs.school_id = staff.school_id) as classes_principales,
+        staff.volume_horaire_hebdo, staff.est_prof_principal, staff.est_responsable_classe,
+        staff.heures_prevues, staff.heures_effectuees,
+        staff.statut_administratif, staff.date_debut_conge, staff.date_fin_conge, staff.date_disponibilite,
+        staff.date_mutation, staff.date_suspension, staff.date_retraite, staff.date_depart, staff.motif_depart, staff.observations,
+        staff.est_actif, staff.created_by, staff.updated_by, staff.created_at, staff.updated_at
     FROM staff";
 
-/// Liste tout le personnel d'un établissement
-#[tauri::command]
-pub fn get_staff(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::Staff>, String> {
+/// Liste tout le personnel d'un établissement.
+/// `include_photos = false` écarte les photos en base64 (plusieurs Mo) quand l'appelant
+/// ne les affiche pas — c'est le cas des Archives.
+#[tauri::command(async)]
+pub fn get_staff(school_id: String, include_photos: Option<bool>, state: State<'_, DbState>) -> Result<Vec<crate::models::Staff>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     let query = format!("{} WHERE school_id=?1 ORDER BY nom, prenoms", STAFF_SELECT);
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let rows = stmt.query_map(rusqlite::params![school_id], row_to_staff).map_err(|e| e.to_string())?;
     let mut res = Vec::new();
     for r in rows { match r { Ok(s) => res.push(s), Err(e) => return Err(format!("Erreur lecture personnel: {:?}", e)) } }
+    if include_photos == Some(false) {
+        for s in res.iter_mut() { s.photo_url = None; }
+    }
     Ok(res)
+}
+
+/// Photo d'un seul membre du personnel, chargée à la demande (fiche d'édition).
+#[tauri::command(async)]
+pub fn get_staff_photo(staff_id: String, state: State<'_, DbState>) -> Result<Option<String>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    conn.query_row(
+        "SELECT photo_url FROM staff WHERE id = ?1",
+        rusqlite::params![staff_id],
+        |row| row.get::<_, Option<String>>(0),
+    ).map_err(|e| format!("Erreur lecture photo du personnel: {}", e))
 }
 
 /// Crée un nouveau membre du personnel
@@ -3016,6 +3047,47 @@ pub fn delete_staff(id: String, school_id: String, state: State<'_, DbState>) ->
         "DELETE FROM staff WHERE id=?1 AND school_id=?2",
         rusqlite::params![id, school_id]
     ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Met à jour la colonne `classes_principales` du staff en fonction de ses affectations de cours
+#[tauri::command]
+pub fn update_staff_classes(staff_id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    
+    let mut stmt = conn.prepare("
+        SELECT DISTINCT c.name 
+        FROM class_subjects cs
+        JOIN classes c ON cs.class_id = c.id
+        WHERE cs.teacher_id = ?1 AND cs.school_id = ?2
+        ORDER BY c.name ASC
+    ").map_err(|e| e.to_string())?;
+    
+    let class_iter = stmt.query_map(rusqlite::params![staff_id, school_id], |row| {
+        row.get::<_, String>(0)
+    }).map_err(|e| e.to_string())?;
+    
+    let mut classes: Vec<String> = Vec::new();
+    for name in class_iter {
+        if let Ok(n) = name {
+            classes.push(n);
+        }
+    }
+    
+    let classes_str = if classes.is_empty() {
+        None
+    } else {
+        Some(classes.join(", "))
+    };
+    
+    let now = chrono::Utc::now().to_rfc3339();
+    
+    conn.execute(
+        "UPDATE staff SET classes_principales=?1, updated_at=?2 WHERE id=?3 AND school_id=?4",
+        rusqlite::params![classes_str, now, staff_id, school_id]
+    ).map_err(|e| e.to_string())?;
+    
+    enqueue_entity(&conn, "staff", &school_id, &staff_id);
     Ok(())
 }
 

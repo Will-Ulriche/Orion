@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { invoke } from '@tauri-apps/api/core';
 import { Download, GraduationCap, LoaderCircle, Search, Users, X, ClipboardCheck } from 'lucide-react';
 import type { NominalListClassInput } from '../lib/nominalListTemplate';
 import { buildPresenceListPdf, nominalListFileName } from '../lib/presenceListPdf';
@@ -60,20 +61,31 @@ export default function PresenceListModal({
   const clearAll = useCallback(() => setSelected(new Set()), []);
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [logoUrl, setLogoUrl] = useState<string | undefined>();
 
+  useEffect(() => {
+    invoke<any>('get_school_settings').then(s => {
+      if (s && s.logo_url) setLogoUrl(s.logo_url);
+    }).catch(() => {});
+  }, []);
+
+  // Aperçu PDF natif basé sur liste_de_presence.pdf.
   useEffect(() => {
     if (selectedClasses.length === 0) {
       setBlobUrl(null);
+      setPdfBlob(null);
       return;
     }
     let cancelled = false;
-    
+
     setBusy(true);
-    buildPresenceListPdf(selectedClasses, groupLabel, yearName)
+    buildPresenceListPdf(selectedClasses, groupLabel, yearName, logoUrl)
       .then(bytes => {
         if (cancelled) return;
         const blob = new Blob([bytes as any], { type: 'application/pdf' });
         const url = URL.createObjectURL(blob);
+        setPdfBlob(blob);
         setBlobUrl(url);
         setBusy(false);
       })
@@ -89,20 +101,20 @@ export default function PresenceListModal({
       cancelled = true;
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-  }, [selectedClasses, groupLabel, yearName]);
+  }, [selectedClasses, groupLabel, yearName, logoUrl]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
-  const handleDownload = async () => {
-    if (selectedClasses.length === 0) return;
+  const handleDownload = () => {
+    if (selectedClasses.length === 0 || !pdfBlob) return;
     setBusy(true);
     try {
-      const bytes = await buildPresenceListPdf(selectedClasses, groupLabel, yearName);
-      const blob = new Blob([bytes as any], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement('a');
       a.href = url;
       a.download = nominalListFileName(selectedClasses, groupLabel, yearName, 'presence');
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
       const totalStudents = selectedClasses.reduce((sum, c) => sum + c.students.length, 0);
@@ -315,7 +327,7 @@ export default function PresenceListModal({
           <div className="flex items-center gap-2">
             <button
               onClick={handleDownload}
-              disabled={selectedClasses.length === 0 || busy}
+              disabled={selectedClasses.length === 0 || busy || !pdfBlob}
               className="flex items-center gap-1.5 rounded-lg bg-[#0d9488] px-4 py-2 text-[12px] font-semibold text-white transition-colors hover:bg-[#0f766e] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}

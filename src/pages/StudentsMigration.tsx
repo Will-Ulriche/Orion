@@ -146,6 +146,7 @@ export default function StudentsMigration() {
         schoolId: schoolId || SCHOOL_ID,
         academicYearId: currentYear.id,
         classId: null,
+        includePhotos: false,
       });
       setStudents(res);
     } catch (e: any) {

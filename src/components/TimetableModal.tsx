@@ -215,10 +215,8 @@ export default function TimetableModal({
   const [openPicker, setOpenPicker] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [assets, setAssets] = useState<TimetableAssets | null>(null);
-  const [teacherName, setTeacherName] = useState("");
-  const [boyCount, setBoyCount] = useState<number>(0);
-  const [girlCount, setGirlCount] = useState<number>(0);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   // Bascule entre l'éditeur de grille et l'aperçu du PDF (comme la liste nominative).
   const [view, setView] = useState<"edit" | "preview">("edit");
@@ -226,7 +224,16 @@ export default function TimetableModal({
 
   // Load assets
   useEffect(() => {
-    loadTimetableAssets().then(setAssets).catch(console.error);
+    Promise.all([
+      loadTimetableAssets(),
+      invoke<any>("get_school_settings").catch(() => null)
+    ]).then(([baseAssets, school]) => {
+      if (school && school.logo_url) {
+        setAssets({ ...baseAssets, logo: school.logo_url });
+      } else {
+        setAssets(baseAssets);
+      }
+    }).catch(console.error);
   }, []);
 
   // Load subjects once
@@ -292,26 +299,26 @@ export default function TimetableModal({
 
   // Build PDF blob for preview
   useEffect(() => {
-    if (!assets || !currentClassObj) { setBlobUrl(null); return; }
+    if (!assets || !currentClassObj) { setBlobUrl(null); setPdfBlob(null); return; }
     try {
       const doc = buildTimetablePdf({
         className: currentClassObj.name,
         schoolName,
         yearName,
-        teacherName: teacherName || undefined,
-        boyCount: boyCount || undefined,
-        girlCount: girlCount || undefined,
         grid: codeGrid,
         assets,
       });
-      const url = URL.createObjectURL(doc.output("blob"));
+      const blob = doc.output("blob");
+      const url = URL.createObjectURL(blob);
+      setPdfBlob(blob);
       setBlobUrl(url);
       return () => URL.revokeObjectURL(url);
     } catch (e) {
       console.error(e);
       setBlobUrl(null);
+      setPdfBlob(null);
     }
-  }, [assets, currentClassObj, schoolName, yearName, teacherName, boyCount, girlCount, codeGrid]);
+  }, [assets, currentClassObj, schoolName, yearName, codeGrid]);
 
   const filtered = useMemo(() => {
     const q = deaccent(query).trim().toLowerCase();
@@ -344,26 +351,24 @@ export default function TimetableModal({
   );
 
   const handleDownload = useCallback(() => {
-    if (!assets || !currentClassObj) return;
+    if (!pdfBlob) return;
     setBusy(true);
     try {
-      const doc = buildTimetablePdf({
-        className: currentClassObj.name,
-        schoolName,
-        yearName,
-        teacherName: teacherName || undefined,
-        boyCount: boyCount || undefined,
-        girlCount: girlCount || undefined,
-        grid: codeGrid,
-        assets,
-      });
-      doc.save(timetableFileName(currentClassObj.name, yearName));
+      const fileName = timetableFileName(currentClassObj?.name ?? 'classe', yearName);
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     } catch (e) {
       console.error(e);
     } finally {
       setBusy(false);
     }
-  }, [assets, currentClassObj, schoolName, yearName, teacherName, boyCount, girlCount, codeGrid]);
+  }, [pdfBlob, currentClassObj?.name, yearName]);
 
   // Close picker on outside click
   useEffect(() => {
@@ -479,33 +484,7 @@ export default function TimetableModal({
               </ul>
             </div>
 
-            {/* Additional fields: teacher, G/F/T */}
             <div className="flex-shrink-0 border-t border-slate-200/70 p-3 space-y-3">
-              <div>
-                <label className="block text-[10.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1">
-                  Professeur titulaire
-                </label>
-                <input
-                  type="text"
-                  value={teacherName}
-                  onChange={(e) => setTeacherName(e.target.value)}
-                  placeholder="Nom du professeur…"
-                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] text-slate-700 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/15"
-                />
-              </div>
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <label className="block text-[10px] font-semibold text-slate-400 mb-1">Garçons (G)</label>
-                  <input type="number" min="0" value={boyCount || ""} onChange={(e) => setBoyCount(Number(e.target.value) || 0)}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/15" />
-                </div>
-                <div className="flex-1">
-                  <label className="block text-[10px] font-semibold text-slate-400 mb-1">Filles (F)</label>
-                  <input type="number" min="0" value={girlCount || ""} onChange={(e) => setGirlCount(Number(e.target.value) || 0)}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/15" />
-                </div>
-              </div>
-
               {/* Legend */}
               {subjects.length > 0 && (
                 <div>
@@ -622,7 +601,7 @@ export default function TimetableModal({
           <div className="flex items-center gap-2">
             <button
               onClick={handleDownload}
-              disabled={!selectedClass || !assets || busy}
+              disabled={!selectedClass || !assets || busy || !pdfBlob}
               className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-4 py-2 text-[12px] font-semibold text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}

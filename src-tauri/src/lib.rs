@@ -112,9 +112,11 @@ pub fn run() {
             commands::delete_series,
             // Personnel
             commands::get_staff,
+            commands::get_staff_photo,
             commands::create_staff,
             commands::update_staff,
             commands::delete_staff,
+            commands::update_staff_classes,
             // ── Emploi du temps ──
             commands::get_timetable,
             commands::save_timetable_slot

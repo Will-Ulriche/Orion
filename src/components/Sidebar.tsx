@@ -11,6 +11,7 @@ import YearSelector from './YearSelector';
 // tout en gardant vos routes.
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord' },
+  { to: '/dashboard-old', icon: PieChart, label: 'Ancien Dashboard' },
   { to: '/archives', icon: Archive, label: 'Archives' },
   { to: '/classes', icon: GraduationCap, label: 'Gestion des classes' },
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions' },

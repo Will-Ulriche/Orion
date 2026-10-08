@@ -5,6 +5,7 @@ import Layout from './components/Layout';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
 import Dashboard from './pages/Dashboard';
+import Dashboard1 from './pages/Dashboard1';
 import Profils from './pages/Profils';
 import Appareils from './pages/Appareils';
 import Licences from './pages/Licences';
@@ -48,7 +49,8 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       >
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/dashboard-old" element={<Dashboard />} />
+        <Route path="/" element={<Dashboard1 />} />
         <Route path="/profils" element={<Profils />} />
         <Route path="/appareils" element={<Appareils />} />
         <Route path="/licences" element={<Licences />} />

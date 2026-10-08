@@ -99,7 +99,8 @@ const truncate = (text: string, font: PDFFont, size: number, maxW: number): stri
 export const buildPresenceListPdf = async (
   classes: NominalListClassInput[],
   _groupLabel: string,
-  yearName: string
+  yearName: string,
+  logoDataUrl?: string
 ): Promise<Uint8Array> => {
   // Chargement du fichier PDF de modèle depuis le dossier public
   const url = '/liste_de_presence.pdf';
@@ -114,6 +115,19 @@ export const buildPresenceListPdf = async (
   const bold = await out.embedFont(StandardFonts.HelveticaBold);
   const black = rgb(0, 0, 0);
   const srcDoc = await PDFDocument.load(templateBytes);
+  
+  let embeddedLogo: any = null;
+  if (logoDataUrl) {
+    try {
+      if (logoDataUrl.includes('image/jpeg') || logoDataUrl.includes('image/jpg')) {
+        embeddedLogo = await out.embedJpg(logoDataUrl);
+      } else {
+        embeddedLogo = await out.embedPng(logoDataUrl);
+      }
+    } catch (e) {
+      console.warn("Could not embed logo", e);
+    }
+  }
 
   const yearLabel = winAnsi(`Année : ${yearName}`);
 
@@ -139,6 +153,31 @@ export const buildPresenceListPdf = async (
     for (let part = 0; part < parts; part += 1) {
       const [page] = await out.copyPages(srcDoc, [0]);
       const pdfPage = out.addPage(page);
+
+      if (embeddedLogo) {
+        // Cache l'ancien logo Orion (coordonnées pdf-lib: bas-gauche)
+        pdfPage.drawRectangle({ x: 35, y: 495, width: 300, height: 85, color: rgb(1, 1, 1) });
+        
+        const dims = embeddedLogo.scale(1);
+        const maxW = 363; // max width de la zone
+        const maxH = 182; // max height (en scale PDF, on divise par 2.83 pour pt)
+        // En points : 128.39 mm = 363 pt, 64.2 mm = 182 pt.
+        const maxPtW = 180; // on limite à 180 pt de large max
+        const maxPtH = 65;  // on limite à 65 pt de haut max
+        const ratio = Math.min(maxPtW / dims.width, maxPtH / dims.height);
+        const w = dims.width * ratio;
+        const h = dims.height * ratio;
+        
+        const offsetX = 40 + (maxPtW - w) / 2;
+        const offsetY = 505 + (maxPtH - h) / 2; 
+        
+        pdfPage.drawImage(embeddedLogo, {
+          x: offsetX,
+          y: offsetY,
+          width: w,
+          height: h,
+        });
+      }
 
       // ── Valeur du champ « CLASSE : » ──
       const classSize = fitSize(className, bold, GEOM.classField.maxW, GEOM.classField.size, 7.5);

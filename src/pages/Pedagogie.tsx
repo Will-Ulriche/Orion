@@ -5,9 +5,10 @@ import { useYear } from '../contexts/YearContext';
 import {
   BarChart3, BookOpen, CalendarDays, CheckCircle2, ClipboardList, FileText,
   GraduationCap, Layers, Pencil, Plus, Save, Search, SlidersHorizontal, Star,
-  Trash2, Trophy, UserX, Users, UserCheck, X, Check,
+  Trash2, Trophy, UserX, Users, UserCheck, X, Check, LoaderCircle,
 } from 'lucide-react';
 import { generateClassReport } from '../utils/pdfGenerator';
+import { nextPaint } from '../utils/ui';
 import {
   Alert, Avatar, Badge, Btn, Card, ConfirmDialog, EmptyState, Field, Kpi,
   Loader, Modal, NumberInput, PanelHeader, SearchInput, Segmented, Select,
@@ -106,7 +107,7 @@ function initials(label: string, fallback = '??') {
 // PAGE
 // ═══════════════════════════════════════════════════════════
 
-type Tab = 'config' | 'saisie' | 'resultats';
+type Tab = 'config' | 'saisie';
 
 export default function Pedagogie() {
   const { schoolId } = useAuth();
@@ -141,7 +142,6 @@ export default function Pedagogie() {
             options={[
               { value: 'config', label: 'Configuration', icon: SlidersHorizontal },
               { value: 'saisie', label: 'Saisie des notes', icon: ClipboardList },
-              { value: 'resultats', label: 'Résultats', icon: Trophy },
             ]}
           />
         </div>
@@ -150,7 +150,6 @@ export default function Pedagogie() {
       <main className="min-h-0 flex-1 overflow-hidden">
         {tab === 'config' && <TabConfig schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
         {tab === 'saisie' && <TabSaisie key={saisieKey} schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
-        {tab === 'resultats' && <TabResultats schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
       </main>
     </div>
   );
@@ -990,7 +989,7 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
     if (!selClass || !yearId) return;
     invoke<ClassSubject[]>('get_class_subjects', { schoolId, academicYearId: yearId, classId: selClass })
       .then(setClassSubjects);
-    invoke<StudentRow[]>('get_students', { schoolId, academicYearId: yearId, classId: selClass })
+    invoke<StudentRow[]>('get_students', { schoolId, academicYearId: yearId, classId: selClass, includePhotos: false })
       .then(setStudents);
   }, [selClass, schoolId, yearId]);
 
@@ -1331,6 +1330,7 @@ function TabResultats({ schoolId, yearId }: { schoolId: string; yearId: string }
   const [rankings,  setRankings]  = useState<ClassRankingEntry[]>([]);
   const [stats,     setStats]     = useState<SubjectStats[]>([]);
   const [loading,   setLoading]   = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [selClass,  setSelClass]  = useState('');
   const [selPeriod, setSelPeriod] = useState('');
   const [view,      setView]      = useState<'classement' | 'stats'>('classement');
@@ -1369,17 +1369,23 @@ function TabResultats({ schoolId, yearId }: { schoolId: string; yearId: string }
   }));
   const maxBin = Math.max(1, ...distribution.map((d) => d.count));
 
-  const exportReport = () => {
-    const c = classes.find((x) => x.id === selClass);
-    const p = periods.find((x) => x.id === selPeriod);
-    generateClassReport(
-      'ORION ÉDUCATION',
-      selectedYear?.name || '',
-      p ? p.name : 'Période',
-      c ? c.name : 'Classe',
-      rankings,
-      stats
-    );
+  const exportReport = async () => {
+    setExporting(true);
+    await nextPaint();
+    try {
+      const c = classes.find((x) => x.id === selClass);
+      const p = periods.find((x) => x.id === selPeriod);
+      generateClassReport(
+        'ORION ÉDUCATION',
+        selectedYear?.name || '',
+        p ? p.name : 'Période',
+        c ? c.name : 'Classe',
+        rankings,
+        stats
+      );
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -1419,8 +1425,8 @@ function TabResultats({ schoolId, yearId }: { schoolId: string; yearId: string }
           )}
 
           {selClass && selPeriod && rankings.length > 0 && (
-            <Btn variant="subtle" onClick={exportReport}>
-              <FileText size={15} /> Télécharger le palmarès
+            <Btn variant="subtle" onClick={exportReport} disabled={exporting}>
+              {exporting ? <LoaderCircle size={15} className="animate-spin" /> : <FileText size={15} />} {exporting ? 'Génération…' : 'Télécharger le palmarès'}
             </Btn>
           )}
         </div>
@@ -1666,7 +1672,7 @@ function PanelProfesseurs({ schoolId, yearId }: { schoolId: string; yearId: stri
     setLoading(true);
     try {
       const [s, c] = await Promise.all([
-        invoke<StaffMember[]>('get_staff', { schoolId }),
+        invoke<StaffMember[]>('get_staff', { schoolId, includePhotos: false }),
         invoke<ClassItem[]>('get_classes', { schoolId, academicYearId: yearId }),
       ]);
       setStaff(s.filter(m => {
@@ -1745,6 +1751,7 @@ function PanelProfesseurs({ schoolId, yearId }: { schoolId: string; yearId: stri
           });
         }
       }
+      await invoke('update_staff_classes', { staffId: selectedStaff.id, schoolId });
       await loadClassSubjectsForStaff();
       showSuccess('Affectations mises à jour.');
     } catch (e: any) {
@@ -1768,6 +1775,9 @@ function PanelProfesseurs({ schoolId, yearId }: { schoolId: string; yearId: stri
         orderIndex: cs.order_index ?? 0,
         colorIcon: cs.color_icon ?? null,
       });
+      if (selectedStaff) {
+        await invoke('update_staff_classes', { staffId: selectedStaff.id, schoolId });
+      }
       await loadClassSubjectsForStaff();
       showSuccess('Affectation mise à jour.');
     } catch (e: any) { setError(String(e)); }

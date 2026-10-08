@@ -249,7 +249,9 @@ export function buildReceiptPdf(opts: BuildReceiptOptions): jsPDF {
   doc.setFontSize(7.5);
   doc.setTextColor(219, 234, 254);
   const sub: string[] = [];
-  if (school.ministry_name) sub.push(school.ministry_name);
+  if (school.ministry_name) {
+    sub.push(...school.ministry_name.split('\n'));
+  }
   const loc = [school.address, school.city, school.country].filter(Boolean).join(', ');
   if (loc) sub.push(loc);
   if (school.phone || school.email) sub.push([school.phone, school.email].filter(Boolean).join(' · '));

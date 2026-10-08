@@ -384,7 +384,19 @@ function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets, 
   const { data, offset } = page;
 
   // ── Images ──
-  doc.addImage(assets.logo, 'PNG', IMAGES.logo.x, IMAGES.logo.y, IMAGES.logo.w, IMAGES.logo.h, undefined, 'FAST');
+  try {
+    const props = doc.getImageProperties(assets.logo);
+    const maxW = IMAGES.logo.w;
+    const maxH = IMAGES.logo.h;
+    const ratio = Math.min(maxW / props.width, maxH / props.height);
+    const finalW = props.width * ratio;
+    const finalH = props.height * ratio;
+    const offsetX = IMAGES.logo.x + (maxW - finalW) / 2;
+    const offsetY = IMAGES.logo.y + (maxH - finalH) / 2;
+    doc.addImage(assets.logo, props.fileType || 'PNG', offsetX, offsetY, finalW, finalH, undefined, 'FAST');
+  } catch (e) {
+    doc.addImage(assets.logo, 'PNG', IMAGES.logo.x, IMAGES.logo.y, IMAGES.logo.w, IMAGES.logo.h, undefined, 'FAST');
+  }
   doc.addImage(assets.qr, 'PNG', IMAGES.qr.x, IMAGES.qr.y, IMAGES.qr.w, IMAGES.qr.h, undefined, 'FAST');
 
   // ── Titres ──
