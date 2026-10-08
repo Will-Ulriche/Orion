@@ -62,10 +62,12 @@ export default function PresenceListModal({
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [logoUrl, setLogoUrl] = useState<string | undefined>();
+  const [schoolName, setSchoolName] = useState<string>("ORION COLLEGE EXPERIENCE");
 
   useEffect(() => {
     invoke<any>('get_school_settings').then(s => {
       if (s && s.logo_url) setLogoUrl(s.logo_url);
+      if (s && s.name) setSchoolName(s.name);
     }).catch(() => {});
   }, []);
 
@@ -80,7 +82,7 @@ export default function PresenceListModal({
 
     const timer = setTimeout(() => {
       try {
-        const html = buildPresenceListHtml(selectedClasses, groupLabel, yearName, logoUrl);
+        const html = buildPresenceListHtml(selectedClasses, groupLabel, yearName, logoUrl, schoolName);
         const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         currentUrl = URL.createObjectURL(blob);
         if (!cancelled) {
@@ -110,7 +112,7 @@ export default function PresenceListModal({
     setBusy(true);
     
     setTimeout(() => {
-      buildPresenceListPdf(selectedClasses, groupLabel, yearName, logoUrl)
+      buildPresenceListPdf(selectedClasses, groupLabel, yearName, logoUrl, schoolName)
         .then(bytes => {
           const blob = new Blob([bytes as any], { type: 'application/pdf' });
           const url = URL.createObjectURL(blob);

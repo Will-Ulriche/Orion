@@ -100,7 +100,8 @@ export const buildPresenceListPdf = async (
   classes: NominalListClassInput[],
   _groupLabel: string,
   yearName: string,
-  logoDataUrl?: string
+  logoDataUrl?: string,
+  schoolName: string = 'ORION COLLEGE EXPERIENCE'
 ): Promise<Uint8Array> => {
   // Chargement du fichier PDF de modèle depuis le dossier public
   const url = '/liste_de_presence.pdf';
@@ -179,6 +180,24 @@ export const buildPresenceListPdf = async (
         });
       }
 
+      // ── Cache de l'ancien titre "ORION COLLEGE EXPERIENCE" ──
+      // La ligne de l'ancien titre est centrée vers Y=545-560.
+      pdfPage.drawRectangle({ x: 200, y: 535, width: 460, height: 45, color: rgb(1, 1, 1) });
+      
+      // ── Nouveau Titre ──
+      const rawTitle = (schoolName || 'ORION COLLEGE EXPERIENCE').toUpperCase();
+      const titleLabel = winAnsi(rawTitle);
+      const titleFont = bold;
+      const titleSize = fitSize(titleLabel, titleFont, 460, 24, 10);
+      const titleWidth = titleFont.widthOfTextAtSize(titleLabel, titleSize);
+      pdfPage.drawText(titleLabel, {
+        x: GEOM.yearField.centerX - titleWidth / 2,
+        y: 550,
+        size: titleSize,
+        font: titleFont,
+        color: rgb(0.08, 0.34, 0.75), // #1558c0 approximatif
+      });
+
       // ── Valeur du champ « CLASSE : » ──
       const classSize = fitSize(className, bold, GEOM.classField.maxW, GEOM.classField.size, 7.5);
       pdfPage.drawText(truncate(className, bold, classSize, GEOM.classField.maxW), {
@@ -250,7 +269,8 @@ export function buildPresenceListHtml(
   classes: NominalListClassInput[],
   groupLabel: string,
   yearName: string,
-  logoDataUrl?: string
+  logoDataUrl?: string,
+  schoolName: string = 'ORION COLLEGE EXPERIENCE'
 ): string {
   const pagesHtml = classes.flatMap((cls) => {
     const students = [...cls.students].sort(
@@ -295,7 +315,7 @@ export function buildPresenceListHtml(
   <div class="qr"></div>
 
   <div class="title">
-    <h1>ORION COLLEGE EXPERIENCE</h1>
+    <h1>${schoolName || 'ORION COLLEGE EXPERIENCE'}</h1>
     <p>LISTE DE PRESENCE</p>
     <div style="font-size: 16px; margin-top: 5px; font-family: 'Times New Roman', serif;">Année : ${yearName}</div>
   </div>
