@@ -30,7 +30,7 @@ const GEOM = {
   /** Valeur après le « CLASSE : » du modèle (baseline 551,2 ; page à 841,92). */
   classField: { x: 718, baseline: 551.2, size: 11, maxW: 100 },
   /** « Année : … » centré sous le titre, dans la bande libre 488…530 pt. */
-  yearField: { centerX: (354.05 + 507.07) / 2, baseline: 510, size: 11, maxW: 240 },
+  yearField: { centerX: 841.92 / 2, baseline: 510, size: 11, maxW: 240 },
   /** Cellules de valeurs de l'encadré G / F / T (sous les lettres, baseline 516,6). */
   gft: { centers: [686.3, 728.7, 771.2] as const, baseline: 516.6, size: 12 },
   table: {
@@ -188,10 +188,12 @@ export const buildPresenceListPdf = async (
       const rawTitle = (schoolName || 'ORION COLLEGE EXPERIENCE').toUpperCase();
       const titleLabel = winAnsi(rawTitle);
       const titleFont = bold;
+      // Largeur de la page A4 paysage est 841.92 pt. Centre exact: 420.96
+      const PAGE_CENTER_X = 841.92 / 2;
       const titleSize = fitSize(titleLabel, titleFont, 460, 24, 10);
       const titleWidth = titleFont.widthOfTextAtSize(titleLabel, titleSize);
       pdfPage.drawText(titleLabel, {
-        x: GEOM.yearField.centerX - titleWidth / 2,
+        x: PAGE_CENTER_X - titleWidth / 2,
         y: 550,
         size: titleSize,
         font: titleFont,
@@ -372,9 +374,9 @@ export function buildPresenceListHtml(
   .qr { position: absolute; left: calc(72px + 64px + 1.5cm); top: 42px; width: 48px; height: 48px; border: 3px solid #000; background: #fff; }
   .qr::after { content: ""; position: absolute; inset: 8px; background: #000; }
 
-  .title { position: absolute; left: 0; width: 1330px; top: 34px; text-align: center; }
+  .title { position: absolute; left: 0; width: 1297px; top: 34px; text-align: center; }
   .title h1 { margin: 0; font: 600 29px/1 "Arial Narrow", "Oswald", Impact, sans-serif; color: #1558c0; letter-spacing: 0; transform: scaleX(.82); }
-  .title p { margin: 8px 0 0; font-size: 24px; text-decoration: underline; padding-right: 30px; }
+  .title p { margin: 8px 0 0; font-size: 24px; text-decoration: underline; }
 
   .classe { position: absolute; left: 1035px; top: 54px; font-weight: bold; font-size: 17px; }
   .gft { position: absolute; left: 1033px; top: 80px; width: 199px; height: 48px; border-collapse: collapse; font: bold 14px Calibri, Arial, sans-serif; text-align: center; }
