@@ -182,7 +182,7 @@ export const buildPresenceListPdf = async (
 
       // ── Cache de l'ancien titre "ORION COLLEGE EXPERIENCE" ──
       // La ligne de l'ancien titre est centrée vers Y=545-560.
-      pdfPage.drawRectangle({ x: 200, y: 535, width: 460, height: 45, color: rgb(1, 1, 1) });
+      pdfPage.drawRectangle({ x: 200, y: 545, width: 460, height: 35, color: rgb(1, 1, 1) });
       
       // ── Nouveau Titre ──
       const rawTitle = (schoolName || 'ORION COLLEGE EXPERIENCE').toUpperCase();
@@ -211,6 +211,9 @@ export const buildPresenceListPdf = async (
       });
 
       // ── Année scolaire centrée sous le titre ──
+      // On cache l'ancien texte de l'année pour éviter qu'il ne se superpose
+      pdfPage.drawRectangle({ x: GEOM.yearField.centerX - 100, y: GEOM.yearField.baseline - 2, width: 200, height: 14, color: rgb(1, 1, 1) });
+
       const yearSize = fitSize(yearLabel, regular, GEOM.yearField.maxW, GEOM.yearField.size, 7.5);
       const yearWidth = regular.widthOfTextAtSize(yearLabel, yearSize);
       pdfPage.drawText(yearLabel, {
