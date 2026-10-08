@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { Download, GraduationCap, LoaderCircle, Search, Users, X, ClipboardCheck } from 'lucide-react';
 import type { NominalListClassInput } from '../lib/nominalListTemplate';
-import { buildPresenceListPdf, nominalListFileName } from '../lib/presenceListPdf';
+import { buildPresenceListPdf, buildPresenceListHtml, nominalListFileName } from '../lib/presenceListPdf';
 
 interface PresenceListModalProps {
   classes: NominalListClassInput[];
@@ -61,7 +61,6 @@ export default function PresenceListModal({
   const clearAll = useCallback(() => setSelected(new Set()), []);
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
   const [logoUrl, setLogoUrl] = useState<string | undefined>();
 
   useEffect(() => {
@@ -70,64 +69,73 @@ export default function PresenceListModal({
     }).catch(() => {});
   }, []);
 
-  // Aperçu PDF natif basé sur liste_de_presence.pdf.
+  // Aperçu HTML natif basé sur liste_de_presence.html
   useEffect(() => {
     if (selectedClasses.length === 0) {
       setBlobUrl(null);
-      setPdfBlob(null);
       return;
     }
     let cancelled = false;
+    let currentUrl: string | null = null;
 
-    setBusy(true);
-    buildPresenceListPdf(selectedClasses, groupLabel, yearName, logoUrl)
-      .then(bytes => {
-        if (cancelled) return;
-        const blob = new Blob([bytes as any], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        setPdfBlob(blob);
-        setBlobUrl(url);
-        setBusy(false);
-      })
-      .catch(err => {
-        if (cancelled) return;
-        console.error(err);
-        setBlobUrl(null);
-        setBusy(false);
-        onError(`Aperçu impossible : ${err.message}`);
-      });
+    const timer = setTimeout(() => {
+      try {
+        const html = buildPresenceListHtml(selectedClasses, groupLabel, yearName, logoUrl);
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        currentUrl = URL.createObjectURL(blob);
+        if (!cancelled) {
+          setBlobUrl(currentUrl);
+        } else {
+          URL.revokeObjectURL(currentUrl);
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          console.error(err);
+          setBlobUrl(null);
+          onError(`Aperçu impossible : ${err.message}`);
+        }
+      }
+    }, 10);
 
     return () => {
       cancelled = true;
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      clearTimeout(timer);
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
     };
   }, [selectedClasses, groupLabel, yearName, logoUrl]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleDownload = () => {
-    if (selectedClasses.length === 0 || !pdfBlob) return;
+    if (selectedClasses.length === 0) return;
     setBusy(true);
-    try {
-      const url = URL.createObjectURL(pdfBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = nominalListFileName(selectedClasses, groupLabel, yearName, 'presence');
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+    
+    setTimeout(() => {
+      buildPresenceListPdf(selectedClasses, groupLabel, yearName, logoUrl)
+        .then(bytes => {
+          const blob = new Blob([bytes as any], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = nominalListFileName(selectedClasses, groupLabel, yearName, 'presence');
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
 
-      const totalStudents = selectedClasses.reduce((sum, c) => sum + c.students.length, 0);
-      onSuccess?.(
-        selectedClasses.length === 1
-          ? `${selectedClasses[0].name} — ${totalStudents} élève(s) exporté(s).`
-          : `${selectedClasses.length} classes — ${totalStudents} élève(s) exporté(s).`
-      );
-    } catch (e) {
-      onError(`Impossible de générer le PDF : ${String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+          const totalStudents = selectedClasses.reduce((sum, c) => sum + c.students.length, 0);
+          onSuccess?.(
+            selectedClasses.length === 1
+              ? `${selectedClasses[0].name} — ${totalStudents} élève(s) exporté(s).`
+              : `${selectedClasses.length} classes — ${totalStudents} élève(s) exporté(s).`
+          );
+        })
+        .catch(err => {
+          onError(`Impossible de générer le PDF : ${String(err)}`);
+        })
+        .finally(() => {
+          setBusy(false);
+        });
+    }, 50);
   };
 
   useEffect(() => {
@@ -306,12 +314,12 @@ export default function PresenceListModal({
                   hint="Cochez une classe à gauche pour générer la liste de présence correspondante."
                 />
               ) : blobUrl ? (
-                <div className="h-full overflow-hidden rounded-xl bg-white shadow-lg">
+                <div className="h-full overflow-hidden rounded-xl bg-slate-200">
                   <iframe
                     ref={frameRef}
-                    src={`${blobUrl}#view=FitH`}
-                    className="h-full w-full border-0 bg-slate-200"
-                    title="Aperçu PDF"
+                    src={blobUrl}
+                    className="h-full w-full border-0"
+                    title="Aperçu de la liste de présence"
                   />
                 </div>
               ) : null}
@@ -327,7 +335,7 @@ export default function PresenceListModal({
           <div className="flex items-center gap-2">
             <button
               onClick={handleDownload}
-              disabled={selectedClasses.length === 0 || busy || !pdfBlob}
+              disabled={selectedClasses.length === 0 || busy}
               className="flex items-center gap-1.5 rounded-lg bg-[#0d9488] px-4 py-2 text-[12px] font-semibold text-white transition-colors hover:bg-[#0f766e] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}

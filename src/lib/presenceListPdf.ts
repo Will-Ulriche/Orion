@@ -64,7 +64,7 @@ const rowBaseline = (row: number): number =>
  */
 const winAnsi = (s: string): string =>
   s
-    .replace(/[\u2018\u2019\u201A]/g, "'")
+    .replace(/[u2018\u2019\u201A]/g, "'")
     .replace(/[\u201C\u201D\u201E]/g, '"')
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/\u2022/g, '-')
@@ -246,3 +246,152 @@ export const buildPresenceListPdf = async (
   return out.save();
 };
 
+export function buildPresenceListHtml(
+  classes: NominalListClassInput[],
+  groupLabel: string,
+  yearName: string,
+  logoDataUrl?: string
+): string {
+  const pagesHtml = classes.flatMap((cls) => {
+    const students = [...cls.students].sort(
+      (a, b) =>
+        (a.lastName || '').localeCompare(b.lastName || '') ||
+        (a.firstName || '').localeCompare(b.firstName || '')
+    );
+    
+    let boys = 0;
+    let girls = 0;
+    for (const st of students) {
+      const g = genderCode(st.gender);
+      if (g === 'M') boys += 1;
+      else if (g === 'F') girls += 1;
+    }
+    
+    const parts = Math.max(1, Math.ceil(students.length / GEOM.table.rows));
+    
+    const pageHtmls = [];
+    
+    for (let part = 0; part < parts; part += 1) {
+      const start = part * GEOM.table.rows;
+      const end = Math.min(students.length, start + GEOM.table.rows);
+      
+      let rowsHtml = '';
+      for (let k = start; k < start + GEOM.table.rows; k += 1) {
+        if (k < end) {
+          const st = students[k];
+          const raw = `${(st.lastName || '').trim()} ${(st.firstName || '').trim()}`.replace(/\s+/g, ' ').trim();
+          const label = winAnsi(raw.toUpperCase()) || '—';
+          rowsHtml += `<tr><td style="text-align: center;">${k + 1}</td><td class="nom">${label}</td>${'<td></td>'.repeat(40)}</tr>`;
+        } else {
+          rowsHtml += `<tr><td></td><td></td>${'<td></td>'.repeat(40)}</tr>`;
+        }
+      }
+
+      const logoStyle = logoDataUrl ? `background: url('${logoDataUrl}') no-repeat left center/contain;` : '';
+
+      pageHtmls.push(`
+<div class="page">
+  <div class="logo" style="${logoStyle}"></div>
+  <div class="qr"></div>
+
+  <div class="title">
+    <h1>ORION COLLEGE EXPERIENCE</h1>
+    <p>LISTE DE PRESENCE</p>
+    <div style="font-size: 16px; margin-top: 5px; font-family: 'Times New Roman', serif;">Année : ${yearName}</div>
+  </div>
+
+  <div class="classe">CLASSE : ${cls.name}</div>
+  <table class="gft">
+    <tr><td class="g">G</td><td class="f">F</td><td class="t">T</td></tr>
+    <tr><td class="g">${boys}</td><td class="f">${girls}</td><td class="t">${students.length}</td></tr>
+  </table>
+
+  <div class="days">
+    <div>LUNDI</div><div>MARDI</div><div>MERCREDI</div><div>JEUDI</div><div>VENDREDI</div>
+  </div>
+
+  <table class="grid">
+    <colgroup>
+      <col style="width:43px"><col style="width:287px">
+      ${'<col style="width:22px">'.repeat(40)}
+    </colgroup>
+    <thead>
+      <tr><th class="n">N°</th><th class="nom">NOM ET PRENOM</th>
+      ${Array.from({ length: 5 }).map(() => 
+        Array.from({ length: 8 }).map((_, i) => `<th>${i + 1}</th>`).join('')
+      ).join('')}
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml}
+    </tbody>
+  </table>
+
+  <svg class="barcode" xmlns="http://www.w3.org/2000/svg" width="180" height="32" viewBox="0 0 180 32" shape-rendering="crispEdges" fill="#000"><rect x="0" y="0" width="4" height="32"/><rect x="6" y="0" width="2" height="32"/><rect x="12" y="0" width="2" height="32"/><rect x="22" y="0" width="2" height="32"/><rect x="30" y="0" width="6" height="32"/><rect x="38" y="0" width="4" height="32"/><rect x="44" y="0" width="4" height="32"/><rect x="54" y="0" width="2" height="32"/><rect x="58" y="0" width="6" height="32"/><rect x="66" y="0" width="4" height="32"/><rect x="76" y="0" width="2" height="32"/><rect x="84" y="0" width="2" height="32"/><rect x="88" y="0" width="2" height="32"/><rect x="96" y="0" width="6" height="32"/><rect x="104" y="0" width="4" height="32"/><rect x="110" y="0" width="2" height="32"/><rect x="114" y="0" width="6" height="32"/><rect x="126" y="0" width="4" height="32"/><rect x="132" y="0" width="2" height="32"/><rect x="138" y="0" width="4" height="32"/><rect x="144" y="0" width="2" height="32"/><rect x="154" y="0" width="4" height="32"/><rect x="164" y="0" width="6" height="32"/><rect x="172" y="0" width="2" height="32"/><rect x="176" y="0" width="4" height="32"/></svg>
+
+  <div class="foot">Orion Exp</div>
+</div>`);
+    }
+    return pageHtmls;
+  });
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4 landscape; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #94a3b8; font-family: "Times New Roman", Times, serif; }
+  .page {
+    position: relative; width: 1297px; height: 917px; margin: 0 auto 10pt;
+    background: #fff; overflow: hidden;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  .logo { position: absolute; left: 72px; top: 38px; width: 180px; height: 64px; background: transparent; }
+  .qr { position: absolute; left: calc(72px + 64px + 1.5cm); top: 42px; width: 48px; height: 48px; border: 3px solid #000; background: #fff; }
+  .qr::after { content: ""; position: absolute; inset: 8px; background: #000; }
+
+  .title { position: absolute; left: 0; width: 1330px; top: 34px; text-align: center; }
+  .title h1 { margin: 0; font: 600 29px/1 "Arial Narrow", "Oswald", Impact, sans-serif; color: #1558c0; letter-spacing: 0; transform: scaleX(.82); }
+  .title p { margin: 8px 0 0; font-size: 24px; text-decoration: underline; padding-right: 30px; }
+
+  .classe { position: absolute; left: 1035px; top: 54px; font-weight: bold; font-size: 17px; }
+  .gft { position: absolute; left: 1033px; top: 80px; width: 199px; height: 48px; border-collapse: collapse; font: bold 14px Calibri, Arial, sans-serif; text-align: center; }
+  .gft td { border: 1px solid #555; height: 24px; }
+  .gft .g { background: #d6dce4; } .gft .f { background: #fbe4d5; } .gft .t { background: #fff2cc; }
+  .gft tr:first-child td { height: 24px; }
+  .gft tr:last-child td { height: 24px; }
+  .gft .g { width: 66px; } .gft .f, .gft .t { width: 66px; }
+
+  /* Jours */
+  .days { position: absolute; left: 373px; top: 157px; width: 881px; display: flex; }
+  .days div {
+    flex: 1; height: 35px; border: 2px solid #2f5aa0; margin-right: 2px;
+    display: flex; align-items: center; justify-content: center;
+    font: bold 19px Arial, sans-serif; letter-spacing: .5px;
+  }
+
+  /* Tableau */
+  table.grid { position: absolute; left: 44px; top: 205px; width: 1210px; border-collapse: collapse; table-layout: fixed; }
+  .grid th, .grid td { border: 1px solid #000; padding: 0; height: 23px; }
+  .grid th { height: 22px; font: 400 14px Calibri, Arial, sans-serif; text-align: center; background: transparent; }
+  .grid th.n, .grid th.nom { font-family: "Times New Roman", serif; font-size: 15px; }
+  .grid th.nom { text-align: left; padding-left: 10px; }
+  .grid td { background: transparent; }
+
+  .barcode { position: absolute; right: 43px; top: 876px; background: #fff; }
+  .foot { position: absolute; left: 72px; top: 884px; font-style: italic; font-size: 17px; }
+
+  @media print {
+    body { background: #fff; }
+    .page { margin: 0; transform-origin: top left; break-after: page; page-break-after: always; }
+    .page:last-of-type { break-after: auto; page-break-after: auto; }
+  }
+</style>
+</head>
+<body>
+  ${pagesHtml.join('\n')}
+</body>
+</html>`;
+}

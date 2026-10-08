@@ -10,7 +10,7 @@ import {
   type NominalListClassInput,
 } from '../lib/nominalListTemplate';
 import {
-  buildNominalListPdf, loadNominalListAssets,
+  buildNominalListPdf, buildNominalListHtml, loadNominalListAssets,
   type NominalListAssets,
 } from '../lib/nominalListPdf';
 
@@ -238,53 +238,69 @@ export default function NominalListModal({
   }, [assets, data, groupLabel, documentType, isNotes, selPeriods, selSubject, subjects, realGrades]);
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
 
   useEffect(() => {
     if (!docOptions) {
       setBlobUrl(null);
-      setPdfBlob(null);
       return;
     }
-    try {
-      const doc = buildNominalListPdf(docOptions);
-      const blob = doc.output('blob');
-      const url = URL.createObjectURL(blob);
-      setPdfBlob(blob);
-      setBlobUrl(url);
-      return () => URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error(e);
-      setBlobUrl(null);
-      setPdfBlob(null);
-    }
+
+    let cancelled = false;
+    let currentUrl: string | null = null;
+
+    // Utilisation de l'aperçu HTML (instantané) au lieu de générer le PDF 
+    // à chaque clic. Le PDF sera généré uniquement au téléchargement.
+    const timer = setTimeout(() => {
+      try {
+        const html = buildNominalListHtml(docOptions);
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        currentUrl = URL.createObjectURL(blob);
+        if (!cancelled) {
+          setBlobUrl(currentUrl);
+        } else {
+          URL.revokeObjectURL(currentUrl);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          console.error(e);
+          setBlobUrl(null);
+        }
+      }
+    }, 10);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      if (currentUrl) {
+        URL.revokeObjectURL(currentUrl);
+      }
+    };
   }, [docOptions]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleDownload = () => {
-    if (!pdfBlob) return;
+    if (!docOptions) return;
     setBusy(true);
-    try {
-      const fileName = nominalListFileName(data, groupLabel, yearName, documentType);
-      const url = URL.createObjectURL(pdfBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      const students = data.reduce((sum, c) => sum + c.rows.length, 0);
-      onSuccess?.(
-        data.length === 1
-          ? `${data[0].name} — ${students} élève(s) exporté(s).`
-          : `${data.length} classes — ${students} élève(s) exporté(s).`,
-      );
-    } catch (e) {
-      onError(`Impossible de générer le PDF : ${String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+    
+    // On diffère la génération PDF pour permettre au spinner de s'afficher
+    setTimeout(() => {
+      try {
+        const doc = buildNominalListPdf(docOptions);
+        const fileName = nominalListFileName(data, groupLabel, yearName, documentType);
+        doc.save(fileName);
+        
+        const students = data.reduce((sum, c) => sum + c.rows.length, 0);
+        onSuccess?.(
+          data.length === 1
+            ? `${data[0].name} — ${students} élève(s) exporté(s).`
+            : `${data.length} classes — ${students} élève(s) exporté(s).`,
+        );
+      } catch (e) {
+        onError(`Impossible de générer le PDF : ${String(e)}`);
+      } finally {
+        setBusy(false);
+      }
+    }, 50);
   };
 
   useEffect(() => {
@@ -508,12 +524,12 @@ export default function NominalListModal({
                   hint="Cochez une classe à gauche, ou utilisez « Tout sélectionner » pour générer toutes les listes d'un coup."
                 />
               ) : blobUrl ? (
-                <div className="h-full overflow-hidden rounded-xl bg-white shadow-lg">
+                <div className="h-full overflow-hidden rounded-xl bg-slate-200">
                   <iframe
                     ref={frameRef}
-                    src={`${blobUrl}#view=FitH`}
-                    className="h-full w-full border-0 bg-slate-200"
-                    title="Aperçu PDF de la liste nominative"
+                    src={blobUrl}
+                    className="h-full w-full border-0"
+                    title="Aperçu de la liste nominative"
                   />
                 </div>
               ) : docOptions ? (
@@ -545,7 +561,7 @@ export default function NominalListModal({
           <div className="flex items-center gap-2">
             <button
               onClick={handleDownload}
-              disabled={data.length === 0 || !assets || busy || !pdfBlob}
+              disabled={data.length === 0 || !assets || busy || !docOptions}
               className="flex items-center gap-1.5 rounded-lg bg-[#4f46e5] px-4 py-2 text-[12px] font-semibold text-white transition-colors hover:bg-[#4338ca] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}
