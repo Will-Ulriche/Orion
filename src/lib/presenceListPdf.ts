@@ -190,7 +190,7 @@ export const buildPresenceListPdf = async (
       const titleFont = bold;
       // Largeur de la page A4 paysage est 841.92 pt. Centre exact: 420.96
       const PAGE_CENTER_X = 841.92 / 2;
-      const titleSize = fitSize(titleLabel, titleFont, 460, 20, 10);
+      const titleSize = fitSize(titleLabel, titleFont, 460, 16, 10);
       const titleWidth = titleFont.widthOfTextAtSize(titleLabel, titleSize);
       pdfPage.drawText(titleLabel, {
         x: PAGE_CENTER_X - titleWidth / 2,
@@ -211,8 +211,8 @@ export const buildPresenceListPdf = async (
       });
 
       // ── Année scolaire centrée sous le titre ──
-      // On cache complètement la zone de l'ancien texte de l'année
-      pdfPage.drawRectangle({ x: GEOM.yearField.centerX - 150, y: GEOM.yearField.baseline - 6, width: 300, height: 25, color: rgb(1, 1, 1) });
+      // On cache complètement la zone de l'ancien texte de l'année (très large en hauteur pour éviter les restes)
+      pdfPage.drawRectangle({ x: GEOM.yearField.centerX - 150, y: 490, width: 300, height: 40, color: rgb(1, 1, 1) });
 
       const yearSize = fitSize(yearLabel, regular, GEOM.yearField.maxW, GEOM.yearField.size, 7.5);
       const yearWidth = regular.widthOfTextAtSize(yearLabel, yearSize);
@@ -378,7 +378,7 @@ export function buildPresenceListHtml(
   .qr::after { content: ""; position: absolute; inset: 8px; background: #000; }
 
   .title { position: absolute; left: 0; width: 1297px; top: 34px; text-align: center; }
-  .title h1 { margin: 0; font: 600 24px/1 "Arial Narrow", "Oswald", Impact, sans-serif; color: #1558c0; letter-spacing: 0; transform: scaleX(.82); }
+  .title h1 { margin: 0; font: 600 20px/1 "Arial Narrow", "Oswald", Impact, sans-serif; color: #1558c0; letter-spacing: 0; transform: scaleX(.82); }
   .title p { margin: 8px 0 0; font-size: 24px; text-decoration: underline; }
 
   .classe { position: absolute; left: 1035px; top: 54px; font-weight: bold; font-size: 17px; }
