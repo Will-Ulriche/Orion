@@ -64,7 +64,7 @@ const rowBaseline = (row: number): number =>
  */
 const winAnsi = (s: string): string =>
   s
-    .replace(/[u2018\u2019\u201A]/g, "'")
+    .replace(/[\u2018\u2019\u201A]/g, "'")
     .replace(/[\u201C\u201D\u201E]/g, '"')
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/\u2022/g, '-')
@@ -77,6 +77,37 @@ const fitSize = (text: string, font: PDFFont, maxW: number, base: number, min: n
     if (font.widthOfTextAtSize(text, s) <= maxW) return s;
   }
   return min;
+};
+
+/** Format MIME d'une data-URI image ('' si ce n'en est pas une). */
+const dataUrlMime = (dataUrl: string): string =>
+  /^data:image\/([a-z0-9.+-]+)[;,]/i.exec(dataUrl)?.[1]?.toLowerCase() ?? '';
+
+/**
+ * pdf-lib n'intègre que du PNG ou du JPEG, alors que la page Réglages encode le
+ * logo en WebP (canvas.toDataURL('image/webp')). On repasse par un canvas pour
+ * obtenir un PNG ; sans DOM (smoke Node) on renvoie l'original et l'intégration
+ * échoue proprement.
+ */
+const toEmbeddableImage = async (logoDataUrl: string): Promise<string> => {
+  const mime = dataUrlMime(logoDataUrl);
+  if (mime === 'png' || mime === 'jpeg' || mime === 'jpg') return logoDataUrl;
+  if (typeof document === 'undefined' || typeof Image === 'undefined') {
+    throw new Error(`Format de logo non pris en charge (${mime || 'inconnu'}).`);
+  }
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error('Logo illisible.'));
+    el.src = logoDataUrl;
+  });
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth || 1;
+  canvas.height = img.naturalHeight || 1;
+  canvas.getContext('2d')?.drawImage(img, 0, 0);
+  const png = canvas.toDataURL('image/png');
+  if (dataUrlMime(png) !== 'png') throw new Error('Conversion du logo en PNG impossible.');
+  return png;
 };
 
 /** Coupe avec « ... » quand même la taille minimale ne tient pas. */
@@ -92,6 +123,40 @@ const truncate = (text: string, font: PDFFont, size: number, maxW: number): stri
   return `${text.slice(0, lo).trimEnd()}...`;
 };
 
+// ── Modèle en cache : fetch + parse UNE seule fois ──────────────────────────
+// PDFDocument.load de ce modèle Word (250 ko, images) coûte 350-410 ms
+// (mesure : smoke/time_presence.mjs). Sans cache, chaque régénération de
+// l'aperçu refaisait ce parse → chargement perçu comme lent. `copyPages`
+// ne modifie pas la source (PDFObjectCopier lit le contexte source et écrit
+// dans la cible), donc le même PDFDocument modèle peut être réutilisé.
+let templatePromise: Promise<PDFDocument> | null = null;
+
+const getTemplate = (): Promise<PDFDocument> => {
+  if (!templatePromise) {
+    const promise = (async () => {
+      const response = await fetch('/liste_de_presence.pdf');
+      if (!response.ok) {
+        throw new Error('Impossible de charger le modèle de liste de présence.');
+      }
+      return PDFDocument.load(await response.arrayBuffer());
+    })();
+    templatePromise = promise;
+    // En cas d'échec on libère le cache pour permettre une nouvelle tentative.
+    promise.catch(() => {
+      if (templatePromise === promise) templatePromise = null;
+    });
+  }
+  return templatePromise;
+};
+
+/**
+ * Précharge le modèle dès l'ouverture de la page Archives / du modal :
+ * le premier aperçu saute le fetch + parse (~400 ms).
+ */
+export const preloadPresenceTemplate = (): void => {
+  void getTemplate().catch(() => {});
+};
+
 /**
  * Génère le PDF de liste de présence : une page du modèle par tranche de
  * 28 élèves (numérotation continue), en-tête + encadré G/F/T redessinés.
@@ -103,28 +168,22 @@ export const buildPresenceListPdf = async (
   logoDataUrl?: string,
   schoolName: string = 'ORION COLLEGE EXPERIENCE'
 ): Promise<Uint8Array> => {
-  // Chargement du fichier PDF de modèle depuis le dossier public
-  const url = '/liste_de_presence.pdf';
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error('Impossible de charger le modèle de liste de présence.');
-  }
-  const templateBytes = await response.arrayBuffer();
+  // Modèle : 1ʳᵉ appelée = fetch + parse (~400 ms), suivantes = cache mémoire.
+  const srcDoc = await getTemplate();
 
   const out = await PDFDocument.create();
   const regular = await out.embedFont(StandardFonts.Helvetica);
   const bold = await out.embedFont(StandardFonts.HelveticaBold);
   const black = rgb(0, 0, 0);
-  const srcDoc = await PDFDocument.load(templateBytes);
   
   let embeddedLogo: any = null;
   if (logoDataUrl) {
     try {
-      if (logoDataUrl.includes('image/jpeg') || logoDataUrl.includes('image/jpg')) {
-        embeddedLogo = await out.embedJpg(logoDataUrl);
-      } else {
-        embeddedLogo = await out.embedPng(logoDataUrl);
-      }
+      const embeddable = await toEmbeddableImage(logoDataUrl);
+      embeddedLogo =
+        dataUrlMime(embeddable) === 'png'
+          ? await out.embedPng(embeddable)
+          : await out.embedJpg(embeddable);
     } catch (e) {
       console.warn("Could not embed logo", e);
     }
@@ -156,13 +215,14 @@ export const buildPresenceListPdf = async (
       const pdfPage = out.addPage(page);
 
       if (embeddedLogo) {
-        // Cache l'ancien logo Orion (coordonnées pdf-lib: bas-gauche)
-        pdfPage.drawRectangle({ x: 35, y: 495, width: 300, height: 85, color: rgb(1, 1, 1) });
+        // Cache l'ancien logo Orion (coordonnées pdf-lib: bas-gauche).
+        // Le bas (497) reste AU-DESSUS des encadrés des jours, dont le filet
+        // haut est à 493,3 pt (595,32 − 102,0) : sinon il mange le cadre.
+        pdfPage.drawRectangle({ x: 35, y: 497, width: 300, height: 83, color: rgb(1, 1, 1) });
         
         const dims = embeddedLogo.scale(1);
-        const maxW = 363; // max width de la zone
-        const maxH = 182; // max height (en scale PDF, on divise par 2.83 pour pt)
-        // En points : 128.39 mm = 363 pt, 64.2 mm = 182 pt.
+        // Zone de pose : 180 × 65 pt en haut à gauche (40 → 220 pt, y 505 → 570 pt),
+        // centrée dans la zone, sous le cache blanc (35 → 335, y 497 → 580).
         const maxPtW = 180; // on limite à 180 pt de large max
         const maxPtH = 65;  // on limite à 65 pt de haut max
         const ratio = Math.min(maxPtW / dims.width, maxPtH / dims.height);
@@ -211,8 +271,11 @@ export const buildPresenceListPdf = async (
       });
 
       // ── Année scolaire centrée sous le titre ──
-      // On cache complètement la zone de l'ancien texte de l'année (très large en hauteur pour éviter les restes)
-      pdfPage.drawRectangle({ x: GEOM.yearField.centerX - 150, y: 490, width: 300, height: 40, color: rgb(1, 1, 1) });
+      // Cache éventuel de l'ancien texte d'année. Il doit rester dans la bande
+      // libre mesurée : 497 pt (filet haut des encadrés des jours à 493,3) à
+      // 530 pt (soulignement de « LISTE DE PRESENCE » à 530,4). Au-delà de
+      // 493,3 il effaçait le cadre des cases LUNDI/MARDI/MERCREDI.
+      pdfPage.drawRectangle({ x: GEOM.yearField.centerX - 150, y: 497, width: 300, height: 33, color: rgb(1, 1, 1) });
 
       const yearSize = fitSize(yearLabel, regular, GEOM.yearField.maxW, GEOM.yearField.size, 7.5);
       const yearWidth = regular.widthOfTextAtSize(yearLabel, yearSize);
@@ -269,154 +332,3 @@ export const buildPresenceListPdf = async (
 
   return out.save();
 };
-
-export function buildPresenceListHtml(
-  classes: NominalListClassInput[],
-  groupLabel: string,
-  yearName: string,
-  logoDataUrl?: string,
-  schoolName: string = 'ORION COLLEGE EXPERIENCE'
-): string {
-  const pagesHtml = classes.flatMap((cls) => {
-    const students = [...cls.students].sort(
-      (a, b) =>
-        (a.lastName || '').localeCompare(b.lastName || '') ||
-        (a.firstName || '').localeCompare(b.firstName || '')
-    );
-    
-    let boys = 0;
-    let girls = 0;
-    for (const st of students) {
-      const g = genderCode(st.gender);
-      if (g === 'M') boys += 1;
-      else if (g === 'F') girls += 1;
-    }
-    
-    const parts = Math.max(1, Math.ceil(students.length / GEOM.table.rows));
-    
-    const pageHtmls = [];
-    
-    for (let part = 0; part < parts; part += 1) {
-      const start = part * GEOM.table.rows;
-      const end = Math.min(students.length, start + GEOM.table.rows);
-      
-      let rowsHtml = '';
-      for (let k = start; k < start + GEOM.table.rows; k += 1) {
-        if (k < end) {
-          const st = students[k];
-          const raw = `${(st.lastName || '').trim()} ${(st.firstName || '').trim()}`.replace(/\s+/g, ' ').trim();
-          const label = winAnsi(raw.toUpperCase()) || '—';
-          rowsHtml += `<tr><td style="text-align: center;">${k + 1}</td><td class="nom">${label}</td>${'<td></td>'.repeat(40)}</tr>`;
-        } else {
-          rowsHtml += `<tr><td></td><td></td>${'<td></td>'.repeat(40)}</tr>`;
-        }
-      }
-
-      const logoStyle = logoDataUrl ? `background: url('${logoDataUrl}') no-repeat left center/contain;` : '';
-
-      pageHtmls.push(`
-<div class="page">
-  <div class="logo" style="${logoStyle}"></div>
-  <div class="qr"></div>
-
-  <div class="title">
-    <h1>${schoolName || 'ORION COLLEGE EXPERIENCE'}</h1>
-    <p>LISTE DE PRESENCE</p>
-    <div style="font-size: 16px; margin-top: 5px; font-family: 'Times New Roman', serif;">Année : ${yearName}</div>
-  </div>
-
-  <div class="classe">CLASSE : ${cls.name}</div>
-  <table class="gft">
-    <tr><td class="g">G</td><td class="f">F</td><td class="t">T</td></tr>
-    <tr><td class="g">${boys}</td><td class="f">${girls}</td><td class="t">${students.length}</td></tr>
-  </table>
-
-  <div class="days">
-    <div>LUNDI</div><div>MARDI</div><div>MERCREDI</div><div>JEUDI</div><div>VENDREDI</div>
-  </div>
-
-  <table class="grid">
-    <colgroup>
-      <col style="width:43px"><col style="width:287px">
-      ${'<col style="width:22px">'.repeat(40)}
-    </colgroup>
-    <thead>
-      <tr><th class="n">N°</th><th class="nom">NOM ET PRENOM</th>
-      ${Array.from({ length: 5 }).map(() => 
-        Array.from({ length: 8 }).map((_, i) => `<th>${i + 1}</th>`).join('')
-      ).join('')}
-      </tr>
-    </thead>
-    <tbody>
-      ${rowsHtml}
-    </tbody>
-  </table>
-
-  <svg class="barcode" xmlns="http://www.w3.org/2000/svg" width="180" height="32" viewBox="0 0 180 32" shape-rendering="crispEdges" fill="#000"><rect x="0" y="0" width="4" height="32"/><rect x="6" y="0" width="2" height="32"/><rect x="12" y="0" width="2" height="32"/><rect x="22" y="0" width="2" height="32"/><rect x="30" y="0" width="6" height="32"/><rect x="38" y="0" width="4" height="32"/><rect x="44" y="0" width="4" height="32"/><rect x="54" y="0" width="2" height="32"/><rect x="58" y="0" width="6" height="32"/><rect x="66" y="0" width="4" height="32"/><rect x="76" y="0" width="2" height="32"/><rect x="84" y="0" width="2" height="32"/><rect x="88" y="0" width="2" height="32"/><rect x="96" y="0" width="6" height="32"/><rect x="104" y="0" width="4" height="32"/><rect x="110" y="0" width="2" height="32"/><rect x="114" y="0" width="6" height="32"/><rect x="126" y="0" width="4" height="32"/><rect x="132" y="0" width="2" height="32"/><rect x="138" y="0" width="4" height="32"/><rect x="144" y="0" width="2" height="32"/><rect x="154" y="0" width="4" height="32"/><rect x="164" y="0" width="6" height="32"/><rect x="172" y="0" width="2" height="32"/><rect x="176" y="0" width="4" height="32"/></svg>
-
-  <div class="foot">Orion Exp</div>
-</div>`);
-    }
-    return pageHtmls;
-  });
-
-  return `<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
-<style>
-  @page { size: A4 landscape; margin: 8mm; }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: #94a3b8; font-family: "Times New Roman", Times, serif; }
-  .page {
-    position: relative; width: 1297px; height: 917px; margin: 0 auto 10pt;
-    background: #fff; overflow: hidden;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact;
-  }
-  .logo { position: absolute; left: 72px; top: 38px; width: 180px; height: 64px; background: transparent; }
-  .qr { position: absolute; left: calc(72px + 64px + 1.5cm); top: 42px; width: 48px; height: 48px; border: 3px solid #000; background: #fff; }
-  .qr::after { content: ""; position: absolute; inset: 8px; background: #000; }
-
-  .title { position: absolute; left: 0; width: 1297px; top: 34px; text-align: center; }
-  .title h1 { margin: 0; font: 600 20px/1 "Arial Narrow", "Oswald", Impact, sans-serif; color: #1558c0; letter-spacing: 0; transform: scaleX(.82); }
-  .title p { margin: 8px 0 0; font-size: 24px; text-decoration: underline; }
-
-  .classe { position: absolute; left: 1035px; top: 54px; font-weight: bold; font-size: 17px; }
-  .gft { position: absolute; left: 1033px; top: 80px; width: 199px; height: 48px; border-collapse: collapse; font: bold 14px Calibri, Arial, sans-serif; text-align: center; }
-  .gft td { border: 1px solid #555; height: 24px; }
-  .gft .g { background: #d6dce4; } .gft .f { background: #fbe4d5; } .gft .t { background: #fff2cc; }
-  .gft tr:first-child td { height: 24px; }
-  .gft tr:last-child td { height: 24px; }
-  .gft .g { width: 66px; } .gft .f, .gft .t { width: 66px; }
-
-  /* Jours */
-  .days { position: absolute; left: 373px; top: 157px; width: 881px; display: flex; }
-  .days div {
-    flex: 1; height: 35px; border: 2px solid #2f5aa0; margin-right: 2px;
-    display: flex; align-items: center; justify-content: center;
-    font: bold 19px Arial, sans-serif; letter-spacing: .5px;
-  }
-
-  /* Tableau */
-  table.grid { position: absolute; left: 44px; top: 205px; width: 1210px; border-collapse: collapse; table-layout: fixed; }
-  .grid th, .grid td { border: 1px solid #000; padding: 0; height: 23px; }
-  .grid th { height: 22px; font: 400 14px Calibri, Arial, sans-serif; text-align: center; background: transparent; }
-  .grid th.n, .grid th.nom { font-family: "Times New Roman", serif; font-size: 15px; }
-  .grid th.nom { text-align: left; padding-left: 10px; }
-  .grid td { background: transparent; }
-
-  .barcode { position: absolute; right: 43px; top: 876px; background: #fff; }
-  .foot { position: absolute; left: 72px; top: 884px; font-style: italic; font-size: 17px; }
-
-  @media print {
-    body { background: #fff; }
-    .page { margin: 0; transform-origin: top left; break-after: page; page-break-after: always; }
-    .page:last-of-type { break-after: auto; page-break-after: auto; }
-  }
-</style>
-</head>
-<body>
-  ${pagesHtml.join('\n')}
-</body>
-</html>`;
-}

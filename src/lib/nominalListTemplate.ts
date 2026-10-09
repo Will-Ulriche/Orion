@@ -6,8 +6,8 @@
 // unités natives du fichier. Les valeurs correspondent au modèle au dixième de
 // point près : ne pas les « arrondir », la reproduction se décalerait.
 //
-// L'aperçu HTML et le PDF généré consomment tous deux ce module, ce qui garantit
-// que les deux rendus sont superposables.
+// Le PDF natif (jsPDF, lib/nominalListPdf) consomme ce module : la géométrie
+// du document est ainsi décrite une seule fois, sans page HTML intermédiaire.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Format de la page : A4 paysage. */
@@ -50,6 +50,14 @@ export const TEXT = {
     size: 20.04,
     baseline: 41.76,
     color: [0, 51, 204] as const, // #0033CC
+    /**
+     * Centre (430,74) relevé sur le modèle. Anton est bien plus étroit que le
+     * substitut jsPDF : on garde le centre du modèle mais on compose à
+     * l'espacement naturel (comme la liste de présence) — le corps est seulement
+     * réduit si le texte dépasse la bande libre, l'interlettrage n'est jamais
+     * écrasé (voir fitSize dans nominalListPdf).
+     */
+    center: 430.74,
   },
   classLabel: {
     label: 'CLASSE :',
@@ -72,9 +80,9 @@ export const TEXT = {
     x: 298.61,
     /**
      * Filet noir qui souligne le titre dans le modèle.
-     * `dy` est mesuré depuis la ligne de base du titre ; `width` est la largeur du
-     * texte en Times New Roman (la police de l'aperçu HTML). Le PDF mesure la
-     * sienne, qui diffère de quelques points.
+     * `dy` est mesuré depuis la ligne de base du titre ; `width` est la largeur
+     * du texte en Times New Roman (police de référence du modèle). Le PDF
+     * (Times-Roman) mesure la sienne, qui diffère de quelques points.
      */
     underline: { dy: 1.68, thickness: 0.72, width: 263.9 },
   },
@@ -112,6 +120,11 @@ export const TRIMESTERS = {
   labels: ['TRIMESTRE 1', 'TRIMESTRE 2', 'TRIMESTRE 3'] as const,
   baseline: 108.86,
   size: 11.04,
+  /**
+   * Marge latérale du libellé dans chaque cellule : le texte reste centré à
+   * l'espacement naturel (seul le corps baisse s'il doit tenir — fitSize).
+   */
+  padX: 8,
 } as const;
 
 // ── Tableau principal ────────────────────────────────────────────────────────
@@ -160,9 +173,6 @@ export const HEAD_BASELINE = {
  * ligne de base de « MG » (et non en exposant) — valeur relevée, à reproduire.
  */
 export const SUPERSCRIPT = { size: 6.96, dy: 0.96 } as const;
-
-/** Le « e » représente 63 % de la taille de l'en-tête (6,96 / 11,04). */
-export const SUPERSCRIPT_RATIO = Math.round((SUPERSCRIPT.size / HEAD_SIZE) * 100) / 100;
 
 export type HeadAlign = 'left' | 'center';
 

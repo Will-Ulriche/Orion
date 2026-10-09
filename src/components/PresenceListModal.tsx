@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { Download, GraduationCap, LoaderCircle, Search, Users, X, ClipboardCheck } from 'lucide-react';
+import { Download, GraduationCap, LoaderCircle, Search, Users, X, ClipboardCheck, ZoomIn, ZoomOut } from 'lucide-react';
 import type { NominalListClassInput } from '../lib/nominalListTemplate';
-import { buildPresenceListPdf, buildPresenceListHtml, nominalListFileName } from '../lib/presenceListPdf';
+import { buildPresenceListPdf, nominalListFileName, preloadPresenceTemplate } from '../lib/presenceListPdf';
 
 interface PresenceListModalProps {
   classes: NominalListClassInput[];
@@ -15,6 +15,9 @@ interface PresenceListModalProps {
 }
 
 const deaccent = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+/** Zoom de l'aperçu : 30 % → 300 %, par pas de 10 %. */
+const clampZoom = (z: number) => Math.min(3, Math.max(0.3, Math.round(z * 100) / 100));
 
 export default function PresenceListModal({
   classes, groupLabel, yearName, onClose, onError, onSuccess,
@@ -60,51 +63,63 @@ export default function PresenceListModal({
   const selectAll = useCallback(() => setSelected(new Set(classes.map(c => c.id))), [classes]);
   const clearAll = useCallback(() => setSelected(new Set()), []);
 
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const pdfBytesRef = useRef<Uint8Array | null>(null);
   const [logoUrl, setLogoUrl] = useState<string | undefined>();
   const [schoolName, setSchoolName] = useState<string>("ORION COLLEGE EXPERIENCE");
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
+    // Modèle PDF déjà en cache → le 1er aperçu ne re-fetch/re-parse pas.
+    preloadPresenceTemplate();
     invoke<any>('get_school_settings').then(s => {
       if (s && s.logo_url) setLogoUrl(s.logo_url);
       if (s && s.name) setSchoolName(s.name);
     }).catch(() => {});
   }, []);
 
-  // Aperçu HTML natif basé sur liste_de_presence.html
+  // ── Aperçu : le PDF réel (mêmes octets que le fichier téléchargé) ─────────
   useEffect(() => {
     if (selectedClasses.length === 0) {
-      setBlobUrl(null);
+      setPdfUrl(null);
+      setPreviewing(false);
+      pdfBytesRef.current = null;
       return;
     }
     let cancelled = false;
     let currentUrl: string | null = null;
+    pdfBytesRef.current = null;
+    // Spinner immédiat : il peint pendant le délai (150 ms) avant le build,
+    // pdf-lib étant synchrone il bloque brièvement le thread principal.
+    setPreviewing(true);
 
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
+      if (cancelled) return;
       try {
-        const html = buildPresenceListHtml(selectedClasses, groupLabel, yearName, logoUrl, schoolName);
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const bytes = await buildPresenceListPdf(selectedClasses, groupLabel, yearName, logoUrl, schoolName);
+        if (cancelled) return;
+        pdfBytesRef.current = bytes;
+        const blob = new Blob([bytes as BlobPart], { type: 'application/pdf' });
         currentUrl = URL.createObjectURL(blob);
-        if (!cancelled) {
-          setBlobUrl(currentUrl);
-        } else {
-          URL.revokeObjectURL(currentUrl);
-        }
-      } catch (err: any) {
+        setPdfUrl(currentUrl);
+      } catch (err) {
         if (!cancelled) {
           console.error(err);
-          setBlobUrl(null);
-          onError(`Aperçu impossible : ${err.message}`);
+          setPdfUrl(null);
+          onError(`Aperçu PDF impossible : ${String(err)}`);
         }
+      } finally {
+        if (!cancelled) setPreviewing(false);
       }
-    }, 10);
+    }, 150);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
       if (currentUrl) URL.revokeObjectURL(currentUrl);
     };
-  }, [selectedClasses, groupLabel, yearName, logoUrl]);
+  }, [selectedClasses, groupLabel, yearName, logoUrl, schoolName]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleDownload = () => {
@@ -112,7 +127,11 @@ export default function PresenceListModal({
     setBusy(true);
     
     setTimeout(() => {
-      buildPresenceListPdf(selectedClasses, groupLabel, yearName, logoUrl, schoolName)
+      // Réutilise les octets de l'aperçu si déjà générés (aperçu = téléchargement).
+      const bytesPromise = pdfBytesRef.current
+        ? Promise.resolve(pdfBytesRef.current)
+        : buildPresenceListPdf(selectedClasses, groupLabel, yearName, logoUrl, schoolName);
+      bytesPromise
         .then(bytes => {
           const blob = new Blob([bytes as any], { type: 'application/pdf' });
           const url = URL.createObjectURL(blob);
@@ -294,13 +313,46 @@ export default function PresenceListModal({
                     : `${selectedClasses.length} classe${selectedClasses.length > 1 ? 's' : ''} · ${totalStudents} élève${totalStudents > 1 ? 's' : ''}`}
                 </p>
               </div>
+
+              {/* ── Zoom de l'aperçu ── */}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setZoom(z => clampZoom(z - 0.1))}
+                  disabled={zoom <= 0.3}
+                  aria-label="Dézoomer"
+                  title="Dézoomer"
+                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ZoomOut size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setZoom(1)}
+                  aria-label="Réinitialiser le zoom à 100 %"
+                  title="Réinitialiser à 100 %"
+                  className="min-w-[3.1rem] rounded-lg px-1.5 py-1 text-[11px] font-semibold tabular-nums text-slate-600 transition-colors hover:bg-slate-100"
+                >
+                  {Math.round(zoom * 100)} %
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setZoom(z => clampZoom(z + 0.1))}
+                  disabled={zoom >= 3}
+                  aria-label="Zoomer"
+                  title="Zoomer"
+                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ZoomIn size={13} />
+                </button>
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-hidden bg-slate-200 p-4 relative">
-              {busy && (
+              {(busy || previewing) && (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-200/50 backdrop-blur-sm text-slate-600">
                   <LoaderCircle size={34} strokeWidth={1} className="mb-3 animate-spin" />
-                  <p className="text-sm font-medium">Génération en cours…</p>
+                  <p className="text-sm font-medium">{busy ? 'Export en cours…' : 'Génération de l’aperçu…'}</p>
                 </div>
               )}
               {classes.length === 0 ? (
@@ -315,11 +367,15 @@ export default function PresenceListModal({
                   title="Sélectionnez au moins une classe"
                   hint="Cochez une classe à gauche pour générer la liste de présence correspondante."
                 />
-              ) : blobUrl ? (
+              ) : pdfUrl ? (
                 <div className="h-full overflow-hidden rounded-xl bg-slate-200">
                   <iframe
                     ref={frameRef}
-                    src={blobUrl}
+                    src={pdfUrl}
+                    // CSS `zoom` : les pourcentages se résolvent dans l'espace zoomé,
+                    // donc 100 % remplit toujours le cadre — seul le contenu grossit
+                    // (zoom > 1) ou rétrécit (zoom < 1) dans la fenêtre de l'aperçu.
+                    style={{ zoom: `${zoom}` }}
                     className="h-full w-full border-0"
                     title="Aperçu de la liste de présence"
                   />

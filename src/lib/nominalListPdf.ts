@@ -1,12 +1,15 @@
 import { jsPDF } from 'jspdf';
-import logoAsset from '../assets/orion_logo.png';
-import qrAsset from '../assets/orion_qr.png';
-import watermarkAsset from '../assets/orion_watermark.png';
+// `?inline` : les trois images sont embarquées comme data-URI au build.
+// Le fetch runtime des assets échoue dans la WebView Tauri (« Failed to
+// fetch ») — l'inlining rend le chargement infaillible et hors-ligne.
+import logoAsset from '../assets/orion_logo.png?inline';
+import qrAsset from '../assets/orion_qr.png?inline';
+import watermarkAsset from '../assets/orion_watermark.png?inline';
 import {
   BORDER, BORDER_SHIFT, BODY_SIZE, COL_EDGES, GFT, HEAD_BASELINE, HEAD_COLUMNS,
   HEAD_SIZE, IMAGES, PAGE, PAD_X, ROWS_PER_PAGE, ROW_BASELINES, ROW_EDGES,
-  SUPERSCRIPT, SUPERSCRIPT_RATIO, TEXT, TITLE_BAND, TITLE_BAND_CENTER, TRIMESTERS,
-  gftValues, nominalListFileName,
+  SUPERSCRIPT, TEXT, TITLE_BAND, TITLE_BAND_CENTER, TRIMESTERS,
+  gftValues,
   type HeadColumn,
   type NominalListClassData,
 } from './nominalListTemplate';
@@ -14,11 +17,10 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 // Rendu du modèle « LISTE NOMINATIVE DE LA CLASSE »
 //
-// Deux sorties à partir d'une seule géométrie (lib/nominalListTemplate) :
-//   • buildNominalListHtml → aperçu fidèle dans une iframe (CSS) ;
-//   • buildNominalListPdf  → fichier A4 paysage (jsPDF, tracés vectoriels).
-// Le découpage en pages est calculé une seule fois (layoutNominalList) et
-// partagé par les deux rendus : l'aperçu et le PDF sont donc superposables.
+// PDF 100 % natif (jsPDF) à partir de la géométrie partagée
+// (lib/nominalListTemplate) : aucune page HTML intermédiaire, aucune conversion
+// HTML → PDF. Le découpage en pages est calculé une seule fois
+// (layoutNominalList) puis dessiné directement en tracés vectoriels.
 //
 // Les polices du modèle (Anton, Times New Roman, Calibri) ne sont ni intégrables
 // dans jsPDF sans les fichiers .ttf, ni disponibles hors ligne dans le WebView :
@@ -26,7 +28,6 @@ import {
 // page ne changent.
 // ─────────────────────────────────────────────────────────────────────────────
 
-type Rgb = readonly [number, number, number];
 type Family = 'serif' | 'sans';
 type Style = '' | 'normal' | 'bold' | 'italic';
 
@@ -39,32 +40,42 @@ export interface NominalListAssets {
 // ── Images ───────────────────────────────────────────────────────────────────
 
 const toDataUrl = (url: string): Promise<string> =>
-  fetch(url)
-    .then(res => {
-      if (!res.ok) throw new Error(`Image introuvable (${res.status}) : ${url}`);
-      return res.blob();
-    })
-    .then(
-      blob =>
-        new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result));
-          reader.onerror = () => reject(reader.error ?? new Error('Lecture de l’image impossible'));
-          reader.readAsDataURL(blob);
-        }),
-    );
+  // Data-URI déjà prêt (imports `?inline`) : aucun fetch, aucune dépendance
+  // au protocole de service des fichiers.
+  url.startsWith('data:')
+    ? Promise.resolve(url)
+    : fetch(url)
+        .then(res => {
+          if (!res.ok) throw new Error(`Image introuvable (${res.status}) : ${url}`);
+          return res.blob();
+        })
+        .then(
+          blob =>
+            new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.onerror = () => reject(reader.error ?? new Error('Lecture de l’image impossible'));
+              reader.readAsDataURL(blob);
+            }),
+        );
 
 let assetsPromise: Promise<NominalListAssets> | null = null;
 
+/** Data-URI du logo Orion (repli si le logo de l'école est illisible par jsPDF). */
+let defaultLogoDataUrl = '';
+
 /**
- * Charge les trois images du modèle en data-URI (jsPDF et l'iframe ne gèrent pas
- * d'URL de module). Résultat mis en cache : l'aperçu et le PDF partagent
+ * Charge les trois images du modèle en data-URI (jsPDF ne gère pas d'URL de
+ * module). Résultat mis en cache : l'aperçu et le téléchargement partagent
  * exactement les mêmes images.
  */
 export function loadNominalListAssets(): Promise<NominalListAssets> {
   if (!assetsPromise) {
     assetsPromise = Promise.all([toDataUrl(logoAsset), toDataUrl(qrAsset), toDataUrl(watermarkAsset)])
-      .then(([logo, qr, watermark]) => ({ logo, qr, watermark }))
+      .then(([logo, qr, watermark]) => {
+        defaultLogoDataUrl = logo;
+        return { logo, qr, watermark };
+      })
       .catch(err => {
         assetsPromise = null; // nouvel essai à la prochaine ouverture
         throw err;
@@ -74,7 +85,7 @@ export function loadNominalListAssets(): Promise<NominalListAssets> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Découpage en pages (commun aux deux rendus)
+// Découpage en pages
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Une page physique : une tranche d'élèves d'une classe. */
@@ -94,8 +105,8 @@ export function pageCountFor(classData: NominalListClassData): number {
 
 /**
  * Aplatit la liste des classes en pages. C'est l'unique source de vérité du
- * découpage : si l'aperçu et le PDF divergeaient, l'aperçu mentirait à
- * l'utilisateur sur le nombre de feuilles qu'il va obtenir.
+ * découpage : l'aperçu étant le PDF lui-même (mêmes octets que le fichier
+ * téléchargé), le nombre de feuilles affiché est toujours celui obtenu.
  */
 export function layoutNominalList(pages: NominalListClassData[]): NominalListPage[] {
   return pages.flatMap(data => {
@@ -109,135 +120,9 @@ export function layoutNominalList(pages: NominalListClassData[]): NominalListPag
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Aperçu HTML
-// ─────────────────────────────────────────────────────────────────────────────
-
-const esc = (s: string): string =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-const px = (v: number): string => `${v}pt`;
-
-/** Filet : rectangle plein ancré sur la coordonnée, comme dans le PDF. */
-function rule(x: number, y: number, w: number, h: number): string {
-  return `<i class="rule" style="left:${px(x)};top:${px(y)};width:${px(w)};height:${px(h)}"></i>`;
-}
-
-/** Segment vertical (coordonnée x) et segment horizontal (coordonnée y). */
-function vLines(edges: readonly number[], y0: number, y1: number): string {
-  return edges.map(x => rule(x, y0, BORDER, y1 - y0)).join('');
-}
-
-function hLines(edges: readonly number[], x0: number, x1: number): string {
-  return edges.map(y => rule(x0, y, x1 - x0, BORDER)).join('');
-}
-
-/** Aplat : fond d'une colonne, entre les filets, sur toute la bande. */
-function fill(x: number, xNext: number, top: number, bottom: number, color: Rgb): string {
-  return (
-    `<i style="left:${px(x + BORDER_SHIFT)};top:${px(top + BORDER_SHIFT)};` +
-    `width:${px(xNext - x - BORDER_SHIFT)};height:${px(bottom - top - BORDER_SHIFT)};` +
-    `background:rgb(${color[0]},${color[1]},${color[2]})"></i>`
-  );
-}
-
-/** Ancre d'un texte positionné à la ligne de base `top`. */
-type Anchor =
-  | { kind: 'x'; x: number } // bord gauche fixe
-  | { kind: 'center'; at: number } // centré sur x
-  | { kind: 'column'; from: number; to: number }; // centré dans [from, to]
-
-/** `content` est du HTML déjà échappé. `top` est la ligne de base, pas le haut. */
-function text(content: string, anchor: Anchor, top: number, size: number, cls = ''): string {
-  const place =
-    anchor.kind === 'x'
-      ? `left:${px(anchor.x)};`
-      : anchor.kind === 'center'
-        ? `left:${px(anchor.at)};transform:translateX(-50%);`
-        : `left:${px(anchor.from)};width:${px(anchor.to - anchor.from)};text-align:center;`;
-  return `<span class="t ${cls}" style="${place}top:${px(top)};font-size:${px(size)}">${content}</span>`;
-}
-
-/** Libellé d'en-tête de colonne, avec son éventuel exposant. */
-function headCell(col: HeadColumn, from: number, to: number): string {
-  const anchor: Anchor =
-    col.align === 'center' ? { kind: 'column', from, to } : { kind: 'x', x: from + PAD_X };
-  const content = esc(col.label) + (col.superscript ? `<sup>${esc(col.superscript)}</sup>` : '');
-  return text(content, anchor, HEAD_BASELINE[col.font], HEAD_SIZE, col.font);
-}
-
 const gftBottom = GFT.rowEdges[GFT.rowEdges.length - 1];
 const trimesterBottom = TRIMESTERS.rowEdges[TRIMESTERS.rowEdges.length - 1];
 const tableBottom = ROW_EDGES[ROW_EDGES.length - 1];
-
-/** Une page du modèle. */
-function renderPage(page: NominalListPage, assets: NominalListAssets): string {
-  const { data, offset } = page;
-  const gft = gftValues(data);
-
-  const gftRow = (baseline: number, values: readonly string[]) =>
-    values
-      .map((v, i) =>
-        text(esc(v), { kind: 'column', from: GFT.colEdges[i], to: GFT.colEdges[i + 1] }, baseline, GFT.size, 'sans b'),
-      )
-      .join('');
-
-  const trimestreRow = TRIMESTERS.labels
-    .map((l, i) =>
-      text(esc(l), { kind: 'column', from: TRIMESTERS.colEdges[i], to: TRIMESTERS.colEdges[i + 1] }, TRIMESTERS.baseline, TRIMESTERS.size, 'sans b'),
-    )
-    .join('');
-
-  const headRow = HEAD_COLUMNS.map((col, i) => headCell(col, COL_EDGES[i], COL_EDGES[i + 1])).join('');
-
-  // Lignes d'élèves : N°, NOM ET PRENOM, Sexe. Les colonnes de notes restent
-  // vides, comme sur le modèle (elles sont destinées aux moyennes).
-  const rows = ROW_BASELINES.map((baseline, i) => {
-    const row = data.rows[offset + i];
-    if (!row) return '';
-    const top = ROW_EDGES[i + 1];
-    const cell = (value: string, col: number) =>
-      text(esc(value), { kind: 'x', x: COL_EDGES[col] + PAD_X }, baseline, BODY_SIZE, 'sans');
-    const centerCell = (value: string, col: number) =>
-      text(esc(value), { kind: 'center', at: (COL_EDGES[col] + COL_EDGES[col + 1]) / 2 }, baseline, BODY_SIZE, 'sans');
-    return `<div class="row" style="top:${px(top)};height:${px(ROW_EDGES[i + 2] - top)}">${centerCell(row.number, 0)}${cell(row.fullName, 1)}${centerCell(row.gender, 2)}</div>`;
-  }).join('');
-
-  return `
-  <div class="page">
-    <img class="abs" src="${assets.logo}" style="left:${px(IMAGES.logo.x)};top:${px(IMAGES.logo.y)};width:${px(IMAGES.logo.w)};height:${px(IMAGES.logo.h)}" alt="" />
-    <img class="abs" src="${assets.qr}" style="left:${px(IMAGES.qr.x)};top:${px(IMAGES.qr.y)};width:${px(IMAGES.qr.w)};height:${px(IMAGES.qr.h)}" alt="" />
-
-    ${text(esc(TEXT.brand.label), { kind: 'center', at: TITLE_BAND_CENTER }, TEXT.brand.baseline, TEXT.brand.size, 'brand')}
-    ${text(esc(TEXT.title.label), { kind: 'x', x: TEXT.title.x }, TEXT.title.baseline, TEXT.title.size, 'serif')}
-    ${rule(TEXT.title.x, TEXT.title.baseline + TEXT.title.underline.dy, TEXT.title.underline.width, TEXT.title.underline.thickness)}
-    ${text(`${esc(TEXT.classLabel.label)} ${esc(data.name)}`, { kind: 'x', x: TEXT.classLabel.x }, TEXT.classLabel.baseline, TEXT.classLabel.size, 'serif b')}
-    ${text(esc(TEXT.footer.label), { kind: 'x', x: TEXT.footer.x }, TEXT.footer.baseline, TEXT.footer.size, 'serif i')}
-
-    <div class="fills">
-      ${GFT.colEdges.slice(0, -1).map((x, i) => fill(x, GFT.colEdges[i + 1], GFT.rowEdges[0], gftBottom, GFT.fills[i])).join('')}
-      ${TRIMESTERS.colEdges.slice(0, -1).map((x, i) => fill(x, TRIMESTERS.colEdges[i + 1], TRIMESTERS.rowEdges[0], trimesterBottom, TRIMESTERS.fill)).join('')}
-    </div>
-
-    <div class="grid">
-      ${vLines(GFT.colEdges, GFT.rowEdges[0], gftBottom + BORDER)}
-      ${hLines(GFT.rowEdges, GFT.colEdges[0], GFT.colEdges[GFT.colEdges.length - 1] + BORDER)}
-      ${gftRow(GFT.labelBaseline, GFT.labels)}
-      ${gftRow(GFT.valueBaseline, gft)}
-
-      ${vLines(TRIMESTERS.colEdges, TRIMESTERS.rowEdges[0], trimesterBottom + BORDER)}
-      ${hLines(TRIMESTERS.rowEdges, TRIMESTERS.colEdges[0], TRIMESTERS.colEdges[TRIMESTERS.colEdges.length - 1] + BORDER)}
-      ${trimestreRow}
-
-      ${vLines(COL_EDGES, ROW_EDGES[0], tableBottom + BORDER)}
-      ${hLines(ROW_EDGES, COL_EDGES[0] + BORDER, COL_EDGES[COL_EDGES.length - 1])}
-      ${headRow}
-      ${rows}
-    </div>
-
-    <img class="abs" src="${assets.watermark}" style="left:${px(IMAGES.watermark.x)};top:${px(IMAGES.watermark.y)};width:${px(IMAGES.watermark.w)};height:${px(IMAGES.watermark.h)}" alt="" />
-  </div>`;
-}
 
 export interface NominalListDocOptions {
   pages: NominalListClassData[];
@@ -245,66 +130,6 @@ export interface NominalListDocOptions {
   groupLabel: string;
   documentType?: 'nominative' | 'notes';
   subjectName?: string;
-}
-
-/**
- * Aperçu HTML : une page A4 paysage par tranche d'élèves, repères et dimensions
- * identiques au PDF. `iframe.contentWindow.print()` produit le même document.
- */
-export function buildNominalListHtml(opts: NominalListDocOptions): string {
-  const { pages, assets, groupLabel } = opts;
-  const title = pages.length === 1 ? pages[0].name : `${groupLabel} — ${pages.length} classes`;
-
-  return `<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="utf-8" />
-<title>Liste nominative — ${esc(title)}</title>
-<style>
-  @page { size: ${PAGE.width}pt ${PAGE.height}pt; margin: 0; }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: #94a3b8; }
-  .page {
-    position: relative; overflow: hidden;
-    width: ${PAGE.width}pt; height: ${PAGE.height}pt;
-    margin: 0 auto 10pt; background: #fff;
-    color: #000; font-family: Calibri, 'Segoe UI', Arial, sans-serif;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact;
-  }
-  .abs { position: absolute; }
-  /* Filets noirs et aplats, dans cet ordre : aplats sous les filets. */
-  .grid i, .rule { position: absolute; background: #000; }
-  .fills i { position: absolute; }
-  /* Textes : la position « top » est la ligne de base, pas le haut de la boîte. */
-  .t { position: absolute; white-space: nowrap; line-height: 1; }
-  .serif { font-family: 'Times New Roman', Times, serif; }
-  .sans { font-family: Calibri, 'Segoe UI', Arial, sans-serif; }
-  .b { font-weight: 700; }
-  .i { font-style: italic; }
-  /* Anton est très condensé : on resserre le substitut pour retrouver sa largeur. */
-  .brand {
-    font-family: 'Arial Narrow', 'Liberation Sans Narrow', Anton, Impact, sans-serif;
-    font-weight: 800; letter-spacing: -0.2pt;
-    transform: translateX(-50%) scaleX(0.8); transform-origin: center;
-  }
-  .row { position: absolute; left: 0; width: 100%; }
-  /* « e » de « MG » : le modèle le place ${SUPERSCRIPT.dy} pt sous la ligne de base. */
-  sup {
-    font-size: ${(SUPERSCRIPT_RATIO * 100).toFixed(0)}%;
-    vertical-align: baseline; position: relative; top: ${px(SUPERSCRIPT.dy)};
-    line-height: 0;
-  }
-  @media print {
-    html, body { background: #fff; }
-    .page { margin: 0; break-after: page; page-break-after: always; }
-    .page:last-of-type { break-after: auto; page-break-after: auto; }
-  }
-</style>
-</head>
-<body>
-${layoutNominalList(pages).map(p => renderPage(p, assets)).join('\n')}
-</body>
-</html>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -329,6 +154,23 @@ function drawCentered(doc: jsPDF, text: string, from: number, to: number, baseli
   doc.text(text, (from + to) / 2, baseline, { align: 'center' });
 }
 
+/**
+ * Réduit le corps (par pas de 0,25 pt) jusqu'à faire tenir `text` dans `maxW`.
+ *
+ * Même approche que la liste de présence : seule la taille de police baisse,
+ * l'interlettrage reste naturel. L'ancienne compression d'espacement
+ * (drawCondensed) collait les lettres, Anton/Calibri du modèle étant bien
+ * plus étroits que les substituts jsPDF (Helvetica/Times).
+ */
+function fitSize(doc: jsPDF, text: string, maxW: number, base: number, min: number): number {
+  for (let s = base; s > min; s -= 0.25) {
+    doc.setFontSize(s);
+    if (doc.getTextWidth(text) <= maxW) return s;
+  }
+  doc.setFontSize(min);
+  return min;
+}
+
 /** Filet ancré sur sa coordonnée, comme Word (le trait part vers la droite/bas). */
 function stroke(doc: jsPDF, x1: number, y1: number, x2: number, y2: number): void {
   doc.line(x1 + BORDER_SHIFT, y1 + BORDER_SHIFT, x2 + BORDER_SHIFT, y2 + BORDER_SHIFT);
@@ -349,10 +191,12 @@ const drawTrimesters = (doc: jsPDF): void => {
   TRIMESTERS.rowEdges.forEach(y => stroke(doc, TRIMESTERS.colEdges[0], y, TRIMESTERS.colEdges[TRIMESTERS.colEdges.length - 1] + BORDER, y));
 
   useFont(doc, 'sans', 'bold');
-  doc.setFontSize(TRIMESTERS.size);
-  TRIMESTERS.labels.forEach((l, i) =>
-    drawCentered(doc, l, TRIMESTERS.colEdges[i], TRIMESTERS.colEdges[i + 1], TRIMESTERS.baseline),
-  );
+  TRIMESTERS.labels.forEach((l, i) => {
+    const from = TRIMESTERS.colEdges[i];
+    const to = TRIMESTERS.colEdges[i + 1];
+    fitSize(doc, l, to - from - TRIMESTERS.padX * 2, TRIMESTERS.size, 8);
+    drawCentered(doc, l, from, to, TRIMESTERS.baseline);
+  });
 };
 
 /** En-tête de colonnes : « MG » centré, suivi du « e » en exposant. */
@@ -379,31 +223,54 @@ function drawHeadCell(doc: jsPDF, col: HeadColumn, from: number, to: number): vo
   doc.text(col.label, from + PAD_X, baseline);
 }
 
+/**
+ * Pose une image en conservant son ratio dans le cadre du modèle.
+ * Un logo importé en format que jsPDF ne sait pas décoder (BMP, corrompu…)
+ * ne doit JAMAIS bloquer la génération du document : on renvoie `false` et
+ * l'appelant bascule sur un repli (ou continue sans image).
+ */
+function addImageSafe(
+  doc: jsPDF, dataUrl: string, x: number, y: number, w: number, h: number,
+): boolean {
+  if (!dataUrl) return false;
+  try {
+    const props = doc.getImageProperties(dataUrl);
+    const ratio = Math.min(w / props.width, h / props.height);
+    const finalW = props.width * ratio;
+    const finalH = props.height * ratio;
+    doc.addImage(
+      dataUrl, props.fileType || 'PNG',
+      x + (w - finalW) / 2, y + (h - finalH) / 2, finalW, finalH,
+      undefined, 'FAST',
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Dessine une page complète : images, titres, encadrés, trame, élèves, filigrane. */
 function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets, opts: NominalListDocOptions): void {
   const { data, offset } = page;
 
   // ── Images ──
-  try {
-    const props = doc.getImageProperties(assets.logo);
-    const maxW = IMAGES.logo.w;
-    const maxH = IMAGES.logo.h;
-    const ratio = Math.min(maxW / props.width, maxH / props.height);
-    const finalW = props.width * ratio;
-    const finalH = props.height * ratio;
-    const offsetX = IMAGES.logo.x + (maxW - finalW) / 2;
-    const offsetY = IMAGES.logo.y + (maxH - finalH) / 2;
-    doc.addImage(assets.logo, props.fileType || 'PNG', offsetX, offsetY, finalW, finalH, undefined, 'FAST');
-  } catch (e) {
-    doc.addImage(assets.logo, 'PNG', IMAGES.logo.x, IMAGES.logo.y, IMAGES.logo.w, IMAGES.logo.h, undefined, 'FAST');
+  // Replis successifs : logo de l'école → logo Orion → aucune image.
+  if (!addImageSafe(doc, assets.logo, IMAGES.logo.x, IMAGES.logo.y, IMAGES.logo.w, IMAGES.logo.h)) {
+    if (defaultLogoDataUrl && defaultLogoDataUrl !== assets.logo) {
+      addImageSafe(doc, defaultLogoDataUrl, IMAGES.logo.x, IMAGES.logo.y, IMAGES.logo.w, IMAGES.logo.h);
+    }
   }
-  doc.addImage(assets.qr, 'PNG', IMAGES.qr.x, IMAGES.qr.y, IMAGES.qr.w, IMAGES.qr.h, undefined, 'FAST');
+  addImageSafe(doc, assets.qr, IMAGES.qr.x, IMAGES.qr.y, IMAGES.qr.w, IMAGES.qr.h);
 
   // ── Titres ──
   useFont(doc, 'sans', 'bold');
-  doc.setFontSize(TEXT.brand.size);
   doc.setTextColor(...(TEXT.brand.color as unknown as [number, number, number]));
-  drawCentered(doc, TEXT.brand.label, TITLE_BAND.left, TITLE_BAND.right, TEXT.brand.baseline);
+  // Bande libre entre le logo et « CLASSE : » : le titre est centré sur le repère
+  // du modèle à l'espacement naturel (comme la liste de présence) ; seul le
+  // corps baisse s'il déborde de la bande.
+  fitSize(doc, TEXT.brand.label, TITLE_BAND.right - TITLE_BAND.left, TEXT.brand.size, 10);
+  const brandW = doc.getTextWidth(TEXT.brand.label);
+  doc.text(TEXT.brand.label, TEXT.brand.center - brandW / 2, TEXT.brand.baseline);
 
   doc.setTextColor(0, 0, 0);
   useFont(doc, 'serif');
@@ -512,10 +379,9 @@ function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets, 
   }
 
   // ── Filigrane : posé après la trame, comme dans le document d'origine ──
-  doc.addImage(
-    assets.watermark, 'PNG',
+  addImageSafe(
+    doc, assets.watermark,
     IMAGES.watermark.x, IMAGES.watermark.y, IMAGES.watermark.w, IMAGES.watermark.h,
-    undefined, 'FAST',
   );
 }
 
@@ -537,13 +403,3 @@ export function buildNominalListPdf(opts: NominalListDocOptions): jsPDF {
   return doc;
 }
 
-/** Nombre total de feuilles qu'un export produira. */
-export function nominalListPageCount(pages: NominalListClassData[]): number {
-  return layoutNominalList(pages).length;
-}
-
-export function saveNominalListPdf(opts: NominalListDocOptions & { fileName: string }): void {
-  buildNominalListPdf(opts).save(opts.fileName);
-}
-
-export { nominalListFileName };

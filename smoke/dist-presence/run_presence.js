@@ -10,10 +10,6 @@ var TITLE_BAND = {
 	right: 694.54
 };
 (TITLE_BAND.left + TITLE_BAND.right) / 2;
-Math.round({
-	size: 6.96,
-	dy: .96
-}.size / 11.04 * 100) / 100;
 var deaccent = (s) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 /**
 * Ramène la valeur de `students.gender` à « M », « F » ou ''.
@@ -44,7 +40,7 @@ var GEOM = {
 	},
 	/** « Année : … » centré sous le titre, dans la bande libre 488…530 pt. */
 	yearField: {
-		centerX: 861.12 / 2,
+		centerX: 841.92 / 2,
 		baseline: 510,
 		size: 11,
 		maxW: 240
@@ -90,6 +86,32 @@ var fitSize = (text, font, maxW, base, min) => {
 	for (let s = base; s > min; s -= .25) if (font.widthOfTextAtSize(text, s) <= maxW) return s;
 	return min;
 };
+/** Format MIME d'une data-URI image ('' si ce n'en est pas une). */
+var dataUrlMime = (dataUrl) => /^data:image\/([a-z0-9.+-]+)[;,]/i.exec(dataUrl)?.[1]?.toLowerCase() ?? "";
+/**
+* pdf-lib n'intègre que du PNG ou du JPEG, alors que la page Réglages encode le
+* logo en WebP (canvas.toDataURL('image/webp')). On repasse par un canvas pour
+* obtenir un PNG ; sans DOM (smoke Node) on renvoie l'original et l'intégration
+* échoue proprement.
+*/
+var toEmbeddableImage = async (logoDataUrl) => {
+	const mime = dataUrlMime(logoDataUrl);
+	if (mime === "png" || mime === "jpeg" || mime === "jpg") return logoDataUrl;
+	if (typeof document === "undefined" || typeof Image === "undefined") throw new Error(`Format de logo non pris en charge (${mime || "inconnu"}).`);
+	const img = await new Promise((resolve, reject) => {
+		const el = new Image();
+		el.onload = () => resolve(el);
+		el.onerror = () => reject(/* @__PURE__ */ new Error("Logo illisible."));
+		el.src = logoDataUrl;
+	});
+	const canvas = document.createElement("canvas");
+	canvas.width = img.naturalWidth || 1;
+	canvas.height = img.naturalHeight || 1;
+	canvas.getContext("2d")?.drawImage(img, 0, 0);
+	const png = canvas.toDataURL("image/png");
+	if (dataUrlMime(png) !== "png") throw new Error("Conversion du logo en PNG impossible.");
+	return png;
+};
 /** Coupe avec « ... » quand même la taille minimale ne tient pas. */
 var truncate = (text, font, size, maxW) => {
 	if (font.widthOfTextAtSize(text, size) <= maxW) return text;
@@ -102,19 +124,38 @@ var truncate = (text, font, size, maxW) => {
 	}
 	return `${text.slice(0, lo).trimEnd()}...`;
 };
+var templatePromise = null;
+var getTemplate = () => {
+	if (!templatePromise) {
+		const promise = (async () => {
+			const response = await fetch("/liste_de_presence.pdf");
+			if (!response.ok) throw new Error("Impossible de charger le modèle de liste de présence.");
+			return PDFDocument.load(await response.arrayBuffer());
+		})();
+		templatePromise = promise;
+		promise.catch(() => {
+			if (templatePromise === promise) templatePromise = null;
+		});
+	}
+	return templatePromise;
+};
 /**
 * Génère le PDF de liste de présence : une page du modèle par tranche de
 * 28 élèves (numérotation continue), en-tête + encadré G/F/T redessinés.
 */
-var buildPresenceListPdf = async (classes, _groupLabel, yearName) => {
-	const response = await fetch("/liste_de_presence.pdf");
-	if (!response.ok) throw new Error("Impossible de charger le modèle de liste de présence.");
-	const templateBytes = await response.arrayBuffer();
+var buildPresenceListPdf = async (classes, _groupLabel, yearName, logoDataUrl, schoolName = "ORION COLLEGE EXPERIENCE") => {
+	const srcDoc = await getTemplate();
 	const out = await PDFDocument.create();
 	const regular = await out.embedFont(StandardFonts.Helvetica);
 	const bold = await out.embedFont(StandardFonts.HelveticaBold);
 	const black = rgb(0, 0, 0);
-	const srcDoc = await PDFDocument.load(templateBytes);
+	let embeddedLogo = null;
+	if (logoDataUrl) try {
+		const embeddable = await toEmbeddableImage(logoDataUrl);
+		embeddedLogo = dataUrlMime(embeddable) === "png" ? await out.embedPng(embeddable) : await out.embedJpg(embeddable);
+	} catch (e) {
+		console.warn("Could not embed logo", e);
+	}
 	const yearLabel = winAnsi(`Année : ${yearName}`);
 	for (const cls of classes) {
 		const students = [...cls.students].sort((a, b) => (a.lastName || "").localeCompare(b.lastName || "") || (a.firstName || "").localeCompare(b.firstName || ""));
@@ -135,6 +176,48 @@ var buildPresenceListPdf = async (classes, _groupLabel, yearName) => {
 		for (let part = 0; part < parts; part += 1) {
 			const [page] = await out.copyPages(srcDoc, [0]);
 			const pdfPage = out.addPage(page);
+			if (embeddedLogo) {
+				pdfPage.drawRectangle({
+					x: 35,
+					y: 497,
+					width: 300,
+					height: 83,
+					color: rgb(1, 1, 1)
+				});
+				const dims = embeddedLogo.scale(1);
+				const maxPtW = 180;
+				const maxPtH = 65;
+				const ratio = Math.min(maxPtW / dims.width, maxPtH / dims.height);
+				const w = dims.width * ratio;
+				const h = dims.height * ratio;
+				const offsetX = 40 + (maxPtW - w) / 2;
+				const offsetY = 505 + (maxPtH - h) / 2;
+				pdfPage.drawImage(embeddedLogo, {
+					x: offsetX,
+					y: offsetY,
+					width: w,
+					height: h
+				});
+			}
+			pdfPage.drawRectangle({
+				x: 200,
+				y: 545,
+				width: 460,
+				height: 35,
+				color: rgb(1, 1, 1)
+			});
+			const titleLabel = winAnsi((schoolName || "ORION COLLEGE EXPERIENCE").toUpperCase());
+			const titleFont = bold;
+			const PAGE_CENTER_X = 841.92 / 2;
+			const titleSize = fitSize(titleLabel, titleFont, 460, 16, 10);
+			const titleWidth = titleFont.widthOfTextAtSize(titleLabel, titleSize);
+			pdfPage.drawText(titleLabel, {
+				x: PAGE_CENTER_X - titleWidth / 2,
+				y: 550,
+				size: titleSize,
+				font: titleFont,
+				color: rgb(.08, .34, .75)
+			});
 			const classSize = fitSize(className, bold, GEOM.classField.maxW, GEOM.classField.size, 7.5);
 			pdfPage.drawText(truncate(className, bold, classSize, GEOM.classField.maxW), {
 				x: GEOM.classField.x,
@@ -142,6 +225,13 @@ var buildPresenceListPdf = async (classes, _groupLabel, yearName) => {
 				size: classSize,
 				font: bold,
 				color: black
+			});
+			pdfPage.drawRectangle({
+				x: GEOM.yearField.centerX - 150,
+				y: 497,
+				width: 300,
+				height: 33,
+				color: rgb(1, 1, 1)
 			});
 			const yearSize = fitSize(yearLabel, regular, GEOM.yearField.maxW, GEOM.yearField.size, 7.5);
 			const yearWidth = regular.widthOfTextAtSize(yearLabel, yearSize);

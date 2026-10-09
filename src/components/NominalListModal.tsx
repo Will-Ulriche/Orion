@@ -10,7 +10,7 @@ import {
   type NominalListClassInput,
 } from '../lib/nominalListTemplate';
 import {
-  buildNominalListPdf, buildNominalListHtml, loadNominalListAssets,
+  buildNominalListPdf, loadNominalListAssets,
   type NominalListAssets,
 } from '../lib/nominalListPdf';
 
@@ -40,6 +40,7 @@ export default function NominalListModal({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [assets, setAssets] = useState<NominalListAssets | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
 
   // Real data states for 'notes'
   const [selSubject, setSelSubject] = useState<string>('');
@@ -69,8 +70,6 @@ export default function NominalListModal({
     });
   }, []);
 
-  const frameRef = useRef<HTMLIFrameElement>(null);
-
   // ── Images du modèle (logo, QR, filigrane) ────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -79,15 +78,17 @@ export default function NominalListModal({
       invoke<any>("get_school_settings").catch(() => null)
     ])
       .then(([a, school]) => {
-        if (!cancelled) {
-          if (school && school.logo_url) {
-            setAssets({ ...a, logo: school.logo_url });
-          } else {
-            setAssets(a);
-          }
-        }
+        if (cancelled) return;
+        setAssets(school && school.logo_url ? { ...a, logo: school.logo_url } : a);
       })
-      .catch(e => onError(`Aperçu impossible : ${String(e)}`));
+      .catch(e => {
+        console.error(e);
+        if (cancelled) return;
+        // Même sans images, le document reste générable : les données
+        // (élèves, effectifs) priment sur le logo décoratif.
+        setAssets({ logo: '', qr: '', watermark: '' });
+        onError(`Images du modèle indisponibles : ${String(e)} — aperçu généré sans logo.`);
+      });
     return () => { cancelled = true; };
   }, [onError]);
 
@@ -238,57 +239,88 @@ export default function NominalListModal({
   }, [assets, data, groupLabel, documentType, isNotes, selPeriods, selSubject, subjects, realGrades]);
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  /**
+   * L'aperçu EST le PDF (mêmes octets que le fichier téléchargé) : le blob est
+   * conservé pour que « Télécharger PDF » ne régénère rien (une seule
+   * construction par changement de sélection, au lieu de deux).
+   */
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
+    const revokePreviewUrl = () => {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+    };
+
     if (!docOptions) {
+      revokePreviewUrl();
+      setPdfBlob(null);
       setBlobUrl(null);
+      setPreviewing(false);
       return;
     }
 
     let cancelled = false;
-    let currentUrl: string | null = null;
+    // Spinner dès la génération ; l'ancien aperçu reste affiché tant que le
+    // nouveau PDF n'est pas prêt (aucune frame ne pointe vers une URL morte).
+    setPreviewing(true);
 
-    // Utilisation de l'aperçu HTML (instantané) au lieu de générer le PDF 
-    // à chaque clic. Le PDF sera généré uniquement au téléchargement.
+    // Court délai : React peint le spinner avant le build jsPDF synchrone.
     const timer = setTimeout(() => {
+      if (cancelled) return;
       try {
-        const html = buildNominalListHtml(docOptions);
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        currentUrl = URL.createObjectURL(blob);
-        if (!cancelled) {
-          setBlobUrl(currentUrl);
-        } else {
-          URL.revokeObjectURL(currentUrl);
-        }
+        const doc = buildNominalListPdf(docOptions);
+        const blob = doc.output('blob');
+        const url = URL.createObjectURL(blob);
+        revokePreviewUrl();
+        previewUrlRef.current = url;
+        setPdfBlob(blob);
+        setBlobUrl(url);
       } catch (e) {
-        if (!cancelled) {
-          console.error(e);
-          setBlobUrl(null);
-        }
+        console.error(e);
+        // On conserve le dernier aperçu valide s'il existe (aucune
+        // révocation ici) : mieux vaut un aperçu périmé qu'aucun aperçu.
+        onError(`Aperçu PDF impossible : ${String(e)}`);
+      } finally {
+        if (!cancelled) setPreviewing(false);
       }
-    }, 10);
+    }, 150);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
-      if (currentUrl) {
-        URL.revokeObjectURL(currentUrl);
-      }
     };
-  }, [docOptions]);
+  }, [docOptions, onError]);
+
+  // Dernière URL de l'aperçu : révoquée au démontage du modal.
+  useEffect(() => () => {
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+  }, []);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleDownload = () => {
-    if (!docOptions) return;
+    // Réutilise les octets de l'aperçu (identiques au PDF affiché).
+    if (!pdfBlob) return;
     setBusy(true);
-    
-    // On diffère la génération PDF pour permettre au spinner de s'afficher
+
+    // On diffère l'écriture pour permettre au spinner de s'afficher
     setTimeout(() => {
       try {
-        const doc = buildNominalListPdf(docOptions);
-        const fileName = nominalListFileName(data, groupLabel, yearName, documentType);
-        doc.save(fileName);
-        
+        const url = URL.createObjectURL(pdfBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nominalListFileName(data, groupLabel, yearName, documentType);
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
         const students = data.reduce((sum, c) => sum + c.rows.length, 0);
         onSuccess?.(
           data.length === 1
@@ -526,8 +558,7 @@ export default function NominalListModal({
               ) : blobUrl ? (
                 <div className="h-full overflow-hidden rounded-xl bg-slate-200">
                   <iframe
-                    ref={frameRef}
-                    src={blobUrl}
+                    src={`${blobUrl}#view=FitH`}
                     className="h-full w-full border-0"
                     title="Aperçu de la liste nominative"
                   />
@@ -561,7 +592,7 @@ export default function NominalListModal({
           <div className="flex items-center gap-2">
             <button
               onClick={handleDownload}
-              disabled={data.length === 0 || !assets || busy || !docOptions}
+              disabled={data.length === 0 || !assets || busy || previewing || !pdfBlob}
               className="flex items-center gap-1.5 rounded-lg bg-[#4f46e5] px-4 py-2 text-[12px] font-semibold text-white transition-colors hover:bg-[#4338ca] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}

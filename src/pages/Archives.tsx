@@ -9,11 +9,13 @@ import {
 } from 'lucide-react';
 import { EmptyState, Loader } from '../components/ui';
 import StaffIdentityModal from '../components/StaffIdentityModal';
+import StudentIdentityModal from '../components/StudentIdentityModal';
 import NominalListModal from '../components/NominalListModal';
 import PresenceListModal from '../components/PresenceListModal';
 import TimetableModal from '../components/TimetableModal';
 import type { NominalListClassInput } from '../lib/nominalListTemplate';
 import { saveFinanceReportPdf, type FinanceReportData } from '../lib/financeReportPdf';
+import { preloadPresenceTemplate } from '../lib/presenceListPdf';
 import type { ReceiptSchoolInfo } from '../lib/receiptPdf';
 import { nextPaint } from '../utils/ui';
 
@@ -236,6 +238,7 @@ export default function Archives() {
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [identityOpen, setIdentityOpen] = useState(false);
+  const [studentIdentityOpen, setStudentIdentityOpen] = useState(false);
   const [nominalListOpen, setNominalListOpen] = useState(false);
   const [notesListOpen, setNotesListOpen] = useState(false);
   const [presenceListOpen, setPresenceListOpen] = useState(false);
@@ -249,6 +252,10 @@ export default function Archives() {
   }, []);
 
   useEffect(() => () => { if (toastTimer.current) window.clearTimeout(toastTimer.current); }, []);
+
+  // Précharge le modèle PDF de la liste de présence (fetch + parse ~400 ms)
+  // dès l'ouverture de la page : le premier aperçu devient quasi instantané.
+  useEffect(() => { preloadPresenceTemplate(); }, []);
 
   // ── Chargement initial : socle commun (sections, niveaux, classes, infos école) ──
   const yearId = selectedYear?.id;
@@ -773,6 +780,15 @@ export default function Archives() {
                       else setIdentityOpen(true);
                       return;
                     }
+                    if (a.label === "Fiche d'identité") {
+                      // Onglets Collège / Lycée : fiche d'identité des élèves.
+                      if (groupStudents.length === 0) {
+                        showToast('error', 'Aucun élève à imprimer dans cet onglet.');
+                        return;
+                      }
+                      setStudentIdentityOpen(true);
+                      return;
+                    }
                     if (a.label === 'Emploi du temps') {
                       if (groupClasses.length === 0) {
                         showToast('error', 'Aucune classe disponible dans cet onglet.');
@@ -824,6 +840,19 @@ export default function Archives() {
         </div>{/* / rangée contenu + colonne */}
 
       </div>
+
+      {/* ═══ POPUP : FICHE D'IDENTITÉ DE L'ÉLÈVE ═══ */}
+      {studentIdentityOpen && (
+        <StudentIdentityModal
+          students={groupStudents}
+          school={schoolInfo}
+          yearName={selectedYear.name}
+          groupLabel={groupLabel}
+          onClose={() => setStudentIdentityOpen(false)}
+          onError={msg => showToast('error', msg)}
+          onSuccess={msg => showToast('success', msg)}
+        />
+      )}
 
       {/* ═══ POPUP : FICHE D'IDENTITÉ DU PERSONNEL ═══ */}
       {identityOpen && (
