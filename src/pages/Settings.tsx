@@ -119,8 +119,8 @@ function ImageUploadZone({
   );
 }
 
-const fieldClass = "w-full px-4 py-2.5 bg-[#f8fafc] border border-slate-200/60 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] outline-none transition-all text-[13.5px] placeholder:text-slate-400 text-slate-700";
-const labelClass = "block text-[12px] font-semibold text-[#1e293b] mb-1.5";
+const fieldClass = "w-full px-4 py-3 bg-slate-50/50 border border-slate-200 rounded-xl focus:bg-white focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all text-[14px] placeholder:text-slate-400 text-slate-800 shadow-sm";
+const labelClass = "block text-[13px] font-bold text-slate-700 mb-2";
 
 const TONES: Record<string, string> = {
   indigo: 'bg-[#eef2ff] text-[#4f46e5]',
@@ -137,15 +137,15 @@ function Section({
   icon: ReactNode; title: string; subtitle?: string; tone?: string; wide?: boolean; children: ReactNode;
 }) {
   return (
-    <div className={`bg-white rounded-2xl border border-slate-100 shadow-sm ${wide ? 'xl:col-span-2' : ''}`}>
-      <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100">
-        <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${TONES[tone]}`}>{icon}</div>
+    <div className={`bg-white rounded-[24px] shadow-sm ring-1 ring-slate-100 hover:shadow-md transition-shadow duration-300 overflow-hidden ${wide ? 'xl:col-span-2' : ''}`}>
+      <div className="flex items-center gap-4 px-6 py-5 bg-slate-50/50 border-b border-slate-100/80">
+        <div className={`w-11 h-11 rounded-[16px] flex items-center justify-center flex-shrink-0 shadow-sm ${TONES[tone]}`}>{icon}</div>
         <div className="min-w-0">
-          <h3 className="text-[14px] font-bold text-slate-800 leading-tight">{title}</h3>
-          {subtitle && <p className="text-[11.5px] text-slate-400 leading-tight mt-0.5">{subtitle}</p>}
+          <h3 className="text-[15px] font-bold text-slate-800 leading-tight">{title}</h3>
+          {subtitle && <p className="text-[12.5px] font-medium text-slate-500 leading-tight mt-1">{subtitle}</p>}
         </div>
       </div>
-      <div className="p-5 space-y-4">{children}</div>
+      <div className="p-6 space-y-5 bg-white">{children}</div>
     </div>
   );
 }
@@ -159,11 +159,13 @@ function Field({
   return (
     <div>
       <label className={labelClass}>
-        {label} {required && <span className="text-[#4f46e5]">*</span>}
+        {label} {required && <span className="text-indigo-500 ml-0.5">*</span>}
       </label>
-      <div className="relative">
+      <div className="relative group">
         {icon && (
-          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">{icon}</div>
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-indigo-500 transition-colors">
+            {icon}
+          </div>
         )}
         {children}
       </div>
@@ -364,21 +366,21 @@ export default function Settings() {
                 title="Coordonnées" subtitle="Email, site web et téléphones"
               >
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Field label="Email de contact" icon={<Mail size={14} />}>
+                  <Field label="Email de contact" icon={<Mail size={16} />}>
                     <input type="email" name="email" value={formData.email} onChange={handleChange}
-                      placeholder="direction@ecole.tg" className={`${fieldClass} pl-9`} />
+                      placeholder="direction@ecole.tg" className={`${fieldClass} pl-10`} />
                   </Field>
-                  <Field label="Site Web" icon={<Globe size={14} />}>
+                  <Field label="Site Web" icon={<Globe size={16} />}>
                     <input type="url" name="website" value={formData.website} onChange={handleChange}
-                      placeholder="https://www.ecole.tg" className={`${fieldClass} pl-9`} />
+                      placeholder="https://www.ecole.tg" className={`${fieldClass} pl-10`} />
                   </Field>
-                  <Field label="Téléphone principal" icon={<Phone size={14} />}>
+                  <Field label="Téléphone principal" icon={<Phone size={16} />}>
                     <input name="phone" value={formData.phone} onChange={handleChange}
-                      placeholder="+228 90 00 00 00" className={`${fieldClass} pl-9`} />
+                      placeholder="+228 90 00 00 00" className={`${fieldClass} pl-10`} />
                   </Field>
-                  <Field label="Téléphone secondaire" icon={<Phone size={14} />}>
+                  <Field label="Téléphone secondaire" icon={<Phone size={16} />}>
                     <input name="phone_secondary" value={formData.phone_secondary} onChange={handleChange}
-                      placeholder="+228 90 00 00 01" className={`${fieldClass} pl-9`} />
+                      placeholder="+228 90 00 00 01" className={`${fieldClass} pl-10`} />
                   </Field>
                 </div>
               </Section>
@@ -387,16 +389,16 @@ export default function Settings() {
                 icon={<MapPin size={18} />} tone="sky"
                 title="Localisation" subtitle="Adresse postale de l'établissement"
               >
-                <Field label="Adresse physique" icon={<MapPin size={14} />}>
+                <Field label="Adresse physique" icon={<MapPin size={16} />}>
                   <input name="address" value={formData.address} onChange={handleChange}
-                    placeholder="Quartier, rue..." className={`${fieldClass} pl-9`} />
+                    placeholder="Quartier, rue..." className={`${fieldClass} pl-10`} />
                 </Field>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <Field label="Ville">
                     <input name="city" value={formData.city} onChange={handleChange} placeholder="Lomé" className={fieldClass} />
                   </Field>
-                  <Field label="Pays" icon={<Map size={14} />}>
-                    <input name="country" value={formData.country} onChange={handleChange} placeholder="Togo" className={`${fieldClass} pl-9`} />
+                  <Field label="Pays" icon={<Map size={16} />}>
+                    <input name="country" value={formData.country} onChange={handleChange} placeholder="Togo" className={`${fieldClass} pl-10`} />
                   </Field>
                 </div>
               </Section>
@@ -406,16 +408,16 @@ export default function Settings() {
                 title="Paramètres régionaux" subtitle="Devise monétaire et fuseau horaire utilisés par le module finances"
               >
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Field label="Devise monétaire" icon={<Coins size={14} />}>
-                    <select name="currency" value={formData.currency} onChange={handleChange} className={`${fieldClass} pl-9 appearance-none`}>
+                  <Field label="Devise monétaire" icon={<Coins size={16} />}>
+                    <select name="currency" value={formData.currency} onChange={handleChange} className={`${fieldClass} pl-10 appearance-none`}>
                       <option value="XOF">Franc CFA BCEAO (XOF)</option>
                       <option value="XAF">Franc CFA CEMAC (XAF)</option>
                       <option value="EUR">Euro (€)</option>
                       <option value="USD">Dollar ($)</option>
                     </select>
                   </Field>
-                  <Field label="Fuseau horaire" icon={<Clock size={14} />}>
-                    <select name="timezone" value={formData.timezone} onChange={handleChange} className={`${fieldClass} pl-9 appearance-none`}>
+                  <Field label="Fuseau horaire" icon={<Clock size={16} />}>
+                    <select name="timezone" value={formData.timezone} onChange={handleChange} className={`${fieldClass} pl-10 appearance-none`}>
                       <option value="Africa/Lome">Lomé / Togo (GMT+0)</option>
                       <option value="Africa/Abidjan">Abidjan / Côte d'Ivoire (GMT+0)</option>
                       <option value="Africa/Accra">Accra / Ghana (GMT+0)</option>
@@ -490,3 +492,5 @@ export default function Settings() {
     </div>
   );
 }
+
+

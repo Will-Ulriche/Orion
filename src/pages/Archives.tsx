@@ -10,6 +10,7 @@ import {
 import { EmptyState, Loader } from '../components/ui';
 import StaffIdentityModal from '../components/StaffIdentityModal';
 import StudentIdentityModal from '../components/StudentIdentityModal';
+import BulletinModal from '../components/BulletinModal';
 import NominalListModal from '../components/NominalListModal';
 import PresenceListModal from '../components/PresenceListModal';
 import TimetableModal from '../components/TimetableModal';
@@ -239,6 +240,7 @@ export default function Archives() {
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [identityOpen, setIdentityOpen] = useState(false);
   const [studentIdentityOpen, setStudentIdentityOpen] = useState(false);
+  const [bulletinOpen, setBulletinOpen] = useState(false);
   const [nominalListOpen, setNominalListOpen] = useState(false);
   const [notesListOpen, setNotesListOpen] = useState(false);
   const [presenceListOpen, setPresenceListOpen] = useState(false);
@@ -789,6 +791,14 @@ export default function Archives() {
                       setStudentIdentityOpen(true);
                       return;
                     }
+                    if (a.label === 'Bulletin de notes' && isSchoolTab) {
+                      if (groupStudents.length === 0) {
+                        showToast('error', 'Aucun élève à imprimer dans cet onglet.');
+                        return;
+                      }
+                      setBulletinOpen(true);
+                      return;
+                    }
                     if (a.label === 'Emploi du temps') {
                       if (groupClasses.length === 0) {
                         showToast('error', 'Aucune classe disponible dans cet onglet.');
@@ -840,6 +850,22 @@ export default function Archives() {
         </div>{/* / rangée contenu + colonne */}
 
       </div>
+
+      {/* ═══ POPUP : BULLETIN DE NOTES ═══ */}
+      {bulletinOpen && (
+        <BulletinModal
+          students={groupStudents}
+          classes={groupClasses}
+          school={schoolInfo}
+          schoolId={schoolId}
+          yearId={selectedYear.id}
+          yearName={selectedYear.name}
+          groupLabel={groupLabel}
+          onClose={() => setBulletinOpen(false)}
+          onError={msg => showToast('error', msg)}
+          onSuccess={msg => showToast('success', msg)}
+        />
+      )}
 
       {/* ═══ POPUP : FICHE D'IDENTITÉ DE L'ÉLÈVE ═══ */}
       {studentIdentityOpen && (

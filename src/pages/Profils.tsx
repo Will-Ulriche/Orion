@@ -1,20 +1,29 @@
 import { Users, ShieldCheck } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { useState, useEffect } from 'react';
 
-const roles = [
-  { id: 'role_dir', name: 'DIRECTION', description: 'Accès complet à l\'établissement', color: 'bg-indigo-100 text-indigo-700' },
-  { id: 'role_sec', name: 'SECRETAIRE', description: 'Gestion administrative', color: 'bg-blue-100 text-blue-700' },
-  { id: 'role_prof', name: 'PROFESSEUR', description: 'Gestion pédagogique', color: 'bg-green-100 text-green-700' },
-  { id: 'role_admin', name: 'SUPER_ADMIN', description: 'Administration système globale', color: 'bg-red-100 text-red-700' },
-];
+interface RoleRec {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+const roleColors: Record<string, string> = {
+  'DIRECTION': 'bg-indigo-100 text-indigo-700',
+  'SECRETAIRE': 'bg-blue-100 text-blue-700',
+  'PROFESSEUR': 'bg-green-100 text-green-700',
+  'SUPER_ADMIN': 'bg-red-100 text-red-700',
+};
 
 export default function Profils() {
-  return (
-    <div className="p-8">
-      <div className="mb-8">
-        <h2 className="text-2xl font-bold text-slate-800">Profils & Rôles</h2>
-        <p className="text-slate-400 text-sm mt-1">Gestion des utilisateurs et de leurs permissions</p>
-      </div>
+  const [roles, setRoles] = useState<RoleRec[]>([]);
 
+  useEffect(() => {
+    invoke<RoleRec[]>('get_roles').then(setRoles).catch(console.error);
+  }, []);
+
+  return (
+    <div className="pt-2">
       {/* Rôles */}
       <section className="mb-8">
         <h3 className="text-base font-semibold text-slate-700 mb-4 flex items-center gap-2">
@@ -25,8 +34,8 @@ export default function Profils() {
             <div key={role.id} className="bg-white rounded-xl border border-slate-200 p-5">
               <div className="flex items-start justify-between">
                 <div>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${role.color}`}>{role.name}</span>
-                  <p className="text-sm text-slate-500 mt-2">{role.description}</p>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${roleColors[role.name] || 'bg-gray-100 text-gray-700'}`}>{role.name}</span>
+                  <p className="text-sm text-slate-500 mt-2">{role.description || 'Aucune description'}</p>
                 </div>
               </div>
             </div>

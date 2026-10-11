@@ -244,6 +244,122 @@ pub fn check_user_role(state: State<'_, DbState>, user_id: String, school_id: St
     Ok(has_role)
 }
 
+#[tauri::command]
+pub fn get_current_user_roles(state: State<'_, DbState>, user_id: String, school_id: String) -> Result<Vec<String>, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+
+    let mut stmt = conn.prepare(
+        "SELECT r.name FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.id
+         WHERE ur.user_id = ?1 AND ur.school_id = ?2
+         UNION
+         SELECT r.name FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.id
+         WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map(rusqlite::params![user_id, school_id], |row| {
+        row.get::<_, String>(0)
+    }).map_err(|e| e.to_string())?;
+
+    let mut roles = Vec::new();
+    for r in rows {
+        if let Ok(role_name) = r {
+            roles.push(role_name);
+        }
+    }
+    Ok(roles)
+}
+
+/// Synchronise localement le rôle (issu du cloud) de l'utilisateur connecté.
+/// Crée le rôle s'il n'existe pas, puis l'associe à l'utilisateur pour l'école.
+/// Permet à l'app hors-ligne de connaître le rôle SUPER_ADMIN après la 1ère
+/// connexion en ligne.
+#[tauri::command]
+pub fn set_local_user_role(user_id: String, school_id: String, role_name: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+
+    // École : réutilise si déjà connue, sinon crée un libellé par défaut.
+    conn.execute(
+        "INSERT INTO schools (id, name) VALUES (?1, ?2) ON CONFLICT(id) DO NOTHING",
+        rusqlite::params![school_id, "École"],
+    ).map_err(|e| format!("Erreur sync école: {}", e))?;
+
+    // Utilisateur : doit exister (normalement créé par sync_local_user).
+    let user_exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE id = ?1",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    if user_exists == 0 {
+        return Err("Utilisateur local introuvable.".to_string());
+    }
+
+    // Rôle : récupère par nom, sinon l'insère.
+    let existing_role: Option<String> = conn.query_row(
+        "SELECT id FROM roles WHERE name = ?1",
+        rusqlite::params![role_name],
+        |row| row.get::<_, String>(0),
+    ).ok();
+    let role_id = match existing_role {
+        Some(id) => id,
+        None => {
+            let new_id = format!("role-{}", role_name.to_lowercase());
+            conn.execute(
+                "INSERT INTO roles (id, name) VALUES (?1, ?2)",
+                rusqlite::params![new_id, role_name],
+            ).map_err(|e| format!("Erreur création rôle: {}", e))?;
+            new_id
+        }
+    };
+
+    // Association user_roles : évite les doublons.
+    let link_exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM user_roles WHERE user_id = ?1 AND school_id = ?2 AND role_id = ?3",
+        rusqlite::params![user_id, school_id, role_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    if link_exists == 0 {
+        let link_id = format!("ur-{}-{}-{}", user_id, school_id, role_id);
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![link_id, user_id, school_id, role_id],
+        ).map_err(|e| format!("Erreur attribution rôle: {}", e))?;
+    }
+
+    Ok(())
+}
+
+
+/// Retourne l'identifiant `staff` correspondant à l'utilisateur connecté.
+/// Le rapprochement se fait via l'email (users.email == staff.email).
+/// Un professeur ne peut ainsi accéder qu'à ses propres affectations.
+#[tauri::command]
+pub fn get_current_staff_id(state: State<'_, DbState>, user_id: String, school_id: String) -> Result<Option<String>, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+
+    let email: Option<String> = conn.query_row(
+        "SELECT email FROM users WHERE id = ?1",
+        rusqlite::params![user_id],
+        |row| row.get::<_, Option<String>>(0),
+    ).unwrap_or(None);
+
+    let Some(email) = email else { return Ok(None); };
+    if email.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let staff_id: Option<String> = conn.query_row(
+        "SELECT id FROM staff
+          WHERE school_id = ?1 AND email IS NOT NULL AND lower(email) = lower(?2)
+          LIMIT 1",
+        rusqlite::params![school_id, email],
+        |row| row.get::<_, String>(0),
+    ).ok();
+
+    Ok(staff_id)
+}
+
 // ──────────────────────────────────────────────
 // COMMANDE : Écriture dans les journaux d'audit
 // ──────────────────────────────────────────────
@@ -782,7 +898,7 @@ pub fn transfer_class_within_year(
 // COMMANDE : Synchroniser l'utilisateur Supabase en local
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn sync_local_user(user_id: String, email: String, school_id: String, school_name: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn sync_local_user(user_id: String, email: String, school_id: String, school_name: String, first_name: Option<String>, last_name: Option<String>, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     
     // Upsert school
@@ -798,6 +914,37 @@ pub fn sync_local_user(user_id: String, email: String, school_id: String, school
          ON CONFLICT(id) DO UPDATE SET email = excluded.email",
         rusqlite::params![user_id, email],
     ).map_err(|e| format!("Erreur sync utilisateur: {}", e))?;
+
+    // Upsert profil (nécessaire pour que l'utilisateur apparaisse dans la
+    // sélection de compte et la gestion des PIN côté interface locale).
+    let existing_profile: Option<String> = conn.query_row(
+        "SELECT id FROM profiles
+          WHERE user_id = ?1 AND school_id = ?2 AND deleted_at IS NULL
+          LIMIT 1",
+        rusqlite::params![user_id, school_id],
+        |row| row.get(0),
+    ).ok();
+
+    match existing_profile {
+        Some(profile_id) => {
+            conn.execute(
+                "UPDATE profiles
+                    SET first_name = COALESCE(?1, first_name),
+                        last_name  = COALESCE(?2, last_name),
+                        updated_at = CURRENT_TIMESTAMP
+                  WHERE id = ?3",
+                rusqlite::params![first_name, last_name, profile_id],
+            ).map_err(|e| format!("Erreur sync profil: {}", e))?;
+        }
+        None => {
+            let profile_id = format!("prof-{}", user_id);
+            conn.execute(
+                "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                rusqlite::params![profile_id, user_id, school_id, first_name, last_name],
+            ).map_err(|e| format!("Erreur création profil: {}", e))?;
+        }
+    }
 
     Ok(())
 }
@@ -2034,6 +2181,55 @@ pub fn get_class_subjects(
     Ok(res)
 }
 
+/// Retourne toutes les affectations (matière + classe) d'un professeur donné
+/// pour une année scolaire. Utilisé pour restreindre l'accès du professeur à
+/// ses seules classes et matières.
+#[tauri::command]
+pub fn get_teacher_class_subjects(
+    school_id: String,
+    academic_year_id: String,
+    teacher_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::ClassSubject>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
+                cs.teacher_id, cs.coefficient,
+                s.name, s.code, c.name,
+                (st.prenoms || ' ' || st.nom),
+                cs.weekly_hours, cs.subject_type, cs.is_mandatory, cs.order_index, cs.color_icon
+         FROM class_subjects cs
+         JOIN subjects s ON cs.subject_id = s.id
+         JOIN classes c ON cs.class_id = c.id
+         LEFT JOIN staff st ON cs.teacher_id = st.id AND st.school_id = cs.school_id
+         WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.teacher_id=?3
+         ORDER BY c.name, s.name"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, teacher_id], |row| {
+        let is_mandatory_int: Option<i64> = row.get(13)?;
+        Ok(crate::models::ClassSubject {
+            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
+            class_id: row.get(3)?, subject_id: row.get(4)?, teacher_id: row.get(5)?,
+            coefficient: row.get(6)?,
+            subject_name: row.get(7)?, subject_code: row.get(8)?,
+            class_name: row.get(9)?, teacher_name: row.get(10)?,
+            weekly_hours: row.get(11)?,
+            subject_type: row.get(12)?,
+            is_mandatory: is_mandatory_int.map(|v| v != 0),
+            order_index: row.get(14)?,
+            color_icon: row.get(15)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows {
+        match r {
+            Ok(cs) => res.push(cs),
+            Err(e) => return Err(format!("Error mapping row: {:?}", e)),
+        }
+    }
+    Ok(res)
+}
+
 #[tauri::command]
 pub fn assign_subject_to_class(
     school_id: String,
@@ -2606,6 +2802,163 @@ pub fn get_class_statistics(
     Ok(res)
 }
 
+// ── RÉCAP DES NOTES (matrice élèves × matières) ──────────────
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RecapSubjectColumn {
+    pub class_subject_id: String,
+    pub subject_name: String,
+    pub subject_code: String,
+    pub coefficient: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RecapStudentRow {
+    pub enrollment_id: String,
+    pub student_id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub matricule: Option<String>,
+    /// Moyenne /20 par matière, clé = class_subject_id (None si aucune note).
+    pub averages: std::collections::HashMap<String, Option<f64>>,
+    pub general_average: Option<f64>,
+    pub rank: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ClassNotesRecap {
+    pub subjects: Vec<RecapSubjectColumn>,
+    pub students: Vec<RecapStudentRow>,
+}
+
+/// Construit la matrice « récap des notes » : pour chaque élève actif d'une
+/// classe et une période donnée, la moyenne par matière et la moyenne générale
+/// pondérée. Si `teacher_id` est fourni, seules les matières de ce professeur
+/// sont incluses (restriction d'accès des enseignants).
+#[tauri::command]
+pub fn get_class_notes_recap(
+    school_id: String,
+    academic_year_id: String,
+    class_id: String,
+    grading_period_id: String,
+    teacher_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<ClassNotesRecap, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    // 1. Colonnes : matières de la classe (filtrées par professeur si besoin)
+    let subjects: Vec<RecapSubjectColumn> = if let Some(tid) = teacher_id.as_ref() {
+        let mut stmt = conn.prepare(
+            "SELECT cs.id, s.name, s.code, cs.coefficient
+             FROM class_subjects cs JOIN subjects s ON cs.subject_id = s.id
+             WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3 AND cs.teacher_id=?4
+             ORDER BY s.name"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, class_id, tid], |row| {
+            Ok(RecapSubjectColumn {
+                class_subject_id: row.get(0)?, subject_name: row.get(1)?,
+                subject_code: row.get(2)?, coefficient: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.filter_map(Result::ok).collect()
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT cs.id, s.name, s.code, cs.coefficient
+             FROM class_subjects cs JOIN subjects s ON cs.subject_id = s.id
+             WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3
+             ORDER BY s.name"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, class_id], |row| {
+            Ok(RecapSubjectColumn {
+                class_subject_id: row.get(0)?, subject_name: row.get(1)?,
+                subject_code: row.get(2)?, coefficient: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.filter_map(Result::ok).collect()
+    };
+
+    let allowed: std::collections::HashSet<String> =
+        subjects.iter().map(|s| s.class_subject_id.clone()).collect();
+
+    // 2. Élèves actifs de la classe
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.student_id, s.first_name, s.last_name, s.matricule
+         FROM enrollments e JOIN students s ON e.student_id = s.id
+         WHERE e.class_id=?1 AND e.academic_year_id=?2 AND e.status='ACTIVE' AND e.school_id=?3
+         ORDER BY s.last_name, s.first_name"
+    ).map_err(|e| e.to_string())?;
+    let students_raw: Vec<(String, String, String, String, Option<String>)> = stmt.query_map(
+        rusqlite::params![class_id, academic_year_id, school_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    ).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+
+    // 3. Agrégation des notes : (enrollment_id, class_subject_id) -> (somme /20, nombre)
+    let mut acc: std::collections::HashMap<(String, String), (f64, f64)> = std::collections::HashMap::new();
+    {
+        let mut g_stmt = conn.prepare(
+            "SELECT g.enrollment_id, g.class_subject_id, g.score, g.max_score
+             FROM grades g
+             JOIN class_subjects cs ON g.class_subject_id = cs.id
+             WHERE g.school_id=?1 AND g.academic_year_id=?2 AND g.grading_period_id=?3
+               AND cs.class_id=?4 AND g.is_absent=0"
+        ).map_err(|e| e.to_string())?;
+        let rows = g_stmt.query_map(
+            rusqlite::params![school_id, academic_year_id, grading_period_id, class_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?, row.get::<_, f64>(3)?)),
+        ).map_err(|e| e.to_string())?;
+        for (eid, csid, score, max_score) in rows.filter_map(Result::ok) {
+            if !allowed.contains(&csid) { continue; }
+            let on20 = if max_score > 0.0 { score / max_score * 20.0 } else { 0.0 };
+            let entry = acc.entry((eid, csid)).or_insert((0.0, 0.0));
+            entry.0 += on20;
+            entry.1 += 1.0;
+        }
+    }
+
+    // 4. Construction des lignes (moyennes par matière + moyenne générale)
+    let mut rows_out: Vec<RecapStudentRow> = Vec::new();
+    for (en_id, student_id, first_name, last_name, matricule) in students_raw {
+        let mut averages: std::collections::HashMap<String, Option<f64>> = std::collections::HashMap::new();
+        let mut weighted_sum = 0.0_f64;
+        let mut coeff_sum = 0.0_f64;
+        for s in &subjects {
+            let avg = acc.get(&(en_id.clone(), s.class_subject_id.clone()))
+                .map(|(sum, count)| if *count > 0.0 { sum / count } else { 0.0 });
+            if let Some(a) = avg {
+                weighted_sum += a * s.coefficient;
+                coeff_sum += s.coefficient;
+            }
+            averages.insert(s.class_subject_id.clone(), avg);
+        }
+        let general_average = if coeff_sum > 0.0 { Some(weighted_sum / coeff_sum) } else { None };
+        rows_out.push(RecapStudentRow {
+            enrollment_id: en_id, student_id, first_name, last_name, matricule,
+            averages, general_average, rank: 0,
+        });
+    }
+
+    // 5. Calcul des rangs (ex-æquo partagent le même rang)
+    let mut order: Vec<(usize, Option<f64>)> = rows_out.iter().enumerate()
+        .map(|(i, r)| (i, r.general_average)).collect();
+    order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut rank = 0_i64;
+    let mut prev: Option<f64> = None;
+    for (idx, (i, avg)) in order.iter().enumerate() {
+        let changed = match (prev, avg) {
+            (None, None) => false,
+            (Some(_), None) | (None, Some(_)) => true,
+            (Some(p), Some(a)) => (p - a).abs() > 1e-9,
+        };
+        if changed {
+            rank = (idx + 1) as i64;
+            prev = *avg;
+        }
+        rows_out[*i].rank = rank;
+    }
+
+    Ok(ClassNotesRecap { subjects, students: rows_out })
+}
+
 // ── TEACHER ASSIGNMENTS ──────────────────────────────────────
 
 #[tauri::command]
@@ -3166,6 +3519,463 @@ pub fn save_timetable_slot(
     Ok(())
 }
 
+// ──────────────────────────────────────────────
+// COMMANDE : Offline Auth
+// ──────────────────────────────────────────────
+use bcrypt::{hash, verify, DEFAULT_COST};
+
+#[tauri::command]
+pub fn store_offline_credentials(user_id: String, email: String, password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    
+    let password_hash = hash(&password, DEFAULT_COST).map_err(|e| format!("Erreur hash: {}", e))?;
+
+    // Update if exists, or do we insert? Better to just update since sync_local_user already inserts it, 
+    // but just in case sync_local_user is not finished, we can use an UPSERT.
+    conn.execute(
+        "INSERT INTO users (id, email, password_hash) VALUES (?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET email = excluded.email, password_hash = excluded.password_hash",
+        rusqlite::params![user_id, email, password_hash],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn login_offline(email: String, password: String, state: tauri::State<'_, DbState>) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    let (user_id, hash_str): (String, Option<String>) = conn.query_row(
+        "SELECT id, password_hash FROM users WHERE email = ?1",
+        rusqlite::params![email],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|_| "Utilisateur non trouvé hors-ligne".to_string())?;
+
+    if let Some(h) = hash_str {
+        if verify(&password, &h).unwrap_or(false) {
+            Ok(user_id)
+        } else {
+            Err("Mot de passe incorrect".to_string())
+        }
+    } else {
+        Err("Aucune connexion hors-ligne préalablement enregistrée pour cet utilisateur".to_string())
+    }
+}
+
+// ── NOUVELLES COMMANDES POUR LE DASHBOARD DE SÉCURITÉ ──
+
+#[derive(Serialize, Deserialize)]
+pub struct DeviceRec {
+    pub id: String,
+    pub school_id: String,
+    pub device_identifier: String,
+    pub device_name: Option<String>,
+    pub platform: Option<String>,
+    pub status: String,
+    pub last_seen_at: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_devices(school_id: String, state: State<'_, DbState>) -> Result<Vec<DeviceRec>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, school_id, device_identifier, device_name, platform, status, last_seen_at 
+         FROM devices WHERE school_id = ?1 ORDER BY last_seen_at DESC"
+    ).map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
+        Ok(DeviceRec {
+            id: row.get(0)?,
+            school_id: row.get(1)?,
+            device_identifier: row.get(2)?,
+            device_name: row.get(3)?,
+            platform: row.get(4)?,
+            status: row.get(5)?,
+            last_seen_at: row.get(6)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut devices = Vec::new();
+    for r in rows {
+        if let Ok(d) = r {
+            devices.push(d);
+        }
+    }
+    Ok(devices)
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct LicenseRec {
+    pub id: String,
+    pub school_id: String,
+    pub license_key: String,
+    pub status: String,
+    pub starts_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub max_devices: Option<i64>,
+}
+
+#[tauri::command]
+pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<LicenseRec>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, school_id, license_key, status, starts_at, expires_at, max_devices 
+         FROM licenses WHERE school_id = ?1"
+    ).map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
+        Ok(LicenseRec {
+            id: row.get(0)?,
+            school_id: row.get(1)?,
+            license_key: row.get(2)?,
+            status: row.get(3)?,
+            starts_at: row.get(4)?,
+            expires_at: row.get(5)?,
+            max_devices: row.get(6)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut licenses = Vec::new();
+    for r in rows {
+        if let Ok(l) = r {
+            licenses.push(l);
+        }
+    }
+    Ok(licenses)
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RoleRec {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_roles(state: State<'_, DbState>) -> Result<Vec<RoleRec>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, description FROM roles"
+    ).map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map([], |row| {
+        Ok(RoleRec {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut roles = Vec::new();
+    for r in rows {
+        if let Ok(ro) = r {
+            roles.push(ro);
+        }
+    }
+    Ok(roles)
+}
+
+// ──────────────────────────────────────────────
+// COMMANDES : Gestion multi-utilisateurs
+// ──────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct LocalUserInfo {
+    pub user_id: String,
+    pub email: String,
+    pub status: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub phone: Option<String>,
+    pub role_name: Option<String>,
+    pub role_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<Vec<LocalUserInfo>, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+
+    let mut stmt = conn.prepare(
+        "SELECT u.id, u.email, u.status, p.first_name, p.last_name, p.phone,
+                r.name as role_name, r.id as role_id, p.id as profile_id, u.created_at
+         FROM users u
+         LEFT JOIN profiles p ON p.user_id = u.id AND p.school_id = ?1 AND p.deleted_at IS NULL
+         LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ?1
+         LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE EXISTS (
+             SELECT 1 FROM profiles p2 WHERE p2.user_id = u.id AND p2.school_id = ?1
+             UNION
+             SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = u.id AND ur2.school_id = ?1
+         )
+         ORDER BY u.created_at DESC"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
+        Ok(LocalUserInfo {
+            user_id: row.get(0)?,
+            email: row.get(1)?,
+            status: row.get(2)?,
+            first_name: row.get(3)?,
+            last_name: row.get(4)?,
+            phone: row.get(5)?,
+            role_name: row.get(6)?,
+            role_id: row.get(7)?,
+            profile_id: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut users = Vec::new();
+    for r in rows {
+        if let Ok(u) = r { users.push(u); }
+    }
+    Ok(users)
+}
+
+#[tauri::command]
+pub fn create_local_user(
+    school_id: String,
+    email: String,
+    first_name: String,
+    last_name: String,
+    phone: Option<String>,
+    role_id: String,
+    state: State<'_, DbState>
+) -> Result<LocalUserInfo, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+
+    // Vérifier si l'email existe déjà
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE email = ?1",
+        rusqlite::params![email],
+        |row| row.get(0)
+    ).unwrap_or(0);
+
+    if exists > 0 {
+        return Err(format!("Un utilisateur avec l'email {} existe déjà.", email));
+    }
+
+    let user_id = format!("local-{}", uuid_v4());
+    let profile_id = format!("prof-{}", uuid_v4());
+    let role_assign_id = format!("ur-{}", uuid_v4());
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    conn.execute(
+        "INSERT INTO users (id, email, status, created_at, updated_at) VALUES (?1, ?2, 'ACTIVE', ?3, ?3)",
+        rusqlite::params![user_id, email, now]
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, phone, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        rusqlite::params![profile_id, user_id, school_id, first_name, last_name, phone, now]
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO user_roles (id, user_id, school_id, role_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![role_assign_id, user_id, school_id, role_id, now]
+    ).map_err(|e| e.to_string())?;
+
+    let role_name: Option<String> = conn.query_row(
+        "SELECT name FROM roles WHERE id = ?1",
+        rusqlite::params![role_id],
+        |row| row.get(0)
+    ).ok();
+
+    Ok(LocalUserInfo {
+        user_id,
+        email,
+        status: "ACTIVE".to_string(),
+        first_name: Some(first_name),
+        last_name: Some(last_name),
+        phone,
+        role_name,
+        role_id: Some(role_id),
+        profile_id: Some(profile_id),
+        created_at: now,
+    })
+}
+
+fn uuid_v4() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    format!("{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        nanos,
+        nanos & 0xffff,
+        (nanos >> 4) & 0xfff,
+        0x8000 | (nanos & 0x3fff),
+        nanos as u64 * 0x1000000000
+    )
+}
+
+#[tauri::command]
+pub fn toggle_user_status(user_id: String, new_status: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+    conn.execute(
+        "UPDATE users SET status = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+        rusqlite::params![new_status, user_id]
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn assign_user_role(user_id: String, school_id: String, role_id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+    // Supprimer l'ancien rôle pour cet école
+    conn.execute(
+        "DELETE FROM user_roles WHERE user_id = ?1 AND school_id = ?2",
+        rusqlite::params![user_id, school_id]
+    ).map_err(|e| e.to_string())?;
+    // Attribuer le nouveau
+    let id = format!("ur-{}-{}", user_id, role_id);
+    conn.execute(
+        "INSERT INTO user_roles (id, user_id, school_id, role_id, created_at) VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)",
+        rusqlite::params![id, user_id, school_id, role_id]
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_local_user(user_id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+    // Supprimer les dépendances dans l'ordre (user_roles, profiles, users)
+    conn.execute("DELETE FROM user_roles WHERE user_id = ?1", rusqlite::params![user_id])
+        .map_err(|e| format!("Erreur suppression rôles: {}", e))?;
+    conn.execute("DELETE FROM profiles WHERE user_id = ?1", rusqlite::params![user_id])
+        .map_err(|e| format!("Erreur suppression profil: {}", e))?;
+    conn.execute("DELETE FROM users WHERE id = ?1", rusqlite::params![user_id])
+        .map_err(|e| format!("Erreur suppression utilisateur: {}", e))?;
+    Ok(())
+}
+
+// ──────────────────────────────────────────────
+// COMMANDES : Authentification par code PIN
+// ──────────────────────────────────────────────
+
+#[derive(serde::Serialize, Clone)]
+pub struct LoginProfile {
+    pub user_id: String,
+    pub email: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub role_name: Option<String>,
+    pub has_pin: bool,
+}
+
+/// Retourne la liste des profils disponibles pour la sélection de compte au login
+#[tauri::command]
+pub fn get_school_users_for_login(school_id: String, state: State<'_, DbState>) -> Result<Vec<LoginProfile>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    let mut stmt = conn.prepare(
+        "SELECT u.id, u.email,
+                p.first_name, p.last_name,
+                r.name as role_name,
+                CASE WHEN u.password_hash IS NOT NULL AND u.password_hash != '' THEN 1 ELSE 0 END as has_pin
+         FROM users u
+         LEFT JOIN profiles p ON p.user_id = u.id AND p.school_id = ?1
+         LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ?1
+         LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE u.status = 'ACTIVE'
+           AND EXISTS (
+               SELECT 1 FROM profiles p2 WHERE p2.user_id = u.id AND p2.school_id = ?1
+           )
+         ORDER BY p.last_name ASC"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
+        Ok(LoginProfile {
+            user_id: row.get(0)?,
+            email: row.get(1)?,
+            first_name: row.get(2)?,
+            last_name: row.get(3)?,
+            role_name: row.get(4)?,
+            has_pin: row.get::<_, i64>(5).unwrap_or(0) == 1,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut profiles = Vec::new();
+    for r in rows { if let Ok(p) = r { profiles.push(p); } }
+    Ok(profiles)
+}
+
+/// Définit ou change le PIN d'un utilisateur (réservé au Directeur)
+#[tauri::command]
+pub fn set_user_pin(user_id: String, pin: String, state: State<'_, DbState>) -> Result<(), String> {
+    use bcrypt::{hash, DEFAULT_COST};
+
+    if pin.len() < 4 || pin.len() > 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
+        return Err("Le PIN doit contenir entre 4 et 6 chiffres.".to_string());
+    }
+
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let hashed = hash(&pin, DEFAULT_COST).map_err(|e| format!("Erreur hash: {}", e))?;
+
+    conn.execute(
+        "UPDATE users SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+        rusqlite::params![hashed, user_id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Connexion locale par sélection de profil + code PIN
+#[tauri::command]
+pub fn login_with_pin(user_id: String, pin: String, school_id: String, state: State<'_, DbState>) -> Result<LoginProfile, String> {
+    use bcrypt::verify;
+
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    let (email, hash_str, status): (String, Option<String>, String) = conn.query_row(
+        "SELECT email, password_hash, status FROM users WHERE id = ?1",
+        rusqlite::params![user_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).map_err(|_| "Utilisateur introuvable.".to_string())?;
+
+    if status != "ACTIVE" {
+        return Err("Ce compte est suspendu. Contactez l'administrateur.".to_string());
+    }
+
+    match hash_str {
+        None => {
+            return Err("Aucun code PIN défini pour ce compte.".to_string());
+        }
+        Some(ref s) if s.is_empty() => {
+            return Err("Aucun code PIN défini pour ce compte.".to_string());
+        }
+        Some(h) => {
+            if !verify(&pin, &h).unwrap_or(false) {
+                return Err("Code PIN incorrect.".to_string());
+            }
+        }
+    }
+
+    // Récupérer le profil complet
+    let (first_name, last_name, role_name): (Option<String>, Option<String>, Option<String>) = conn.query_row(
+        "SELECT p.first_name, p.last_name, r.name
+         FROM profiles p
+         LEFT JOIN user_roles ur ON ur.user_id = p.user_id AND ur.school_id = ?2
+         LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE p.user_id = ?1 AND p.school_id = ?2
+         LIMIT 1",
+        rusqlite::params![user_id, school_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap_or((None, None, None));
+
+    Ok(LoginProfile {
+        user_id,
+        email,
+        first_name,
+        last_name,
+        role_name,
+        has_pin: true,
+    })
+}
 
 #[cfg(test)]
 mod finance_tests {

@@ -29,7 +29,13 @@ pub fn run() {
             commands::check_db_status,
             commands::get_device_info,
             commands::register_device,
+            commands::get_devices,
+            commands::get_licenses,
+            commands::get_roles,
             commands::check_user_role,
+            commands::get_current_user_roles,
+            commands::set_local_user_role,
+            commands::get_current_staff_id,
             commands::write_audit_log,
             commands::get_sync_status,
             commands::get_school_settings,
@@ -42,6 +48,8 @@ pub fn run() {
             commands::archive_academic_year,
             commands::delete_academic_year,
             commands::sync_local_user,
+            commands::store_offline_credentials,
+            commands::login_offline,
             commands::get_classes,
             commands::create_class,
             commands::update_class,
@@ -78,6 +86,7 @@ pub fn run() {
             commands::update_subject,
             commands::delete_subject,
             commands::get_class_subjects,
+            commands::get_teacher_class_subjects,
             commands::assign_subject_to_class,
             commands::update_class_subject,
             commands::remove_class_subject,
@@ -95,6 +104,7 @@ pub fn run() {
             commands::get_student_averages,
             commands::get_class_rankings,
             commands::get_class_statistics,
+            commands::get_class_notes_recap,
             commands::get_teacher_assignments,
             commands::assign_teacher_to_class_subject,
             // ── Phase 3 : Structure Pédagogique ──
@@ -119,7 +129,17 @@ pub fn run() {
             commands::update_staff_classes,
             // ── Emploi du temps ──
             commands::get_timetable,
-            commands::save_timetable_slot
+            commands::save_timetable_slot,
+            // ── Gestion multi-utilisateurs ──
+            commands::get_school_users,
+            commands::create_local_user,
+            commands::toggle_user_status,
+            commands::delete_local_user,
+            commands::assign_user_role,
+            // ── Authentification PIN ──
+            commands::get_school_users_for_login,
+            commands::set_user_pin,
+            commands::login_with_pin
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

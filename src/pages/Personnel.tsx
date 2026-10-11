@@ -1,14 +1,15 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
+import { uploadStaffPhoto, deleteStaffPhoto, isLocalBase64 } from '../lib/photoStorage';
 import { ConfirmDialog } from '../components/ui';
 import {
   User, Phone, Briefcase, MapPin, BookOpen,
   Shield, FileText, Info, Search, ChevronRight,
   Camera, Mail, Users, Calendar, Building,
-  Star, Clock, AlertCircle, Hash, Globe,
+  Star, AlertCircle, Hash, Globe,
   Baby, GraduationCap, Award,
-  UserCheck, LogOut, Plus,
+  LogOut, Plus,
   CheckCircle, XCircle, Loader2, Trash2, Save,
   Eye, Printer, Download, X
 } from 'lucide-react';
@@ -177,39 +178,106 @@ function Select({ label, value, onChange, options, icon: Icon }: {
 // Sections de contenu (toutes contrôlées)
 // ─────────────────────────────────────────────────────
 
-function compressImage(file: File, callback: (compressedBase64: string) => void) {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const MAX_WIDTH = 500;
-      const MAX_HEIGHT = 500;
-      let width = img.width;
-      let height = img.height;
+// compressImage supprimé — remplacé par uploadStaffPhoto dans photoStorage.ts
 
-      if (width > height) {
-        if (width > MAX_WIDTH) {
-          height = Math.round((height * MAX_WIDTH) / width);
-          width = MAX_WIDTH;
-        }
+// ─── PhotoUploadButton ────────────────────────────────────────────────────────
+// Bouton de sélection/suppression de photo avec upload Supabase Storage intégré.
+// Affiche un spinner pendant l'upload et un badge "local" si hors-ligne.
+function PhotoUploadButton({
+  staffId,
+  schoolId,
+  currentUrl,
+  onUploaded,
+  onRemoved,
+}: {
+  staffId: string;
+  schoolId: string;
+  currentUrl: string | null;
+  onUploaded: (url: string) => void;
+  onRemoved: () => void;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Réinitialiser l'input pour permettre de re-sélectionner le même fichier
+    e.target.value = '';
+
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const result = await uploadStaffPhoto(file, schoolId, staffId);
+      if (result) {
+        onUploaded(result.url);
       } else {
-        if (height > MAX_HEIGHT) {
-          width = Math.round((width * MAX_HEIGHT) / height);
-          height = MAX_HEIGHT;
-        }
+        setUploadError('Upload échoué');
       }
-
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx?.drawImage(img, 0, 0, width, height);
-      callback(canvas.toDataURL('image/jpeg', 0.8));
-    };
-    img.src = e.target?.result as string;
+    } catch (err: any) {
+      setUploadError(err?.message ?? 'Erreur inconnue');
+    } finally {
+      setUploading(false);
+    }
   };
-  reader.readAsDataURL(file);
+
+  const isLocal = isLocalBase64(currentUrl);
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <label
+        className={`flex items-center gap-2 px-3 py-1.5 bg-white border rounded-lg text-[12px] font-medium transition-all w-fit
+          ${uploading
+            ? 'border-slate-200 text-slate-400 cursor-not-allowed'
+            : 'border-slate-200 text-slate-600 hover:bg-[#ede9fe] hover:text-[#6d28d9] hover:border-[#c4b5fd] cursor-pointer'
+          }`}
+      >
+        {uploading ? (
+          <><Loader2 size={13} className="animate-spin" /> Envoi en cours...</>
+        ) : (
+          <><Camera size={13} /> Changer la photo</>
+        )}
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          disabled={uploading}
+          onChange={handleFileChange}
+        />
+      </label>
+
+      {currentUrl && !uploading && (
+        <button
+          type="button"
+          onClick={onRemoved}
+          className="flex items-center gap-2 px-3 py-1.5 bg-white border border-red-200 rounded-lg text-[12px] text-red-600 hover:bg-red-50 hover:border-red-300 transition-all font-medium"
+        >
+          <Trash2 size={13} /> Supprimer
+        </button>
+      )}
+
+      {/* Badge "stockée localement" si hors-ligne lors de l'upload */}
+      {isLocal && !uploading && (
+        <span
+          className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium"
+          style={{
+            background: 'rgba(251,191,36,0.1)',
+            border: '1px solid rgba(251,191,36,0.3)',
+            color: '#d97706',
+          }}
+          title="Photo stockée localement. Elle sera synchronisée vers Supabase à la prochaine connexion."
+        >
+          <AlertCircle size={10} /> Locale — sync en attente
+        </span>
+      )}
+
+      {uploadError && (
+        <span className="text-[11px] text-red-500">{uploadError}</span>
+      )}
+    </div>
+  );
 }
+
 
 function SectionInfosPerso({ form, set }: { form: Staff; set: (k: keyof Staff, v: any) => void }) {
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
@@ -241,33 +309,16 @@ function SectionInfosPerso({ form, set }: { form: Staff; set: (k: keyof Staff, v
         </div>
         <div>
           <p className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Photo du personnel</p>
-          <div className="flex items-center gap-2">
-            <label className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[12px] text-slate-600 hover:bg-[#ede9fe] hover:text-[#6d28d9] hover:border-[#c4b5fd] transition-all font-medium cursor-pointer w-fit">
-              <Camera size={13} /> Changer la photo
-              <input 
-                type="file" 
-                accept="image/*" 
-                className="hidden" 
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    compressImage(file, (compressedBase64) => {
-                      set('photo_url', compressedBase64);
-                    });
-                  }
-                }}
-              />
-            </label>
-            {form.photo_url && (
-              <button
-                type="button"
-                onClick={() => set('photo_url', null)}
-                className="flex items-center gap-2 px-3 py-1.5 bg-white border border-red-200 rounded-lg text-[12px] text-red-600 hover:bg-red-50 hover:border-red-300 transition-all font-medium"
-              >
-                <Trash2 size={13} /> Supprimer
-              </button>
-            )}
-          </div>
+          <PhotoUploadButton
+            staffId={form.id}
+            schoolId={form.school_id}
+            currentUrl={form.photo_url}
+            onUploaded={(url) => set('photo_url', url)}
+            onRemoved={() => {
+              deleteStaffPhoto(form.school_id, form.id);
+              set('photo_url', null);
+            }}
+          />
         </div>
       </div>
       <Grid>
@@ -1089,6 +1140,72 @@ export default function Personnel() {
   }, [schoolId, showToast]);
 
   useEffect(() => { loadStaff(); }, [loadStaff]);
+
+  /**
+   * Auto-sync des photos hors-ligne.
+   * Dès que l'appareil retrouve le réseau, on parcourt tous les membres du
+   * personnel dont la photo est encore un base64 local, on l'uploade vers
+   * Supabase Storage et on sauvegarde la nouvelle URL HTTPS dans SQLite.
+   */
+  useEffect(() => {
+    if (!schoolId) return;
+
+    const syncOfflinePhotos = async () => {
+      // 1. Récupérer tous les membres avec leurs photos complètes
+      let allStaff: Staff[];
+      try {
+        allStaff = await invoke<Staff[]>('get_staff', { schoolId, includePhotos: true });
+      } catch {
+        return; // Silencieux — on réessaiera au prochain événement online
+      }
+
+      // 2. Filtrer ceux qui ont encore une photo base64 locale
+      const toSync = allStaff.filter(s => isLocalBase64(s.photo_url));
+      if (toSync.length === 0) return;
+
+      let synced = 0;
+      for (const s of toSync) {
+        try {
+          // Convertir le base64 en File pour l'uploader
+          const res = await fetch(s.photo_url!);
+          const blob = await res.blob();
+          const file = new File([blob], `${s.id}.jpg`, { type: 'image/jpeg' });
+
+          const result = await uploadStaffPhoto(file, s.school_id, s.id);
+          if (!result || isLocalBase64(result.url)) continue; // Upload échoué
+
+          // 3. Sauvegarder la nouvelle URL HTTPS dans SQLite
+          await invoke('update_staff', {
+            staff: { ...s, photo_url: result.url },
+          });
+
+          // 4. Mettre à jour l'état local si ce membre est affiché
+          setStaffList(prev =>
+            prev.map(m => m.id === s.id ? { ...m, photo_url: result.url } : m)
+          );
+          if (selected?.id === s.id) {
+            setSelected(prev => prev ? { ...prev, photo_url: result.url } : prev);
+            setForm(prev => prev ? { ...prev, photo_url: result.url } : prev);
+          }
+
+          synced++;
+        } catch {
+          // Silencieux par photo — on continue les autres
+        }
+      }
+
+      if (synced > 0) {
+        showToast(
+          'success',
+          `${synced} photo${synced > 1 ? 's' : ''} synchronisée${synced > 1 ? 's' : ''} vers Supabase Storage.`
+        );
+      }
+    };
+
+    window.addEventListener('online', syncOfflinePhotos);
+    return () => window.removeEventListener('online', syncOfflinePhotos);
+  }, [schoolId, selected, showToast]);
+
 
   const setField = useCallback((k: keyof Staff, v: any) => {
     setForm(prev => prev ? { ...prev, [k]: v } : prev);

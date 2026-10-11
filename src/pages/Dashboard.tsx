@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
 import { Database, Wifi, WifiOff, MonitorSmartphone, CheckCircle, ShieldCheck, RefreshCw } from 'lucide-react';
 
+import { useNetwork } from '../hooks/useNetwork';
+
 interface DeviceInfo {
   identifier: string;
   name: string;
@@ -15,18 +17,15 @@ interface SyncStatus {
 }
 
 export default function Dashboard() {
+  const isOnline = useNetwork();
+  
   const [dbStatus, setDbStatus] = useState<string>('Vérification...');
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
   const [deviceRegStatus, setDeviceRegStatus] = useState<string>('Enregistrement...');
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [lastSync] = useState<string>('—');
 
   useEffect(() => {
-    const on = () => setIsOnline(true);
-    const off = () => setIsOnline(false);
-    window.addEventListener('online', on);
-    window.addEventListener('offline', off);
 
     invoke('check_db_status')
       .then((res) => setDbStatus(res as string))
@@ -44,10 +43,6 @@ export default function Dashboard() {
       .then((res) => setSyncStatus(res as SyncStatus))
       .catch(console.error);
 
-    return () => {
-      window.removeEventListener('online', on);
-      window.removeEventListener('offline', off);
-    };
   }, []);
 
   const refreshSync = () => {

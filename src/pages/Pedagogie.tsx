@@ -109,11 +109,35 @@ function initials(label: string, fallback = '??') {
 
 type Tab = 'config' | 'saisie';
 
+const ADMIN_ROLES = ['DIRECTION', 'SECRETAIRE', 'SUPER_ADMIN'];
+
 export default function Pedagogie() {
-  const { schoolId } = useAuth();
+  const { schoolId, roles, rolesLoaded, user } = useAuth();
   const { selectedYear } = useYear();
   const [tab, setTab] = useState<Tab>('config');
   const [saisieKey, setSaisieKey] = useState(0);
+
+  // Un professeur (sans rôle administratif) n'a accès qu'à ses propres
+  // classes et matières : il ne peut ni configurer l'établissement, ni
+  // consulter les affectations des autres enseignants.
+  const isTeacherOnly = rolesLoaded && roles.includes('PROFESSEUR') && !roles.some(r => ADMIN_ROLES.includes(r));
+  const [staffId, setStaffId] = useState<string | null>(null);
+  const [scopeReady, setScopeReady] = useState(false);
+
+  useEffect(() => {
+    if (!isTeacherOnly) { setScopeReady(true); return; }
+    if (!user?.id) return;
+    let cancelled = false;
+    invoke<string | null>('get_current_staff_id', { userId: user.id, schoolId })
+      .then(id => { if (!cancelled) setStaffId(id ?? null); })
+      .catch(() => { if (!cancelled) setStaffId(null); })
+      .finally(() => { if (!cancelled) setScopeReady(true); });
+    return () => { cancelled = true; };
+  }, [isTeacherOnly, user?.id, schoolId]);
+
+  useEffect(() => {
+    if (isTeacherOnly) setTab('saisie');
+  }, [isTeacherOnly]);
 
   const handleTabChange = (newTab: Tab) => {
     if (newTab === 'saisie') setSaisieKey(k => k + 1); // force refresh
@@ -131,25 +155,41 @@ export default function Pedagogie() {
             <div>
               <h1 className="text-xl font-bold tracking-tight text-slate-800">Pédagogie &amp; Notes</h1>
               <p className="text-[13px] text-slate-500">
-                Matières, évaluations et résultats scolaires
+                {isTeacherOnly ? 'Vos classes, vos matières et la saisie des notes' : 'Matières, évaluations et résultats scolaires'}
               </p>
             </div>
           </div>
 
-          <Segmented<Tab>
-            value={tab}
-            onChange={handleTabChange}
-            options={[
-              { value: 'config', label: 'Configuration', icon: SlidersHorizontal },
-              { value: 'saisie', label: 'Saisie des notes', icon: ClipboardList },
-            ]}
-          />
+          {!isTeacherOnly && (
+            <Segmented<Tab>
+              value={tab}
+              onChange={handleTabChange}
+              options={[
+                { value: 'config', label: 'Configuration', icon: SlidersHorizontal },
+                { value: 'saisie', label: 'Saisie des notes', icon: ClipboardList },
+              ]}
+            />
+          )}
         </div>
       </header>
 
       <main className="min-h-0 flex-1 overflow-hidden">
-        {tab === 'config' && <TabConfig schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
-        {tab === 'saisie' && <TabSaisie key={saisieKey} schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
+        {!rolesLoaded || (isTeacherOnly && !scopeReady) ? (
+          <Loader label="Chargement de vos affectations…" />
+        ) : (
+          <>
+            {tab === 'config' && !isTeacherOnly && <TabConfig schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
+            {tab === 'saisie' && (
+              <TabSaisie
+                key={saisieKey}
+                schoolId={schoolId}
+                yearId={selectedYear?.id ?? ''}
+                restricted={isTeacherOnly}
+                teacherId={staffId}
+              />
+            )}
+          </>
+        )}
       </main>
     </div>
   );
@@ -945,10 +985,11 @@ function PanelGradeTypes({ gradeTypes, onAdd, onEdit }: { gradeTypes: GradeType[
 // ONGLET 2 — SAISIE DES NOTES
 // ═══════════════════════════════════════════════════════════
 
-function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
+function TabSaisie({ schoolId, yearId, restricted = false, teacherId = null }: { schoolId: string; yearId: string; restricted?: boolean; teacherId?: string | null }) {
   const [classes,      setClasses]      = useState<ClassItem[]>([]);
   const [periods,      setPeriods]      = useState<GradingPeriod[]>([]);
   const [classSubjects, setClassSubjects] = useState<ClassSubject[]>([]);
+  const [teacherSubjects, setTeacherSubjects] = useState<ClassSubject[]>([]);
   const [gradeTypes,   setGradeTypes]   = useState<GradeType[]>([]);
   const [students,     setStudents]     = useState<StudentRow[]>([]);
   const [savedGrades,  setSavedGrades]  = useState<Grade[]>([]);
@@ -972,8 +1013,21 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
     Promise.all([
       invoke<ClassItem[]>('get_classes', { schoolId, academicYearId: yearId }),
       invoke<GradeType[]>('get_grade_types', { schoolId }),
-    ]).then(([c, gt]) => { setClasses(c); setGradeTypes(gt); });
-  }, [schoolId, yearId]);
+      restricted && teacherId
+        ? invoke<ClassSubject[]>('get_teacher_class_subjects', { schoolId, academicYearId: yearId, teacherId })
+        : Promise.resolve<ClassSubject[]>([]),
+    ]).then(([c, gt, ts]) => {
+      if (restricted) {
+        setTeacherSubjects(ts);
+        const allowedIds = new Set(ts.map(t => t.class_id));
+        setClasses(c.filter(x => allowedIds.has(x.id)));
+      } else {
+        setClasses(c);
+        setTeacherSubjects([]);
+      }
+      setGradeTypes(gt);
+    });
+  }, [schoolId, yearId, restricted, teacherId]);
 
 
   // Recharge toutes les périodes de la classe sélectionnée
@@ -987,11 +1041,15 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 
   useEffect(() => {
     if (!selClass || !yearId) return;
-    invoke<ClassSubject[]>('get_class_subjects', { schoolId, academicYearId: yearId, classId: selClass })
-      .then(setClassSubjects);
+    if (restricted) {
+      setClassSubjects(teacherSubjects.filter(ts => ts.class_id === selClass));
+    } else {
+      invoke<ClassSubject[]>('get_class_subjects', { schoolId, academicYearId: yearId, classId: selClass })
+        .then(setClassSubjects);
+    }
     invoke<StudentRow[]>('get_students', { schoolId, academicYearId: yearId, classId: selClass, includePhotos: false })
       .then(setStudents);
-  }, [selClass, schoolId, yearId]);
+  }, [selClass, schoolId, yearId, restricted, teacherSubjects]);
 
   useEffect(() => {
     if (!selSubject || !selPeriod || !yearId) return;
@@ -1323,7 +1381,7 @@ function TabSaisie({ schoolId, yearId }: { schoolId: string; yearId: string }) {
 // ONGLET 3 — RÉSULTATS
 // ═══════════════════════════════════════════════════════════
 
-function TabResultats({ schoolId, yearId }: { schoolId: string; yearId: string }) {
+export function TabResultats({ schoolId, yearId }: { schoolId: string; yearId: string }) {
   const { selectedYear } = useYear();
   const [classes,   setClasses]   = useState<ClassItem[]>([]);
   const [periods,   setPeriods]   = useState<GradingPeriod[]>([]);

@@ -113,8 +113,8 @@ interface FieldSpec {
 /** Sections 1 et 2 (colonnes larges) : [titre, champs]. */
 const WIDE_SECTIONS: [string, FieldSpec[]][] = [
   ['1. IDENTITÉ', [
-    { label: 'Prénom:', value: s => s.firstName ?? '', placeholder: 'Non renseigné' },
-    { label: 'Nom :', value: s => s.lastName ?? '', placeholder: 'Non renseigné' },
+    { label: 'Prénom:', value: s => (s.firstName ?? '').toUpperCase(), placeholder: 'Non renseigné' },
+    { label: 'Nom :', value: s => (s.lastName ?? '').toUpperCase(), placeholder: 'Non renseigné' },
     { label: 'Matricule :', value: s => s.matricule ?? '', placeholder: 'Non renseigné' },
     { label: 'Classe :', value: s => s.className ?? '', placeholder: 'Non renseignée' },
     { label: 'Date de naissance:', value: s => formatDate(s.birthDate), placeholder: 'Non renseignée' },
@@ -240,8 +240,8 @@ const drawHeader = (doc: jsPDF, student: StudentIdentityData, school: ReceiptSch
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...BRAND);
   const schoolName = winAnsi((school.name || 'ORION COLLEGE EXPERIENCE').toUpperCase());
-  doc.setFontSize(fitSize(doc, schoolName, X(225.9), 14, 9));
-  doc.text(schoolName, X(48.1), Y(89.2));
+  doc.setFontSize(fitSize(doc, schoolName, X(225.9), 12, 8));
+  doc.text(schoolName, X(MINISTRY_CX), Y(89.2), { align: 'center' });
 
   // « Lomé-Togo / 00228 93 35 53 39 » → ville-pays / téléphone des réglages.
   doc.setFont('times', 'normal');
@@ -250,12 +250,13 @@ const drawHeader = (doc: jsPDF, student: StudentIdentityData, school: ReceiptSch
   const contact = winAnsi([loc, school.phone].filter(Boolean).join(' / '));
   if (contact) {
     doc.setFontSize(fitSize(doc, contact, X(155.1), 11, 7));
-    doc.text(contact, X(45.7), Y(103.3));
+    doc.text(contact, X(MINISTRY_CX), Y(103.3), { align: 'center' });
   }
 
-  // Logo (école → repli Orion) + cadre PHOTO à droite (photo de l'élève ou libellé).
+  // Logo de l'école au centre (repli Orion) — repris du gabarit.
   addImageSafe(doc, school.logo_url || logoAsset, X(282), Y(32.3), X(70.8), Y(72.7));
 
+  // Cadre PHOTO à droite (photo de l'élève ou libellé).
   doc.setLineWidth(1.4);
   doc.setDrawColor(...PHOTO_BORDER);
   doc.setFillColor(255, 255, 255);
