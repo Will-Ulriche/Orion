@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -9,6 +9,7 @@ import {
 interface LocalUserInfo {
   user_id: string;
   email: string;
+  username: string | null;
   status: string;
   first_name: string | null;
   last_name: string | null;
@@ -32,6 +33,14 @@ const roleStyle: Record<string, { bg: string; text: string; dot: string }> = {
   SUPER_ADMIN: { bg: 'bg-rose-50',    text: 'text-rose-700',    dot: 'bg-rose-500' },
 };
 
+// ─── Rôles réservés ──────────────────────────────────────────────────────────
+// Depuis l'espace direction, le rôle SUPER_ADMIN n'est plus attribuable :
+// ni à la création d'un compte, ni via « Changer le rôle ».
+// Le compte super administrateur se crée uniquement depuis l'espace
+// SUPER_ADMIN (gouvernance cloud). Le backend refuse aussi cette attribution.
+const RESERVED_ROLES = ['SUPER_ADMIN'];
+const isAssignableRole = (r: RoleRec) => !RESERVED_ROLES.includes(r.name);
+
 const initials = (u: LocalUserInfo) =>
   ((u.first_name?.[0] || '') + (u.last_name?.[0] || '')).toUpperCase() || u.email[0].toUpperCase();
 
@@ -48,16 +57,18 @@ const avatarColor = (email: string) => {
 function CreateUserModal({
   roles,
   schoolId,
+  actorId,
   onClose,
   onCreated,
 }: {
   roles: RoleRec[];
   schoolId: string;
+  actorId: string;
   onClose: () => void;
   onCreated: (u: LocalUserInfo) => void;
 }) {
   const [form, setForm] = useState({
-    email: '', first_name: '', last_name: '', phone: '', role_id: roles[0]?.id || ''
+    username: '', email: '', password: '', confirm: '', first_name: '', last_name: '', phone: '', role_id: roles[0]?.id || ''
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -67,8 +78,16 @@ function CreateUserModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.email || !form.first_name || !form.last_name || !form.role_id) {
+    if (!form.username || !form.email || !form.first_name || !form.last_name || !form.role_id) {
       setError('Tous les champs obligatoires (*) doivent être remplis.');
+      return;
+    }
+    if (form.password.length < 6) {
+      setError('Le mot de passe doit contenir au moins 6 caractères.');
+      return;
+    }
+    if (form.password !== form.confirm) {
+      setError('Les mots de passe ne correspondent pas.');
       return;
     }
     setLoading(true);
@@ -76,11 +95,14 @@ function CreateUserModal({
     try {
       const user = await invoke<LocalUserInfo>('create_local_user', {
         schoolId,
+        username: form.username,
         email: form.email,
+        password: form.password,
         firstName: form.first_name,
         lastName: form.last_name,
         phone: form.phone || null,
         roleId: form.role_id,
+        actorId,
       });
       onCreated(user);
       onClose();
@@ -126,7 +148,32 @@ function CreateUserModal({
           </div>
 
           <div>
-            <label className="block text-[11.5px] font-semibold text-slate-600 mb-1.5">Email *</label>
+            <label className="block text-[11.5px] font-semibold text-slate-600 mb-1.5">Nom d'utilisateur *</label>
+            <div className="relative">
+              <UserCircle2 size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input className={`${inp} pl-9`} value={form.username} onChange={field('username')} placeholder="jean.dupont" autoComplete="off" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11.5px] font-semibold text-slate-600 mb-1.5">Mot de passe *</label>
+              <div className="relative">
+                <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input type="password" className={`${inp} pl-9`} value={form.password} onChange={field('password')} placeholder="••••••" autoComplete="new-password" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-[11.5px] font-semibold text-slate-600 mb-1.5">Confirmer *</label>
+              <div className="relative">
+                <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input type="password" className={`${inp} pl-9`} value={form.confirm} onChange={field('confirm')} placeholder="••••••" autoComplete="new-password" />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11.5px] font-semibold text-slate-600 mb-1.5">Email</label>
             <div className="relative">
               <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input type="email" className={`${inp} pl-9`} value={form.email} onChange={field('email')} placeholder="jean.dupont@ecole.sn" />
@@ -151,6 +198,10 @@ function CreateUserModal({
               </select>
               <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             </div>
+            <p className="text-[10.5px] text-slate-400 mt-1.5 leading-snug">
+              Le rôle <strong className="text-slate-500">Super administrateur (SUPER_ADMIN)</strong> ne peut pas
+              être créé depuis l'espace direction.
+            </p>
           </div>
 
           {error && (
@@ -174,8 +225,8 @@ function CreateUserModal({
   );
 }
 
-// ─── Modal PIN ────────────────────────────────────────────────────────────────
-function SetPinModal({
+// ─── Modal Mot de passe ───────────────────────────────────────────────────────
+function SetPasswordModal({
   user,
   onClose,
   onSaved,
@@ -184,7 +235,7 @@ function SetPinModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [pin, setPin] = useState('');
+  const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -192,18 +243,18 @@ function SetPinModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pin.length < 4 || pin.length > 6 || !/^\d+$/.test(pin)) {
-      setError('Le PIN doit contenir entre 4 et 6 chiffres.');
+    if (password.length < 6) {
+      setError('Le mot de passe doit contenir au moins 6 caractères.');
       return;
     }
-    if (pin !== confirm) {
-      setError('Les codes PIN ne correspondent pas.');
+    if (password !== confirm) {
+      setError('Les mots de passe ne correspondent pas.');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      await invoke('set_user_pin', { userId: user.user_id, pin });
+      await invoke('set_user_password', { userId: user.user_id, password });
       setSuccess(true);
       setTimeout(() => { onSaved(); onClose(); }, 1200);
     } catch (err: any) {
@@ -214,7 +265,7 @@ function SetPinModal({
   };
 
   const name = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() || user.email;
-  const inp = 'w-full px-4 py-3 text-2xl tracking-[0.5em] text-center rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 outline-none transition-all font-mono';
+  const inp = 'w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 outline-none transition-all';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -225,7 +276,7 @@ function SetPinModal({
               <KeyRound size={18} />
             </div>
             <div>
-              <h3 className="font-bold text-slate-800 text-[15px]">Définir un code PIN</h3>
+              <h3 className="font-bold text-slate-800 text-[15px]">Définir un mot de passe</h3>
               <p className="text-[11.5px] text-slate-400">{name}</p>
             </div>
           </div>
@@ -240,31 +291,29 @@ function SetPinModal({
               <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
                 <Check size={28} className="text-green-600" />
               </div>
-              <p className="font-semibold text-slate-700">Code PIN enregistré !</p>
+              <p className="font-semibold text-slate-700">Mot de passe enregistré !</p>
             </div>
           ) : (
             <>
               <div>
-                <label className="block text-[11.5px] font-semibold text-slate-600 mb-2">Nouveau code PIN (4–6 chiffres)</label>
+                <label className="block text-[11.5px] font-semibold text-slate-600 mb-2">Nouveau mot de passe (min. 6 caractères)</label>
                 <input
                   type="password"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={pin}
-                  onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
-                  placeholder="••••"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="new-password"
                   className={inp}
                 />
               </div>
               <div>
-                <label className="block text-[11.5px] font-semibold text-slate-600 mb-2">Confirmer le code PIN</label>
+                <label className="block text-[11.5px] font-semibold text-slate-600 mb-2">Confirmer le mot de passe</label>
                 <input
                   type="password"
-                  inputMode="numeric"
-                  maxLength={6}
                   value={confirm}
-                  onChange={e => setConfirm(e.target.value.replace(/\D/g, ''))}
-                  placeholder="••••"
+                  onChange={e => setConfirm(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="new-password"
                   className={inp}
                 />
               </div>
@@ -277,7 +326,7 @@ function SetPinModal({
                 <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">Annuler</button>
                 <button type="submit" disabled={loading} className="flex-1 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-60">
                   {loading ? <RefreshCw size={14} className="animate-spin" /> : <KeyRound size={14} />}
-                  {loading ? 'Enregistrement...' : 'Enregistrer le PIN'}
+                  {loading ? 'Enregistrement...' : 'Enregistrer'}
                 </button>
               </div>
             </>
@@ -293,6 +342,7 @@ function UserRow({
   user,
   roles,
   schoolId,
+  actorId,
   onToggle,
   onRoleChange,
   onDelete,
@@ -300,31 +350,52 @@ function UserRow({
   user: LocalUserInfo;
   roles: RoleRec[];
   schoolId: string;
+  actorId: string;
   onToggle: (u: LocalUserInfo) => void;
   onRoleChange: (userId: string, roleId: string) => void;
   onDelete: (u: LocalUserInfo) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 });
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 0, maxHeight: 0 });
   const [changingRole, setChangingRole] = useState(false);
-  const [showPinModal, setShowPinModal] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const style = roleStyle[user.role_name || ''] ?? { bg: 'bg-slate-100', text: 'text-slate-600', dot: 'bg-slate-400' };
   const isActive = user.status === 'ACTIVE';
 
-  const openMenu = () => {
-    if (btnRef.current) {
-      const rect = btnRef.current.getBoundingClientRect();
-      setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+  const openMenu = () => setMenuOpen(true);
+
+  useLayoutEffect(() => {
+    if (!menuOpen) return;
+    const btn = btnRef.current;
+    const menu = menuRef.current;
+    if (!btn || !menu) return;
+    const margin = 8;
+    const gap = 4;
+    const rect = btn.getBoundingClientRect();
+    const menuH = menu.offsetHeight;
+    const right = Math.max(margin, window.innerWidth - rect.right);
+    const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
+    const spaceAbove = rect.top - gap - margin;
+
+    let top: number;
+    let maxHeight: number;
+    if (menuH <= spaceBelow || spaceBelow >= spaceAbove) {
+      top = rect.bottom + gap;
+      maxHeight = Math.max(120, spaceBelow);
+    } else {
+      maxHeight = Math.max(120, spaceAbove);
+      top = rect.top - gap - Math.min(menuH, maxHeight);
     }
-    setMenuOpen(true);
-  };
+    setMenuPos({ top, right, maxHeight });
+  }, [menuOpen]);
 
   const handleRoleChange = async (roleId: string) => {
     setChangingRole(true);
     setMenuOpen(false);
     try {
-      await invoke('assign_user_role', { userId: user.user_id, schoolId, roleId });
+      await invoke('assign_user_role', { userId: user.user_id, schoolId, roleId, actorId });
       onRoleChange(user.user_id, roleId);
     } catch (err) {
       console.error(err);
@@ -347,7 +418,10 @@ function UserRow({
           </div>
           <div className="min-w-0">
             <p className="font-semibold text-slate-800 text-[13.5px] leading-tight truncate">{fullName}</p>
-            <p className="text-[11.5px] text-slate-400 truncate flex items-center gap-1 mt-0.5">
+            <p className="text-[11.5px] text-indigo-500 font-medium truncate flex items-center gap-1 mt-0.5">
+              <UserCircle2 size={10} /> {user.username ?? '—'}
+            </p>
+            <p className="text-[11px] text-slate-400 truncate flex items-center gap-1 mt-0.5">
               <Mail size={10} /> {user.email}
             </p>
           </div>
@@ -393,8 +467,9 @@ function UserRow({
           <>
             <div className="fixed inset-0 z-[100]" onClick={() => setMenuOpen(false)} />
             <div
-              className="fixed z-[101] bg-white rounded-xl border border-slate-200 shadow-xl w-52 overflow-hidden py-1"
-              style={{ top: menuPos.top, right: menuPos.right }}
+              ref={menuRef}
+              className="fixed z-[101] bg-white rounded-xl border border-slate-200 shadow-xl w-52 overflow-y-auto py-1"
+              style={{ top: menuPos.top, right: menuPos.right, maxHeight: menuPos.maxHeight || undefined }}
             >
               <p className="px-3 pt-2 pb-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Changer le rôle</p>
               {roles.map(r => (
@@ -410,10 +485,10 @@ function UserRow({
               ))}
               <div className="border-t border-slate-100 mt-1 pt-1">
                 <button
-                  onClick={() => { setMenuOpen(false); setShowPinModal(true); }}
+                  onClick={() => { setMenuOpen(false); setShowPasswordModal(true); }}
                   className="w-full text-left px-3 py-2 text-sm text-amber-600 hover:bg-amber-50 flex items-center gap-2"
                 >
-                  <KeyRound size={13} /> Définir / changer le PIN
+                  <KeyRound size={13} /> Définir / changer le mot de passe
                 </button>
                 <button
                   onClick={() => { setMenuOpen(false); onToggle(user); }}
@@ -434,11 +509,11 @@ function UserRow({
         )}
       </td>
 
-      {/* Modal PIN */}
-      {showPinModal && (
-        <SetPinModal
+      {/* Modal mot de passe */}
+      {showPasswordModal && (
+        <SetPasswordModal
           user={user}
-          onClose={() => setShowPinModal(false)}
+          onClose={() => setShowPasswordModal(false)}
           onSaved={() => {}}
         />
       )}
@@ -448,7 +523,8 @@ function UserRow({
 
 // ─── Page principale ─────────────────────────────────────────────────────────
 export default function UsersPage() {
-  const { schoolId } = useAuth();
+  const { schoolId, user: currentUser } = useAuth();
+  const actorId = currentUser?.id ?? '';
   const [users, setUsers] = useState<LocalUserInfo[]>([]);
   const [roles, setRoles] = useState<RoleRec[]>([]);
   const [search, setSearch] = useState('');
@@ -468,7 +544,8 @@ export default function UsersPage() {
         invoke<RoleRec[]>('get_roles'),
       ]);
       setUsers(usersData);
-      setRoles(rolesData);
+      // SUPER_ADMIN n'est plus attribuable depuis l'espace direction
+      setRoles(rolesData.filter(isAssignableRole));
     } catch (err) {
       console.error(err);
     } finally {
@@ -623,6 +700,7 @@ export default function UsersPage() {
                   user={user}
                   roles={roles}
                   schoolId={schoolId}
+                  actorId={actorId}
                   onToggle={handleToggle}
                   onRoleChange={handleRoleChange}
                   onDelete={setDeleteTarget}
@@ -640,6 +718,7 @@ export default function UsersPage() {
         <CreateUserModal
           roles={roles}
           schoolId={schoolId}
+          actorId={actorId}
           onClose={() => setShowCreate(false)}
           onCreated={u => setUsers(prev => [u, ...prev])}
         />
@@ -667,7 +746,7 @@ export default function UsersPage() {
                 <p className="text-[11px] font-medium text-indigo-600 mt-1">{deleteTarget.role_name}</p>
               </div>
               <p className="text-xs text-rose-600 font-medium bg-rose-50 rounded-lg p-2 mb-4">
-                Cette action supprimera également son profil, ses rôles et son code PIN.
+                Cette action supprimera également son profil, ses rôles et son mot de passe.
               </p>
 
               {deleteError && (

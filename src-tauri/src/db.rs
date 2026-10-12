@@ -27,6 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/20_seed_users.sql"),
     include_str!("../migrations/21_set_direction_pin.sql"),
     include_str!("../migrations/22_set_admin_pin.sql"),
+    include_str!("../migrations/23_local_auth_password.sql"),
 ];
 
 pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {

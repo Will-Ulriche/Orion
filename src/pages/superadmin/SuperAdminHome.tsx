@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, ArrowRight, Cloud, WifiOff, ShieldCheck,
+  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, ArrowRight, Cloud, WifiOff, ShieldCheck, BarChart2,
 } from 'lucide-react';
 import { Badge, Btn, Card, Kpi } from '../../components/ui';
 import SuperAdminShell from './SuperAdminShell';
 import { getStats, type SuperAdminStats } from '../../lib/superAdminApi';
 
 const QUICK_LINKS = [
-  { to: '/super-admin/ecoles', icon: Building2, label: 'Établissements', desc: 'Créer et gérer les écoles de base' },
-  { to: '/super-admin/licences', icon: KeyRound, label: 'Licences', desc: 'Générer et attribuer les licences' },
-  { to: '/super-admin/appareils', icon: MonitorSmartphone, label: 'Appareils', desc: 'Suivre les postes activés' },
+  { to: '/super-admin/ecoles',    icon: Building2,       label: 'Établissements',    desc: 'Créer et gérer les écoles' },
+  { to: '/super-admin/comptes',   icon: KeyRound,        label: 'Identifiants & Accès', desc: 'Voir et réinitialiser les comptes écoles' },
+  { to: '/super-admin/licences',  icon: ShieldCheck,     label: 'Licences',          desc: 'Générer et attribuer les licences' },
+  { to: '/super-admin/appareils', icon: MonitorSmartphone, label: 'Appareils',         desc: 'Suivre les postes activés' },
+  { to: '/super-admin/stats',     icon: BarChart2,       label: 'Statistiques',       desc: 'Analytiques, graphiques et alertes' },
 ];
 
 export default function SuperAdminHome() {

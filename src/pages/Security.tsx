@@ -1,14 +1,18 @@
-import { useState } from 'react';
-import { ShieldCheck, Wallet, Calendar, ArrowDownUp } from 'lucide-react';
-import Profils from './Profils';
+import { useSearchParams } from 'react-router-dom';
+import { ShieldCheck, Calendar, ArrowDownUp } from 'lucide-react';
 import Appareils from './Appareils';
 import Licences from './Licences';
 
 export default function Security() {
-  const [activeTab, setActiveTab] = useState<'profils' | 'appareils' | 'licence'>('profils');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab: 'appareils' | 'licence' =
+    searchParams.get('tab') === 'licence' ? 'licence' : 'appareils';
+
+  const setActiveTab = (key: 'appareils' | 'licence') => {
+    setSearchParams(key === 'licence' ? { tab: 'licence' } : {}, { replace: true });
+  };
 
   const TABS = [
-    { key: 'profils', label: 'Profils & Rôles', icon: <Wallet size={16} /> },
     { key: 'appareils', label: 'Appareils', icon: <Calendar size={16} /> },
     { key: 'licence', label: 'Licence', icon: <ArrowDownUp size={16} /> },
   ] as const;
@@ -21,7 +25,7 @@ export default function Security() {
           Sécurité et Accès
         </h2>
         <p className="text-slate-500 mt-1 text-[13px]">
-          Gérez les permissions, les appareils autorisés et votre licence d'utilisation.
+          Gérez les appareils autorisés et votre licence d'utilisation.
         </p>
       </div>
 
@@ -43,7 +47,6 @@ export default function Security() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="bg-white rounded-[24px] border border-slate-100 shadow-sm p-8 min-h-full">
-          {activeTab === 'profils' && <Profils />}
           {activeTab === 'appareils' && <Appareils />}
           {activeTab === 'licence' && <Licences />}
         </div>

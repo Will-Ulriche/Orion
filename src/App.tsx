@@ -20,8 +20,11 @@ import Archives from './pages/Archives';
 import UsersPage from './pages/UsersPage';
 import SuperAdminHome from './pages/superadmin/SuperAdminHome';
 import Ecoles from './pages/superadmin/Ecoles';
+import ComptesSuperAdmin from './pages/superadmin/ComptesSuperAdmin';
 import LicencesSuperAdmin from './pages/superadmin/LicencesSuperAdmin';
 import AppareilsSuperAdmin from './pages/superadmin/AppareilsSuperAdmin';
+import StatsSuperAdmin from './pages/superadmin/StatsSuperAdmin';
+import LicenseGuard from './components/LicenseGuard';
 import './App.css';
 
 // Route protégée : redirige vers /login si non connecté
@@ -67,8 +70,13 @@ const PublicRoute = ({ children }: { children: React.ReactNode }) => {
 };
 
 // Accueil : le SUPER_ADMIN est redirigé vers son espace dédié
+// mais si on a forcé un changement d'établissement (via super-admin),
+// on reste sur l'espace direction de l'établissement ouvert.
 const HomeRoute = () => {
-  const { roles, rolesLoaded } = useAuth();
+  const { roles, rolesLoaded, inSchoolMode } = useAuth();
+  if (inSchoolMode) {
+    return <Dashboard />;
+  }
   if (rolesLoaded && roles.includes('SUPER_ADMIN')) return <Navigate to="/super-admin" replace />;
   return <Dashboard />;
 };
@@ -91,7 +99,9 @@ function AppRoutes() {
       <Route
         element={
           <ProtectedRoute>
-            <Layout />
+            <LicenseGuard>
+              <Layout />
+            </LicenseGuard>
           </ProtectedRoute>
         }
       >
@@ -100,8 +110,10 @@ function AppRoutes() {
         {/* Espace SUPER_ADMIN — école de base + licences (cloud) */}
         <Route path="/super-admin" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><SuperAdminHome /></RoleProtectedRoute>} />
         <Route path="/super-admin/ecoles" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><Ecoles /></RoleProtectedRoute>} />
+        <Route path="/super-admin/comptes" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><ComptesSuperAdmin /></RoleProtectedRoute>} />
         <Route path="/super-admin/licences" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><LicencesSuperAdmin /></RoleProtectedRoute>} />
         <Route path="/super-admin/appareils" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><AppareilsSuperAdmin /></RoleProtectedRoute>} />
+        <Route path="/super-admin/stats" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><StatsSuperAdmin /></RoleProtectedRoute>} />
         
         {/* Réservé à DIRECTION, SECRETAIRE, SUPER_ADMIN */}
         <Route path="/students" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><StudentsMigration /></RoleProtectedRoute>} />
@@ -118,7 +130,7 @@ function AppRoutes() {
         
         {/* Accès commun à tous (avec restrictions internes gérées dans la page si besoin) */}
         <Route path="/pedagogie" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE', 'PROFESSEUR']}><Pedagogie /></RoleProtectedRoute>} />
-        <Route path="/recap-notes" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE', 'PROFESSEUR']}><RecapNotes /></RoleProtectedRoute>} />
+        <Route path="/recap-notes" element={<RoleProtectedRoute allowedRoles={['PROFESSEUR']}><RecapNotes /></RoleProtectedRoute>} />
         <Route path="/account" element={<Account />} />
       </Route>
 

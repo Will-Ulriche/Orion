@@ -1,12 +1,14 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart,
   Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins, BookOpen, UserCog, Archive, Shield, UserPlus, ClipboardList,
-  LayoutDashboard, Building2, KeyRound, MonitorSmartphone
+  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, WifiOff, ShieldCheck, BarChart2
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import YearSelector from './YearSelector';
+import orionLogo from '../assets/orion_logo.png';
 
 // Remplacement des icônes pour coller exactement au style "piqowallet" 
 // tout en gardant vos routes.
@@ -17,7 +19,7 @@ const manageItems = [
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/finances', icon: Coins, label: 'Finances & Paiements', roles: ['DIRECTION'] },
   { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Notes', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
-  { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
+  { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ['PROFESSEUR'] },
   { to: '/personnel', icon: UserCog, label: 'Personnel', roles: ['DIRECTION'] },
   { to: '/users', icon: UserPlus, label: 'Utilisateurs', roles: ['DIRECTION'] },
 ];
@@ -30,15 +32,38 @@ const settingsItems = [
 
 // Menu dédié au SUPER_ADMIN : école de base + licences (gérés dans le cloud).
 const superAdminItems = [
-  { to: '/super-admin', icon: LayoutDashboard, label: 'Vue globale', roles: ['SUPER_ADMIN'], end: true },
-  { to: '/super-admin/ecoles', icon: Building2, label: 'Établissements', roles: ['SUPER_ADMIN'] },
-  { to: '/super-admin/licences', icon: KeyRound, label: 'Licences', roles: ['SUPER_ADMIN'] },
-  { to: '/super-admin/appareils', icon: MonitorSmartphone, label: 'Appareils', roles: ['SUPER_ADMIN'] },
+  { to: '/super-admin',          icon: LayoutDashboard,    label: 'Vue globale',        roles: ['SUPER_ADMIN'], end: true },
+  { to: '/super-admin/ecoles',   icon: Building2,          label: 'Établissements',     roles: ['SUPER_ADMIN'] },
+  { to: '/super-admin/comptes',  icon: KeyRound,           label: 'Identifiants & Accès', roles: ['SUPER_ADMIN'] },
+  { to: '/super-admin/licences', icon: Shield,             label: 'Licences',           roles: ['SUPER_ADMIN'] },
+  { to: '/super-admin/appareils',icon: MonitorSmartphone,  label: 'Appareils',          roles: ['SUPER_ADMIN'] },
+  { to: '/super-admin/stats',    icon: BarChart2,          label: 'Statistiques',       roles: ['SUPER_ADMIN'] },
 ];
 
 export default function Sidebar() {
-  const { user, roles, rolesLoaded } = useAuth();
+  const { user, roles, rolesLoaded, inSchoolMode, forcedSchoolName, exitSchoolMode, schoolId } = useAuth();
+  const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
+  const [schoolName, setSchoolName] = useState('');
+
+  useEffect(() => {
+    // En mode « direction » (visite d'un établissement depuis le SUPER_ADMIN),
+    // on affiche le nom de l'établissement visité.
+    if (inSchoolMode && forcedSchoolName) {
+      setSchoolName(forcedSchoolName);
+      return;
+    }
+    let cancelled = false;
+    invoke<any>('get_school_settings')
+      .then(s => { if (!cancelled && s?.name) setSchoolName(s.name); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [inSchoolMode, forcedSchoolName, schoolId]);
+
+  const handleExitSchoolMode = () => {
+    exitSchoolMode();
+    navigate('/super-admin/ecoles', { replace: true });
+  };
 
   const displayName = user?.email?.split('@')[0] ?? 'Direction';
   const email = user?.email ?? 'direction@orion.com';
@@ -50,8 +75,10 @@ export default function Sidebar() {
     return roles.some(r => itemRoles.includes(r) || r === 'SUPER_ADMIN');
   };
 
-  // Le SUPER_ADMIN dispose d'un espace dédié (écoles + licences, gérés dans le cloud)
-  const isSuperAdmin = rolesLoaded && roles.includes('SUPER_ADMIN');
+  // Le SUPER_ADMIN dispose d'un espace dédié (écoles + licences, gérés dans le cloud).
+  // Sauf lorsqu'il visite l'espace d'un établissement : là, il voit l'interface
+  // exactement comme la direction de cet établissement.
+  const isSuperAdmin = rolesLoaded && roles.includes('SUPER_ADMIN') && !inSchoolMode;
 
   const visibleManageItems = manageItems.filter(item => hasAccess(item.roles));
   const visibleSettingsItems = settingsItems.filter(item => hasAccess(item.roles));
@@ -83,21 +110,66 @@ export default function Sidebar() {
       </div>
 
       {/* Logo */}
-      <div className={`flex items-center gap-3 px-6 py-3 ${collapsed ? 'justify-center px-0' : ''}`}>
-        <div className="w-8 h-8 rounded-full bg-[#3b82f6] flex items-center justify-center text-white font-bold text-xl flex-shrink-0">
-          O
+      <div className="px-4 pt-4 pb-3">
+        <div className={`flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 ${collapsed ? 'justify-center px-2' : ''}`}>
+          <img
+            src={orionLogo}
+            alt="Orion"
+            className="h-9 w-9 flex-shrink-0 object-contain"
+          />
+          {!collapsed && (
+            <span className="text-2xl text-slate-200 font-medium tracking-wide">
+              Orion <span className="font-light italic">Exp</span>
+            </span>
+          )}
         </div>
-        {!collapsed && (
-          <span className="text-xl text-slate-200 font-medium tracking-wide">
-            orion<span className="font-light">erp</span>
-          </span>
-        )}
       </div>
+
+      {/* Nom de l'établissement — sous le logo (masqué pour le SUPER_ADMIN) */}
+      {!isSuperAdmin && (
+        <div className={`px-6 pt-3 pb-3 ${collapsed ? 'flex justify-center px-0' : ''}`}>
+          {collapsed ? (
+            <span
+              className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/5 text-[13px] font-bold text-slate-300"
+              title={schoolName || "Nom de l'établissement"}
+            >
+              {(schoolName || 'E').charAt(0).toUpperCase()}
+            </span>
+          ) : (
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Établissement</p>
+              <p className="mt-0.5 truncate text-[13.5px] font-semibold text-slate-100" title={schoolName || "Nom de l'établissement"}>
+                {schoolName || "Nom de l'établissement"}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {!isSuperAdmin && <YearSelector collapsed={collapsed} />}
 
+      {/* Mode visite d'un établissement : retour possible à l'espace super admin */}
+      {inSchoolMode && (
+        <div className={`pt-1 pb-2 ${collapsed ? 'px-2' : 'px-4'}`}>
+          <button
+            onClick={handleExitSchoolMode}
+            title="Quitter l'espace de l'établissement et revenir à l'espace super administrateur"
+            className={`w-full flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 py-2 text-[11px] font-semibold text-amber-300 hover:bg-amber-400/20 transition-colors ${collapsed ? 'justify-center px-0' : 'px-3'}`}
+          >
+            <ShieldCheck size={14} className="flex-shrink-0" />
+            {!collapsed && <span className="truncate">Retour espace super admin</span>}
+          </button>
+        </div>
+      )}
+
+      {/* Séparation entre le bloc logo et le menu (espace libéré par
+          l'établissement/année masqués en mode SUPER_ADMIN) */}
+      {isSuperAdmin && (
+        <div className="mx-6 mt-4 mb-3 border-t border-white/10" />
+      )}
+
       {/* Navigation */}
-      <nav className="flex-1 py-1 overflow-y-auto overflow-x-hidden flex flex-col gap-1">
+      <nav className={`flex-1 py-1 overflow-y-auto overflow-x-hidden flex flex-col gap-1 ${isSuperAdmin ? 'mt-4' : ''}`}>
 
         {/* MANAGE Section */}
         <div>
@@ -189,16 +261,21 @@ function UserProfileMenu({
 
               {/* Badge offline */}
               {isOffline && (
-                <div
-                  className="mt-2 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium w-fit"
-                  style={{
-                    background: 'rgba(251,191,36,0.12)',
-                    border: '1px solid rgba(251,191,36,0.25)',
-                    color: '#fbbf24',
-                  }}
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
-                  Mode hors-ligne
+                <div className="mt-3 flex items-center gap-2.5 px-1">
+                  <span
+                    className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg"
+                    style={{ background: 'rgba(251,191,36,0.16)', color: '#fbbf24' }}
+                  >
+                    <WifiOff size={13} />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold leading-tight" style={{ color: '#fbbf24' }}>
+                      Mode hors-ligne
+                    </p>
+                    <p className="text-[10px] leading-tight text-slate-500">
+                      Données enregistrées localement
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
@@ -212,15 +289,6 @@ function UserProfileMenu({
               >
                 <UserCog size={15} />
                 Mon compte
-              </NavLink>
-
-              <NavLink
-                to="/settings"
-                onClick={() => setOpen(false)}
-                className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-slate-400 hover:text-slate-100 hover:bg-white/5 transition-colors mt-1"
-              >
-                <Settings size={15} />
-                Paramètres de l'établissement
               </NavLink>
 
               <div className="h-px bg-white/5 my-1" />

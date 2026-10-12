@@ -908,10 +908,12 @@ pub fn sync_local_user(user_id: String, email: String, school_id: String, school
         rusqlite::params![school_id, school_name],
     ).map_err(|e| format!("Erreur sync école: {}", e))?;
 
-    // Upsert user
+    // Upsert user — le nom d'utilisateur par défaut reprend l'email pour
+    // permettre au compte cloud de se reconnecter localement.
     conn.execute(
-        "INSERT INTO users (id, email) VALUES (?1, ?2) 
-         ON CONFLICT(id) DO UPDATE SET email = excluded.email",
+        "INSERT INTO users (id, email, username) VALUES (?1, ?2, ?2)
+         ON CONFLICT(id) DO UPDATE SET email = excluded.email,
+             username = COALESCE(users.username, excluded.username)",
         rusqlite::params![user_id, email],
     ).map_err(|e| format!("Erreur sync utilisateur: {}", e))?;
 
@@ -3683,6 +3685,7 @@ pub fn get_roles(state: State<'_, DbState>) -> Result<Vec<RoleRec>, String> {
 pub struct LocalUserInfo {
     pub user_id: String,
     pub email: String,
+    pub username: Option<String>,
     pub status: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
@@ -3698,7 +3701,7 @@ pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
 
     let mut stmt = conn.prepare(
-        "SELECT u.id, u.email, u.status, p.first_name, p.last_name, p.phone,
+        "SELECT u.id, u.email, u.username, u.status, p.first_name, p.last_name, p.phone,
                 r.name as role_name, r.id as role_id, p.id as profile_id, u.created_at
          FROM users u
          LEFT JOIN profiles p ON p.user_id = u.id AND p.school_id = ?1 AND p.deleted_at IS NULL
@@ -3716,14 +3719,15 @@ pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<
         Ok(LocalUserInfo {
             user_id: row.get(0)?,
             email: row.get(1)?,
-            status: row.get(2)?,
-            first_name: row.get(3)?,
-            last_name: row.get(4)?,
-            phone: row.get(5)?,
-            role_name: row.get(6)?,
-            role_id: row.get(7)?,
-            profile_id: row.get(8)?,
-            created_at: row.get(9)?,
+            username: row.get(2)?,
+            status: row.get(3)?,
+            first_name: row.get(4)?,
+            last_name: row.get(5)?,
+            phone: row.get(6)?,
+            role_name: row.get(7)?,
+            role_id: row.get(8)?,
+            profile_id: row.get(9)?,
+            created_at: row.get(10)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -3734,17 +3738,57 @@ pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<
     Ok(users)
 }
 
+/// Garde-fou : le rôle SUPER_ADMIN n'est plus attribuable depuis l'espace
+/// direction (page Utilisateurs) — ni à la création d'un compte
+/// (`create_local_user`), ni lors d'un changement de rôle (`assign_user_role`).
+/// Ce rôle est réservé à la gouvernance de l'espace SUPER_ADMIN : il est
+/// attribué automatiquement lors de la connexion en ligne
+/// (cf. `set_local_user_role`), jamais depuis cette page.
+fn guard_super_admin_assignment(
+    conn: &rusqlite::Connection,
+    _actor_id: &str,
+    role_id: &str,
+) -> Result<(), String> {
+    let target_role: Option<String> = conn.query_row(
+        "SELECT name FROM roles WHERE id = ?1",
+        rusqlite::params![role_id],
+        |row| row.get(0),
+    ).ok();
+
+    if target_role.as_deref() == Some("SUPER_ADMIN") {
+        return Err(
+            "Le rôle Super administrateur (SUPER_ADMIN) ne peut plus être créé ni attribué \
+             depuis l'espace direction. Utilisez l'espace super administrateur."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn create_local_user(
     school_id: String,
+    username: String,
     email: String,
+    password: String,
     first_name: String,
     last_name: String,
     phone: Option<String>,
     role_id: String,
+    actor_id: String,
     state: State<'_, DbState>
 ) -> Result<LocalUserInfo, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+
+    guard_super_admin_assignment(&conn, &actor_id, &role_id)?;
+
+    let username = username.trim().to_string();
+    if username.is_empty() {
+        return Err("Le nom d'utilisateur est obligatoire.".to_string());
+    }
+    if password.chars().count() < 6 {
+        return Err("Le mot de passe doit contenir au moins 6 caractères.".to_string());
+    }
 
     // Vérifier si l'email existe déjà
     let exists: i64 = conn.query_row(
@@ -3757,14 +3801,29 @@ pub fn create_local_user(
         return Err(format!("Un utilisateur avec l'email {} existe déjà.", email));
     }
 
+    // Vérifier si le nom d'utilisateur est déjà pris (insensible à la casse)
+    let username_exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE username = ?1 COLLATE NOCASE",
+        rusqlite::params![username],
+        |row| row.get(0)
+    ).unwrap_or(0);
+
+    if username_exists > 0 {
+        return Err(format!("Le nom d'utilisateur « {} » est déjà utilisé.", username));
+    }
+
+    let password_hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST)
+        .map_err(|e| format!("Erreur de hachage du mot de passe: {}", e))?;
+
     let user_id = format!("local-{}", uuid_v4());
     let profile_id = format!("prof-{}", uuid_v4());
     let role_assign_id = format!("ur-{}", uuid_v4());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     conn.execute(
-        "INSERT INTO users (id, email, status, created_at, updated_at) VALUES (?1, ?2, 'ACTIVE', ?3, ?3)",
-        rusqlite::params![user_id, email, now]
+        "INSERT INTO users (id, email, username, password_hash, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5, ?5)",
+        rusqlite::params![user_id, email, username, password_hash, now]
     ).map_err(|e| e.to_string())?;
 
     conn.execute(
@@ -3787,6 +3846,7 @@ pub fn create_local_user(
     Ok(LocalUserInfo {
         user_id,
         email,
+        username: Some(username),
         status: "ACTIVE".to_string(),
         first_name: Some(first_name),
         last_name: Some(last_name),
@@ -3824,8 +3884,11 @@ pub fn toggle_user_status(user_id: String, new_status: String, state: State<'_, 
 }
 
 #[tauri::command]
-pub fn assign_user_role(user_id: String, school_id: String, role_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn assign_user_role(user_id: String, school_id: String, role_id: String, actor_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+
+    guard_super_admin_assignment(&conn, &actor_id, &role_id)?;
+
     // Supprimer l'ancien rôle pour cet école
     conn.execute(
         "DELETE FROM user_roles WHERE user_id = ?1 AND school_id = ?2",
@@ -3854,67 +3917,31 @@ pub fn delete_local_user(user_id: String, state: State<'_, DbState>) -> Result<(
 }
 
 // ──────────────────────────────────────────────
-// COMMANDES : Authentification par code PIN
+// COMMANDES : Authentification locale
+// (identifiant + mot de passe attribués par la Direction)
 // ──────────────────────────────────────────────
 
 #[derive(serde::Serialize, Clone)]
 pub struct LoginProfile {
     pub user_id: String,
     pub email: String,
+    pub username: Option<String>,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
     pub role_name: Option<String>,
-    pub has_pin: bool,
 }
 
-/// Retourne la liste des profils disponibles pour la sélection de compte au login
+/// Définit ou change le mot de passe d'un utilisateur (réservé à la Direction)
 #[tauri::command]
-pub fn get_school_users_for_login(school_id: String, state: State<'_, DbState>) -> Result<Vec<LoginProfile>, String> {
-    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-
-    let mut stmt = conn.prepare(
-        "SELECT u.id, u.email,
-                p.first_name, p.last_name,
-                r.name as role_name,
-                CASE WHEN u.password_hash IS NOT NULL AND u.password_hash != '' THEN 1 ELSE 0 END as has_pin
-         FROM users u
-         LEFT JOIN profiles p ON p.user_id = u.id AND p.school_id = ?1
-         LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ?1
-         LEFT JOIN roles r ON r.id = ur.role_id
-         WHERE u.status = 'ACTIVE'
-           AND EXISTS (
-               SELECT 1 FROM profiles p2 WHERE p2.user_id = u.id AND p2.school_id = ?1
-           )
-         ORDER BY p.last_name ASC"
-    ).map_err(|e| e.to_string())?;
-
-    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
-        Ok(LoginProfile {
-            user_id: row.get(0)?,
-            email: row.get(1)?,
-            first_name: row.get(2)?,
-            last_name: row.get(3)?,
-            role_name: row.get(4)?,
-            has_pin: row.get::<_, i64>(5).unwrap_or(0) == 1,
-        })
-    }).map_err(|e| e.to_string())?;
-
-    let mut profiles = Vec::new();
-    for r in rows { if let Ok(p) = r { profiles.push(p); } }
-    Ok(profiles)
-}
-
-/// Définit ou change le PIN d'un utilisateur (réservé au Directeur)
-#[tauri::command]
-pub fn set_user_pin(user_id: String, pin: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn set_user_password(user_id: String, password: String, state: State<'_, DbState>) -> Result<(), String> {
     use bcrypt::{hash, DEFAULT_COST};
 
-    if pin.len() < 4 || pin.len() > 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
-        return Err("Le PIN doit contenir entre 4 et 6 chiffres.".to_string());
+    if password.chars().count() < 6 {
+        return Err("Le mot de passe doit contenir au moins 6 caractères.".to_string());
     }
 
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let hashed = hash(&pin, DEFAULT_COST).map_err(|e| format!("Erreur hash: {}", e))?;
+    let hashed = hash(&password, DEFAULT_COST).map_err(|e| format!("Erreur hash: {}", e))?;
 
     conn.execute(
         "UPDATE users SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
@@ -3924,33 +3951,96 @@ pub fn set_user_pin(user_id: String, pin: String, state: State<'_, DbState>) -> 
     Ok(())
 }
 
-/// Connexion locale par sélection de profil + code PIN
+/// Identifiant et mot de passe maîtres pour accéder au compte SUPER_ADMIN.
+/// Cette règle est la seule valable pour entrer sur le compte super administrateur.
+pub const SUPER_ADMIN_IDENTIFIER: &str = "Admin";
+pub const SUPER_ADMIN_MASTER_PASSWORD: &str = "@admin@//10";
+
+/// Connexion locale par identifiant (nom d'utilisateur ou email) + mot de passe
 #[tauri::command]
-pub fn login_with_pin(user_id: String, pin: String, school_id: String, state: State<'_, DbState>) -> Result<LoginProfile, String> {
+pub fn login_local(identifier: String, password: String, school_id: String, state: State<'_, DbState>) -> Result<LoginProfile, String> {
     use bcrypt::verify;
 
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
 
-    let (email, hash_str, status): (String, Option<String>, String) = conn.query_row(
-        "SELECT email, password_hash, status FROM users WHERE id = ?1",
-        rusqlite::params![user_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).map_err(|_| "Utilisateur introuvable.".to_string())?;
+    let ident = identifier.trim();
+    if ident.is_empty() || password.is_empty() {
+        return Err("Identifiant ou mot de passe incorrect.".to_string());
+    }
+
+    // ─── Règle SUPER_ADMIN : identifiant « Admin » + mot de passe maître ───
+    // Se lie au compte SUPER_ADMIN déjà présent sur l'appareil (créé via la
+    // connexion en ligne). Aucun compte n'est créé ici.
+    if ident.eq_ignore_ascii_case(SUPER_ADMIN_IDENTIFIER) {
+        if password != SUPER_ADMIN_MASTER_PASSWORD {
+            return Err("Mot de passe incorrect.".to_string());
+        }
+
+        let (sa_id, sa_email, sa_username): (String, String, Option<String>) = conn.query_row(
+            "SELECT u.id, u.email, u.username
+             FROM users u
+             JOIN user_roles ur ON ur.user_id = u.id
+             JOIN roles r ON r.id = ur.role_id
+             WHERE r.name = 'SUPER_ADMIN' AND u.status = 'ACTIVE'
+             ORDER BY CASE WHEN ur.school_id = ?1 THEN 0 ELSE 1 END
+             LIMIT 1",
+            rusqlite::params![school_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).map_err(|_| "Aucun compte administrateur (SUPER_ADMIN) n'existe sur cet appareil. Connectez-vous d'abord en ligne pour l'activer.".to_string())?;
+
+        let (sa_first, sa_last, sa_role): (Option<String>, Option<String>, Option<String>) = conn.query_row(
+            "SELECT p.first_name, p.last_name, r.name
+             FROM users u
+             LEFT JOIN profiles p ON p.user_id = u.id AND p.deleted_at IS NULL
+             LEFT JOIN user_roles ur ON ur.user_id = u.id
+             LEFT JOIN roles r ON r.id = ur.role_id
+             WHERE u.id = ?1
+             LIMIT 1",
+            rusqlite::params![sa_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap_or((None, None, Some("SUPER_ADMIN".to_string())));
+
+        return Ok(LoginProfile {
+            user_id: sa_id,
+            email: sa_email,
+            username: sa_username,
+            first_name: sa_first,
+            last_name: sa_last,
+            role_name: Some(sa_role.unwrap_or_else(|| "SUPER_ADMIN".to_string())),
+        });
+    }
+
+    let (user_id, email, username, status, hash_str): (String, String, Option<String>, String, Option<String>) = conn.query_row(
+        "SELECT id, email, username, status, password_hash FROM users
+         WHERE username = ?1 COLLATE NOCASE OR email = ?1 COLLATE NOCASE
+         LIMIT 1",
+        rusqlite::params![ident],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    ).map_err(|_| "Identifiant ou mot de passe incorrect.".to_string())?;
 
     if status != "ACTIVE" {
-        return Err("Ce compte est suspendu. Contactez l'administrateur.".to_string());
+        return Err("Ce compte est suspendu. Contactez la direction.".to_string());
+    }
+
+    // Le compte SUPER_ADMIN ne s'ouvre qu'avec l'identifiant « Admin » et le
+    // mot de passe maître (voir règle ci-dessus).
+    let is_super: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM user_roles ur
+         JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    if is_super > 0 {
+        return Err("Ce compte est réservé à l'administrateur. Utilisez l'identifiant « Admin ».".to_string());
     }
 
     match hash_str {
-        None => {
-            return Err("Aucun code PIN défini pour ce compte.".to_string());
-        }
-        Some(ref s) if s.is_empty() => {
-            return Err("Aucun code PIN défini pour ce compte.".to_string());
-        }
+        None => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
+        Some(ref s) if s.is_empty() => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
         Some(h) => {
-            if !verify(&pin, &h).unwrap_or(false) {
-                return Err("Code PIN incorrect.".to_string());
+            if !verify(&password, &h).unwrap_or(false) {
+                return Err("Identifiant ou mot de passe incorrect.".to_string());
             }
         }
     }
@@ -3970,10 +4060,10 @@ pub fn login_with_pin(user_id: String, pin: String, school_id: String, state: St
     Ok(LoginProfile {
         user_id,
         email,
+        username,
         first_name,
         last_name,
         role_name,
-        has_pin: true,
     })
 }
 

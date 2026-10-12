@@ -120,7 +120,7 @@ function ConstellationCanvas() {
 
 // ─── Main Login Component ─────────────────────────────────────────────────────
 export default function Login({ isActivation = false }: { isActivation?: boolean }) {
-  const { setOfflineSession } = useAuth();
+  const { setOfflineSession, schoolId } = useAuth();
   const isOnline = useNetwork();
   
   const [email, setEmail] = useState('');
@@ -138,6 +138,18 @@ export default function Login({ isActivation = false }: { isActivation?: boolean
     setError('');
 
     try {
+      // Règle SUPER_ADMIN : identifiant « Admin » + mot de passe maître.
+      // Se lie au compte SUPER_ADMIN déjà activé localement.
+      if (email.trim().toLowerCase() === 'admin') {
+        const res = await invoke<{ user_id: string; email: string }>('login_local', {
+          identifier: email.trim(),
+          password,
+          schoolId,
+        });
+        setOfflineSession(res.user_id, res.email);
+        return;
+      }
+
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
       if (error) {
@@ -355,16 +367,16 @@ export default function Login({ isActivation = false }: { isActivation?: boolean
                 className="block text-xs font-medium mb-2"
                 style={{ color: '#94a3b8' }}
               >
-                Adresse e-mail
+                Identifiant ou e-mail
               </label>
               <input
                 id="login-email"
-                type="email"
+                type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@ecole.com"
+                placeholder="admin@ecole.com ou Admin"
                 required
-                autoComplete="email"
+                autoComplete="username"
                 className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-slate-600 transition-all duration-200"
                 style={{
                   background: 'rgba(255,255,255,0.04)',

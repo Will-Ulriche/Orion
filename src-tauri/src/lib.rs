@@ -136,10 +136,9 @@ pub fn run() {
             commands::toggle_user_status,
             commands::delete_local_user,
             commands::assign_user_role,
-            // ── Authentification PIN ──
-            commands::get_school_users_for_login,
-            commands::set_user_pin,
-            commands::login_with_pin
+            // ── Authentification locale (identifiant + mot de passe) ──
+            commands::set_user_password,
+            commands::login_local
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

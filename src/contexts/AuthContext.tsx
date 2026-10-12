@@ -9,6 +9,16 @@ interface AuthContextType {
   roles: string[];
   rolesLoaded: boolean;
   schoolId: string;
+  /** Id de l'établissement ouvert en mode "direction" depuis l'espace SUPER_ADMIN. */
+  forcedSchoolId: string | null;
+  /** Nom affiché de l'établissement ouvert en mode "direction". */
+  forcedSchoolName: string | null;
+  /** Vrai quand le SUPER_ADMIN visite l'espace d'un établissement. */
+  inSchoolMode: boolean;
+  /** Ouvre l'espace direction d'un établissement (mode visite / impersonation). */
+  enterSchoolMode: (schoolId: string, schoolName?: string | null) => void;
+  /** Quitte l'espace direction et revient à l'établissement d'origine. */
+  exitSchoolMode: () => void;
   activated: boolean;
   signOut: () => Promise<void>;
   setOfflineSession: (userId: string, email: string) => void;
@@ -19,12 +29,28 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const getCurrentSchoolId = (): string =>
   localStorage.getItem('current_school_id') || 'school-1';
 
+const LS_SCHOOL_ID = 'current_school_id';
+const LS_FORCED_ID = 'orion_forced_school_id';
+const LS_FORCED_NAME = 'orion_forced_school_name';
+const LS_PREV_ID = 'orion_prev_school_id';
+/** Événement émis quand l'établissement courant change. */
+export const SCHOOL_CHANGED_EVENT = 'orion:school-changed';
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [roles, setRoles] = useState<string[]>([]);
   const [rolesLoaded, setRolesLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Établissement courant — réactif : mis à jour par enterSchoolMode/exitSchoolMode
+  // et par l'événement global SCHOOL_CHANGED_EVENT.
+  const [schoolId, setSchoolId] = useState<string>(() => getCurrentSchoolId());
+  const [forcedSchoolId, setForcedSchoolId] = useState<string | null>(
+    () => localStorage.getItem(LS_FORCED_ID)
+  );
+  const [forcedSchoolName, setForcedSchoolName] = useState<string | null>(
+    () => localStorage.getItem(LS_FORCED_NAME)
+  );
   // Une fois l'installation activée (1ère connexion en ligne réussie),
   // l'application bascule sur la connexion locale par PIN.
   const [activated, setActivated] = useState(
@@ -34,6 +60,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const activate = () => {
     localStorage.setItem('orion_activated', '1');
     setActivated(true);
+  };
+
+  // Relit le localStorage et propage le nouvel établissement dans le contexte
+  // (déclenche le rechargement des années, des pages, du menu…).
+  const syncSchoolFromStorage = () => {
+    setSchoolId(getCurrentSchoolId());
+    setForcedSchoolId(localStorage.getItem(LS_FORCED_ID));
+    setForcedSchoolName(localStorage.getItem(LS_FORCED_NAME));
+  };
+
+  useEffect(() => {
+    const handler = () => syncSchoolFromStorage();
+    window.addEventListener(SCHOOL_CHANGED_EVENT, handler);
+    return () => window.removeEventListener(SCHOOL_CHANGED_EVENT, handler);
+  }, []);
+
+  // Ouvre l'espace direction d'un établissement (le SUPER_ADMIN "devient" la direction).
+  const enterSchoolMode = (nextSchoolId: string, nextSchoolName?: string | null) => {
+    try {
+      const current = getCurrentSchoolId();
+      if (current !== nextSchoolId) {
+        // On mémorise l'établissement d'origine pour pouvoir y revenir.
+        localStorage.setItem(LS_PREV_ID, current);
+      }
+      localStorage.setItem(LS_SCHOOL_ID, nextSchoolId);
+      localStorage.setItem(LS_FORCED_ID, nextSchoolId);
+      if (nextSchoolName) {
+        localStorage.setItem(LS_FORCED_NAME, nextSchoolName);
+      } else {
+        localStorage.removeItem(LS_FORCED_NAME);
+      }
+    } catch (_) { /* storage indisponible */ }
+    syncSchoolFromStorage();
+    window.dispatchEvent(new Event(SCHOOL_CHANGED_EVENT));
+  };
+
+  // Quitte l'espace direction : on revient à l'établissement d'origine.
+  const exitSchoolMode = () => {
+    try {
+      const prev = localStorage.getItem(LS_PREV_ID);
+      localStorage.removeItem(LS_FORCED_ID);
+      localStorage.removeItem(LS_FORCED_NAME);
+      localStorage.removeItem(LS_PREV_ID);
+      if (prev) localStorage.setItem(LS_SCHOOL_ID, prev);
+    } catch (_) { /* storage indisponible */ }
+    syncSchoolFromStorage();
+    window.dispatchEvent(new Event(SCHOOL_CHANGED_EVENT));
   };
 
   const fetchUserRoles = async (userId: string, schoolId: string) => {
@@ -189,7 +262,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ session, user, roles, rolesLoaded, schoolId: getCurrentSchoolId(), activated, signOut, setOfflineSession }}>
+    <AuthContext.Provider value={{
+      session, user, roles, rolesLoaded,
+      schoolId,
+      forcedSchoolId,
+      forcedSchoolName,
+      inSchoolMode: !!forcedSchoolId,
+      enterSchoolMode,
+      exitSchoolMode,
+      activated, signOut, setOfflineSession,
+    }}>
       {children}
     </AuthContext.Provider>
   );

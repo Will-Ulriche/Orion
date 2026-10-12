@@ -523,8 +523,10 @@ export default function Archives() {
   const excludedClasses = classes.length - groupClasses.length;
 
   return (
-    <div className="custom-scrollbar h-full w-full overflow-y-auto bg-gradient-to-b from-slate-50 to-[#f8f9fc]">
-      <div className="mx-auto max-w-7xl space-y-6 px-8 py-7">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-gradient-to-b from-slate-50 to-[#f8f9fc]">
+      {/* En-tête fixe */}
+      <div className="z-20 shrink-0 border-b border-slate-200/60 bg-slate-50/90 backdrop-blur-md">
+        <div className="mx-auto max-w-7xl space-y-4 px-8 py-5">
         {/* En-tête */}
         <div className="flex animate-fade-in items-start justify-between gap-4">
           <div className="flex items-center gap-4">
@@ -580,14 +582,19 @@ export default function Archives() {
             );
           })}
         </div>
+        </div>
+      </div>
 
+      {/* Contenu défilant */}
+      <div className="custom-scrollbar flex-1 overflow-y-auto">
+        <div className="mx-auto flex h-full max-w-7xl flex-col px-8 py-6">
         {/* Contenu + colonne de droite */}
-        <div className="flex items-start gap-5">
-        <div className="min-w-0 flex-1">
+        <div className="flex min-h-0 flex-1 gap-5">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {contentLoading ? (
           <Loader label={loadingLabel} />
         ) : (
-          <div key={tab} className="animate-slide-in space-y-5">
+          <div key={tab} className="animate-slide-in flex min-h-0 flex-1 flex-col space-y-5">
             {/* Bandeau d'info (onglets scolaires) */}
             {isSchoolTab && (
               <div className="flex flex-wrap items-center gap-2">
@@ -616,7 +623,7 @@ export default function Archives() {
               />
             ) : isSchoolTab ? (
               /* ── Liste de tous les élèves du groupe (Collège / Lycée) ── */
-              <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card animate-fade-in">
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card animate-fade-in">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
                   <div>
                     <p className="text-[14px] font-bold text-slate-800">Élèves du {groupLabel}</p>
@@ -633,7 +640,7 @@ export default function Archives() {
                     />
                   </div>
                 </div>
-                <div className="max-h-[65vh] overflow-y-auto custom-scrollbar">
+                <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
                   <table className="w-full border-collapse text-left text-[13px]">
                     <thead className="sticky top-0 z-10 bg-slate-50">
                       <tr className="text-[11px] uppercase tracking-wider text-slate-400">
@@ -674,7 +681,7 @@ export default function Archives() {
               </div>
             ) : tab === 'personnel' ? (
               /* ── Liste de tout le personnel ── */
-              <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card animate-fade-in">
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card animate-fade-in">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
                   <div>
                     <p className="text-[14px] font-bold text-slate-800">Personnel</p>
@@ -691,7 +698,7 @@ export default function Archives() {
                     />
                   </div>
                 </div>
-                <div className="max-h-[65vh] overflow-y-auto custom-scrollbar">
+                <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
                   <table className="w-full border-collapse text-left text-[13px]">
                     <thead className="sticky top-0 z-10 bg-slate-50">
                       <tr className="text-[11px] uppercase tracking-wider text-slate-400">
@@ -848,7 +855,7 @@ export default function Archives() {
           </div>
         </aside>
         </div>{/* / rangée contenu + colonne */}
-
+        </div>
       </div>
 
       {/* ═══ POPUP : BULLETIN DE NOTES ═══ */}

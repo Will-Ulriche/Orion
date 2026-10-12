@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Masque l'icône « œil » native de WebView2/Edge sur les champs mot de passe
+   (on utilise notre propre bouton d'affichage). */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}
+
 @theme {
   --font-sans: Inter, "Segoe UI", Helvetica, Arial, sans-serif;
 
@@ -50,6 +57,7 @@ button {
     opacity: 0;
     transform: translateY(8px) scale(0.97);
   }
+
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -60,6 +68,7 @@ button {
   from {
     opacity: 0;
   }
+
   to {
     opacity: 1;
   }
@@ -78,6 +87,7 @@ button {
     opacity: 0;
     transform: translateY(14px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -93,6 +103,7 @@ button {
     opacity: 0;
     transform: translateX(28px) scale(0.96);
   }
+
   to {
     opacity: 1;
     transform: translateX(0) scale(1);
@@ -104,6 +115,7 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+
   .animate-scale-in,
   .animate-fade-in,
   .animate-slide-in,
