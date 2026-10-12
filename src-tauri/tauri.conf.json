@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Orion",
   "version": "0.1.0",
   "identifier": "com.orion.app",
   "build": {
@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "Orion",
+        "width": 1200,
+        "height": 800
       }
     ],
     "security": {

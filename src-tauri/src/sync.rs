@@ -96,14 +96,26 @@ pub struct InboxConflict {
 // Tournera en arrière-plan toutes les 5 minutes
 // ──────────────────────────────────────────────
 
+fn get_supabase_config() -> (String, String) {
+    let _ = dotenv();
+    let supabase_url = env::var("VITE_SUPABASE_URL")
+        .ok()
+        .or_else(|| option_env!("VITE_SUPABASE_URL").map(String::from))
+        .unwrap_or_else(|| "https://reyxonfhvlybjhxlthvy.supabase.co".to_string());
+
+    let supabase_key = env::var("SUPABASE_SERVICE_ROLE_KEY")
+        .or_else(|_| env::var("VITE_SUPABASE_ANON_KEY"))
+        .ok()
+        .or_else(|| option_env!("SUPABASE_SERVICE_ROLE_KEY").map(String::from))
+        .or_else(|| option_env!("VITE_SUPABASE_ANON_KEY").map(String::from))
+        .unwrap_or_else(|| "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA1NDg1MDIsImV4cCI6MjEwNjEyNDUwMn0.E1r_pWl09sqbr0pjakApgC2YgSXzfsuOLoSFmk5efaw".to_string());
+
+    (supabase_url, supabase_key)
+}
+
 pub fn start_sync_loop(db_path: PathBuf) {
     tauri::async_runtime::spawn(async move {
-        let _ = dotenv();
-        let supabase_url  = env::var("VITE_SUPABASE_URL").unwrap_or_default();
-        // Prefer service_role key (bypasses RLS) for backend sync; fall back to anon key
-        let supabase_key  = env::var("SUPABASE_SERVICE_ROLE_KEY")
-            .or_else(|_| env::var("VITE_SUPABASE_ANON_KEY"))
-            .unwrap_or_default();
+        let (supabase_url, supabase_key) = get_supabase_config();
 
         if supabase_url.is_empty() || supabase_key.is_empty() {
             println!("[Sync] Configuration Supabase absente. Moteur en attente.");
@@ -1057,12 +1069,7 @@ pub fn retry_failed_mutations_internal(db_path: &PathBuf) -> Result<usize, Strin
 
 /// Synchronisation manuelle déclenchée par le bouton utilisateur
 pub async fn run_manual_sync(db_path: PathBuf) -> Result<SyncStatus, String> {
-    let _ = dotenv();
-    let supabase_url = env::var("VITE_SUPABASE_URL").unwrap_or_default();
-    // Prefer service_role key (bypasses RLS) for backend sync; fall back to anon key
-    let supabase_key = env::var("SUPABASE_SERVICE_ROLE_KEY")
-        .or_else(|_| env::var("VITE_SUPABASE_ANON_KEY"))
-        .unwrap_or_default();
+    let (supabase_url, supabase_key) = get_supabase_config();
 
     if supabase_url.is_empty() || supabase_key.is_empty() {
         return Err("Configuration Supabase absente. Vérifiez le fichier .env.".to_string());
