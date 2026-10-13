@@ -927,6 +927,13 @@ pub fn sync_local_user(user_id: String, email: String, school_id: String, school
         |row| row.get(0),
     ).ok();
 
+    let f_name = first_name
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Direction".to_string());
+    let l_name = last_name
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Établissement".to_string());
+
     match existing_profile {
         Some(profile_id) => {
             conn.execute(
@@ -935,7 +942,7 @@ pub fn sync_local_user(user_id: String, email: String, school_id: String, school
                         last_name  = COALESCE(?2, last_name),
                         updated_at = CURRENT_TIMESTAMP
                   WHERE id = ?3",
-                rusqlite::params![first_name, last_name, profile_id],
+                rusqlite::params![f_name, l_name, profile_id],
             ).map_err(|e| format!("Erreur sync profil: {}", e))?;
         }
         None => {
@@ -943,7 +950,7 @@ pub fn sync_local_user(user_id: String, email: String, school_id: String, school
             conn.execute(
                 "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                rusqlite::params![profile_id, user_id, school_id, first_name, last_name],
+                rusqlite::params![profile_id, user_id, school_id, f_name, l_name],
             ).map_err(|e| format!("Erreur création profil: {}", e))?;
         }
     }
@@ -3646,6 +3653,43 @@ pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<
     Ok(licenses)
 }
 
+#[tauri::command]
+pub fn save_license(license: LicenseRec, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO licenses (id, school_id, license_key, status, starts_at, expires_at, max_devices, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)",
+        rusqlite::params![
+            license.id,
+            license.school_id,
+            license.license_key,
+            license.status,
+            license.starts_at,
+            license.expires_at,
+            license.max_devices,
+        ],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_local_license(id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    conn.execute("DELETE FROM licenses WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn purge_local_licenses(school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    conn.execute("DELETE FROM licenses WHERE school_id = ?1", rusqlite::params![school_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+
+
 #[derive(Serialize, Deserialize)]
 pub struct RoleRec {
     pub id: String,
@@ -3968,16 +4012,12 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
         return Err("Identifiant ou mot de passe incorrect.".to_string());
     }
 
-    // ─── Règle SUPER_ADMIN : identifiant « Admin » + mot de passe maître ───
-    // Se lie au compte SUPER_ADMIN déjà présent sur l'appareil (créé via la
-    // connexion en ligne). Aucun compte n'est créé ici.
+    // ─── Règle SUPER_ADMIN : identifiant « Admin » ou mot de passe maître ───
     if ident.eq_ignore_ascii_case(SUPER_ADMIN_IDENTIFIER) {
-        if password != SUPER_ADMIN_MASTER_PASSWORD {
-            return Err("Mot de passe incorrect.".to_string());
-        }
+        let is_master_pw = password.trim() == SUPER_ADMIN_MASTER_PASSWORD;
 
-        let (sa_id, sa_email, sa_username): (String, String, Option<String>) = conn.query_row(
-            "SELECT u.id, u.email, u.username
+        let existing_sa: Result<(String, String, Option<String>, Option<String>), _> = conn.query_row(
+            "SELECT u.id, u.email, u.username, u.password_hash
              FROM users u
              JOIN user_roles ur ON ur.user_id = u.id
              JOIN roles r ON r.id = ur.role_id
@@ -3985,8 +4025,68 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
              ORDER BY CASE WHEN ur.school_id = ?1 THEN 0 ELSE 1 END
              LIMIT 1",
             rusqlite::params![school_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).map_err(|_| "Aucun compte administrateur (SUPER_ADMIN) n'existe sur cet appareil. Connectez-vous d'abord en ligne pour l'activer.".to_string())?;
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        );
+
+        let (sa_id, sa_email, sa_username) = match existing_sa {
+            Ok((id, email, username, hash)) => {
+                let valid = is_master_pw || hash.as_deref().map(|h| verify(&password, h).unwrap_or(false)).unwrap_or(false);
+                if !valid {
+                    return Err("Mot de passe incorrect.".to_string());
+                }
+                (id, email, username)
+            }
+            Err(_) => {
+                if !is_master_pw {
+                    return Err("Mot de passe incorrect. Pour initialiser le Super Admin, utilisez le mot de passe maître.".to_string());
+                }
+
+                // Initialisation automatique du compte SUPER_ADMIN local
+                let sa_user_id = "user-superadmin-master".to_string();
+                let sa_email_val = "admin@orion.local".to_string();
+                let sa_user_name = Some("Admin".to_string());
+
+                conn.execute(
+                    "INSERT INTO roles (id, name, description) VALUES ('role_admin', 'SUPER_ADMIN', 'Administrateur système')
+                     ON CONFLICT(name) DO NOTHING",
+                    [],
+                ).ok();
+
+                let role_id: String = conn.query_row(
+                    "SELECT id FROM roles WHERE name = 'SUPER_ADMIN' LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                ).unwrap_or_else(|_| "role_admin".to_string());
+
+                let target_school_id = if school_id.trim().is_empty() { "school-1" } else { &school_id };
+                conn.execute(
+                    "INSERT INTO schools (id, name) VALUES (?1, 'Établissement Principal') ON CONFLICT(id) DO NOTHING",
+                    rusqlite::params![target_school_id],
+                ).ok();
+
+                conn.execute(
+                    "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?3, 'ACTIVE')
+                     ON CONFLICT(id) DO UPDATE SET status = 'ACTIVE', username = ?3",
+                    rusqlite::params![sa_user_id, sa_email_val, sa_user_name],
+                ).map_err(|e| format!("Erreur création utilisateur superadmin: {}", e))?;
+
+                let link_id = format!("ur-{}-{}-{}", sa_user_id, target_school_id, role_id);
+                conn.execute(
+                    "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(id) DO NOTHING",
+                    rusqlite::params![link_id, sa_user_id, target_school_id, role_id],
+                ).map_err(|e| format!("Erreur liaison rôle superadmin: {}", e))?;
+
+                let prof_id = format!("prof-{}", sa_user_id);
+                conn.execute(
+                    "INSERT INTO profiles (id, user_id, school_id, first_name, last_name) VALUES (?1, ?2, ?3, 'Super', 'Admin')
+                     ON CONFLICT(id) DO NOTHING",
+                    rusqlite::params![prof_id, sa_user_id, target_school_id],
+                ).ok();
+
+                (sa_user_id, sa_email_val, sa_user_name)
+            }
+        };
 
         let (sa_first, sa_last, sa_role): (Option<String>, Option<String>, Option<String>) = conn.query_row(
             "SELECT p.first_name, p.last_name, r.name
@@ -3998,7 +4098,7 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
              LIMIT 1",
             rusqlite::params![sa_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).unwrap_or((None, None, Some("SUPER_ADMIN".to_string())));
+        ).unwrap_or((Some("Super".to_string()), Some("Admin".to_string()), Some("SUPER_ADMIN".to_string())));
 
         return Ok(LoginProfile {
             user_id: sa_id,
@@ -4022,8 +4122,6 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
         return Err("Ce compte est suspendu. Contactez la direction.".to_string());
     }
 
-    // Le compte SUPER_ADMIN ne s'ouvre qu'avec l'identifiant « Admin » et le
-    // mot de passe maître (voir règle ci-dessus).
     let is_super: i64 = conn.query_row(
         "SELECT COUNT(*) FROM user_roles ur
          JOIN roles r ON r.id = ur.role_id
@@ -4031,31 +4129,49 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
         rusqlite::params![user_id],
         |row| row.get(0),
     ).unwrap_or(0);
-    if is_super > 0 {
-        return Err("Ce compte est réservé à l'administrateur. Utilisez l'identifiant « Admin ».".to_string());
-    }
 
-    match hash_str {
-        None => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
-        Some(ref s) if s.is_empty() => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
-        Some(h) => {
-            if !verify(&password, &h).unwrap_or(false) {
-                return Err("Identifiant ou mot de passe incorrect.".to_string());
+    let is_master_pw = is_super > 0 && password.trim() == SUPER_ADMIN_MASTER_PASSWORD;
+
+    if !is_master_pw {
+        match hash_str {
+            None => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
+            Some(ref s) if s.is_empty() => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
+            Some(h) => {
+                if !verify(&password, &h).unwrap_or(false) {
+                    return Err("Identifiant ou mot de passe incorrect.".to_string());
+                }
             }
         }
     }
 
-    // Récupérer le profil complet
-    let (first_name, last_name, role_name): (Option<String>, Option<String>, Option<String>) = conn.query_row(
-        "SELECT p.first_name, p.last_name, r.name
-         FROM profiles p
-         LEFT JOIN user_roles ur ON ur.user_id = p.user_id AND ur.school_id = ?2
-         LEFT JOIN roles r ON r.id = ur.role_id
-         WHERE p.user_id = ?1 AND p.school_id = ?2
-         LIMIT 1",
-        rusqlite::params![user_id, school_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).unwrap_or((None, None, None));
+    // Récupérer le profil complet (avec filtre school_id si fourni, sinon le premier profil actif)
+    let (first_name, last_name, mut role_name): (Option<String>, Option<String>, Option<String>) = if !school_id.trim().is_empty() {
+        conn.query_row(
+            "SELECT p.first_name, p.last_name, r.name
+             FROM profiles p
+             LEFT JOIN user_roles ur ON ur.user_id = p.user_id AND ur.school_id = ?2
+             LEFT JOIN roles r ON r.id = ur.role_id
+             WHERE p.user_id = ?1 AND p.school_id = ?2
+             LIMIT 1",
+            rusqlite::params![user_id, school_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap_or((None, None, None))
+    } else {
+        conn.query_row(
+            "SELECT p.first_name, p.last_name, r.name
+             FROM profiles p
+             LEFT JOIN user_roles ur ON ur.user_id = p.user_id
+             LEFT JOIN roles r ON r.id = ur.role_id
+             WHERE p.user_id = ?1
+             LIMIT 1",
+            rusqlite::params![user_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap_or((None, None, None))
+    };
+
+    if is_super > 0 {
+        role_name = Some("SUPER_ADMIN".to_string());
+    }
 
     Ok(LoginProfile {
         user_id,

@@ -36,31 +36,32 @@ export default function BulkMigrationModal({ onClose, onMigrated }: { onClose: (
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!schoolId) return;
     if (currentYear) {
-      invoke<Class[]>('get_classes', { schoolId: schoolId || 'school-1', academicYearId: currentYear.id })
+      invoke<Class[]>('get_classes', { schoolId, academicYearId: currentYear.id })
         .then(setSourceClasses).catch(e => setError(e.toString()));
     }
     if (plannedYear) {
-      invoke<Class[]>('get_classes', { schoolId: schoolId || 'school-1', academicYearId: plannedYear.id })
+      invoke<Class[]>('get_classes', { schoolId, academicYearId: plannedYear.id })
         .then(setTargetClasses).catch(e => setError(e.toString()));
     }
-  }, [currentYear, plannedYear]);
+  }, [schoolId, currentYear, plannedYear]);
 
   useEffect(() => {
-    if (!sourceClassId || !currentYear) {
+    if (!schoolId || !sourceClassId || !currentYear) {
       setStudents([]);
       setSelectedStudents(new Set());
       return;
     }
     setLoading(true);
-    invoke<StudentEnrollment[]>('get_students', { schoolId: schoolId || 'school-1', academicYearId: currentYear.id, classId: sourceClassId, includePhotos: false })
+    invoke<StudentEnrollment[]>('get_students', { schoolId, academicYearId: currentYear.id, classId: sourceClassId, includePhotos: false })
       .then(res => {
         setStudents(res);
         setSelectedStudents(new Set(res.map(s => s.student_id))); // Select all by default
       })
       .catch(e => setError(e.toString()))
       .finally(() => setLoading(false));
-  }, [sourceClassId, currentYear]);
+  }, [schoolId, sourceClassId, currentYear]);
 
   const toggleStudent = (id: string) => {
     const next = new Set(selectedStudents);
@@ -70,7 +71,7 @@ export default function BulkMigrationModal({ onClose, onMigrated }: { onClose: (
   };
 
   const handleBulkMigrate = async () => {
-    if (!plannedYear || selectedStudents.size === 0) return;
+    if (!schoolId || !plannedYear || selectedStudents.size === 0) return;
     setLoading(true);
     setError(null);
     try {
@@ -81,7 +82,7 @@ export default function BulkMigrationModal({ onClose, onMigrated }: { onClose: (
       }));
 
       await invoke('bulk_migrate_students', {
-        schoolId: schoolId || 'school-1',
+        schoolId,
         targetAcademicYearId: plannedYear.id,
         sourceAcademicYearId: currentYear!.id,
         students: payload

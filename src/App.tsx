@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { YearProvider } from './contexts/YearContext';
@@ -17,7 +18,6 @@ import Pedagogie from './pages/Pedagogie';
 import RecapNotes from './pages/RecapNotes';
 import Personnel from './pages/Personnel';
 import Archives from './pages/Archives';
-import UsersPage from './pages/UsersPage';
 import SuperAdminHome from './pages/superadmin/SuperAdminHome';
 import Ecoles from './pages/superadmin/Ecoles';
 import ComptesSuperAdmin from './pages/superadmin/ComptesSuperAdmin';
@@ -82,10 +82,22 @@ const HomeRoute = () => {
 };
 
 // Public : au tout 1er lancement on exige une connexion en ligne (activation),
-// ensuite l'application utilise la connexion locale par PIN.
+// ensuite l'application utilise la connexion locale par défaut, avec possibilité
+// de basculer sur la connexion en ligne Supabase à tout moment.
 const LoginEntry = () => {
   const { activated } = useAuth();
-  return activated ? <Login /> : <LoginOnline isActivation />;
+  const [showOnline, setShowOnline] = useState(false);
+
+  if (!activated || showOnline) {
+    return (
+      <LoginOnline
+        isActivation={!activated}
+        onSwitchToLocal={activated ? () => setShowOnline(false) : undefined}
+      />
+    );
+  }
+
+  return <Login onSwitchToOnline={() => setShowOnline(true)} />;
 };
 
 function AppRoutes() {
@@ -122,7 +134,6 @@ function AppRoutes() {
         {/* Réservé à DIRECTION, SUPER_ADMIN */}
         <Route path="/finances" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Finances /></RoleProtectedRoute>} />
         <Route path="/personnel" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Personnel /></RoleProtectedRoute>} />
-        <Route path="/users" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><UsersPage /></RoleProtectedRoute>} />
         <Route path="/security" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Security /></RoleProtectedRoute>} />
         <Route path="/settings" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Settings /></RoleProtectedRoute>} />
         <Route path="/archives" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Archives /></RoleProtectedRoute>} />

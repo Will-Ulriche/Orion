@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 
 export default function AcademicYearsManager() {
   const { years, refreshYears, selectedYear } = useYear();
-  const { user } = useAuth();
+  const { user, schoolId } = useAuth();
   const navigate = useNavigate();
   
   const [isCreating, setIsCreating] = useState(false);
@@ -25,7 +25,7 @@ export default function AcademicYearsManager() {
   const handleCreate = async () => {
     try {
       setError(null);
-      const schoolId = 'school-1';
+      if (!schoolId) throw new Error('Aucun établissement sélectionné.');
       
       await invoke('create_academic_year', {
         schoolId,
@@ -45,7 +45,7 @@ export default function AcademicYearsManager() {
   const handleUpdate = async (id: string) => {
     try {
       setError(null);
-      const schoolId = 'school-1';
+      if (!schoolId) return;
       
       await invoke('update_academic_year', {
         id,
@@ -73,7 +73,7 @@ export default function AcademicYearsManager() {
   const handleOpen = async (id: string) => {
     try {
       setError(null);
-      const schoolId = 'school-1';
+      if (!schoolId) return;
       await invoke('open_academic_year', { id, schoolId });
       await refreshYears();
     } catch (err: any) {
@@ -85,7 +85,7 @@ export default function AcademicYearsManager() {
     if (!window.confirm("Êtes-vous sûr de vouloir clôturer cette année ?")) return;
     try {
       setError(null);
-      const schoolId = 'school-1';
+      if (!schoolId) return;
       await invoke('close_academic_year', { id, schoolId });
       await refreshYears();
     } catch (err: any) {
@@ -97,7 +97,7 @@ export default function AcademicYearsManager() {
     if (!window.confirm(`Êtes-vous sûr de vouloir supprimer l'année "${name}" ?\n\nToutes les classes et inscriptions de cette année seront également supprimées.`)) return;
     try {
       setError(null);
-      const schoolId = 'school-1';
+      if (!schoolId) return;
       await invoke('delete_academic_year', { id, schoolId });
       await refreshYears();
     } catch (err: any) {
@@ -109,7 +109,7 @@ export default function AcademicYearsManager() {
     if (!window.confirm('Archiver cette année ? Elle restera consultable mais ne pourra plus être modifiée.')) return;
     try {
       setError(null);
-      const schoolId = 'school-1';
+      if (!schoolId) return;
       await invoke('archive_academic_year', { id, schoolId });
       await refreshYears();
     } catch (err: any) {

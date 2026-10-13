@@ -1,17 +1,6 @@
-import { createClient } from '@supabase/supabase-js';
-import { supabase } from './supabaseClient';
+import { supabase, supabaseAdmin } from './supabaseClient';
+export { supabaseAdmin };
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://reyxonfhvlybjhxlthvy.supabase.co';
-const serviceRoleKey = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY || import.meta.env.SUPABASE_SERVICE_ROLE_KEY;
-
-export const supabaseAdmin = serviceRoleKey
-  ? createClient(supabaseUrl, serviceRoleKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    })
-  : supabase;
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -40,7 +29,7 @@ export interface SchoolAdminInput {
   first_name: string;
   last_name: string;
   phone?: string | null;
-  role?: 'DIRECTION' | 'ADMIN';
+  role?: 'DIRECTION' | 'ADMIN' | 'SECRETAIRE' | 'PROFESSEUR';
 }
 
 export interface CreateSchoolWithAdminInput {
@@ -132,7 +121,7 @@ export function defaultCountry(): string {
 // ─── Établissements ─────────────────────────────────────────
 
 export async function listSchools(): Promise<School[]> {
-  const res = await supabase
+  const res = await supabaseAdmin
     .from('schools')
     .select('*')
     .order('created_at', { ascending: false });
@@ -191,6 +180,7 @@ export async function createSchoolWithAdmin(input: CreateSchoolWithAdminInput): 
       first_name: firstName,
       last_name: lastName,
       role: targetRole,
+      initial_password: input.admin.password,
     },
   });
 
@@ -291,6 +281,27 @@ export async function createAdminForSchool(
   const lastName = admin.last_name.trim();
   const targetRole = admin.role || 'DIRECTION';
 
+  if (targetRole === 'DIRECTION') {
+    // Vérifier qu'il n'existe pas déjà un profil DIRECTION pour cet établissement
+    const { data: dirRole } = await supabaseAdmin
+      .from('roles')
+      .select('id')
+      .eq('name', 'DIRECTION')
+      .maybeSingle();
+
+    if (dirRole) {
+      const { data: existing } = await supabaseAdmin
+        .from('user_roles')
+        .select('id')
+        .eq('school_id', schoolId)
+        .eq('role_id', dirRole.id);
+
+      if (existing && existing.length > 0) {
+        throw new Error("Cet établissement possède déjà un compte de Direction. Un seul profil de Direction est autorisé par établissement.");
+      }
+    }
+  }
+
   const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
     email: adminEmail,
     password: admin.password,
@@ -300,6 +311,7 @@ export async function createAdminForSchool(
       first_name: firstName,
       last_name: lastName,
       role: targetRole,
+      initial_password: admin.password,
     },
   });
 
@@ -381,26 +393,35 @@ export async function deleteSchool(schoolId: string): Promise<void> {
     ...(profRes.data ?? []).map((p: { user_id: string }) => p.user_id),
   ]);
 
-  // 2. Supprimer l'établissement (la cascade SQL nettoie les tables liées)
-  //    2a. Via la fonction SECURITY DEFINER (marche même si certaines tables
-  //        filles n'ont pas de policy DELETE — RLS activé).
-  //    2b. Fallback : suppression directe (si la migration n'est pas encore
-  //        appliquée) — nécessite la clé service role pour contourner le RLS.
-  const rpcRes = await supabaseAdmin.rpc('delete_school_cascade', { p_school_id: schoolId });
-  const rpcMissing =
-    !!rpcRes.error &&
-    (/does not exist|PGRST202|42883/i.test(rpcRes.error.message) ||
-      (rpcRes.error as { code?: string }).code === 'PGRST202');
-  if (rpcMissing) {
+  // 2. Supprimer l'établissement
+  //    Si l'ID n'est pas un UUID valide (ex: 'school-1' créé lors de migrations de test),
+  //    on supprime directement sans appeler la fonction RPC qui attend un type UUID.
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(schoolId);
+
+  let rpcFailed = false;
+  if (isUuid) {
+    const rpcRes = await supabaseAdmin.rpc('delete_school_cascade', { p_school_id: schoolId });
+    if (rpcRes.error) {
+      rpcFailed = true;
+    }
+  } else {
+    rpcFailed = true;
+  }
+
+  if (rpcFailed) {
+    // Suppression directe (avec clé de service pour contourner le RLS)
+    // 2a. Nettoyage explicite des profils et rôles rattachés
+    await Promise.all([
+      supabaseAdmin.from('profiles').delete().eq('school_id', schoolId),
+      supabaseAdmin.from('user_roles').delete().eq('school_id', schoolId),
+      supabaseAdmin.from('licenses').delete().eq('school_id', schoolId),
+      supabaseAdmin.from('devices').delete().eq('school_id', schoolId),
+    ]);
+
     const res = await supabaseAdmin.from('schools').delete().eq('id', schoolId);
     if (res.error) {
-      throw new Error(
-        `Suppression impossible: ${res.error.message}. ` +
-          'Appliquez la migration supabase/migrations/20261011000000_school_delete_cascade.sql puis réessayez.',
-      );
+      throw new Error(`Suppression impossible: ${res.error.message}`);
     }
-  } else if (rpcRes.error) {
-    throw new Error(`Suppression impossible: ${rpcRes.error.message}`);
   }
 
   // 3. Supprimer les comptes devenus orphelins (aucun autre établissement)
@@ -427,7 +448,7 @@ export async function deleteSchool(schoolId: string): Promise<void> {
 // ─── Licences ───────────────────────────────────────────────
 
 export async function listLicenses(): Promise<License[]> {
-  const res = await supabase
+  const res = await supabaseAdmin
     .from('licenses')
     .select('*, schools(name, short_name)')
     .order('created_at', { ascending: false });
@@ -435,7 +456,7 @@ export async function listLicenses(): Promise<License[]> {
 }
 
 export async function createLicense(input: LicenseInput): Promise<License> {
-  const res = await supabase
+  const res = await supabaseAdmin
     .from('licenses')
     .insert({
       id: crypto.randomUUID(),
@@ -454,7 +475,7 @@ export async function createLicense(input: LicenseInput): Promise<License> {
 
 
 export async function setLicenseStatus(id: string, status: string): Promise<void> {
-  const res = await supabase.from('licenses').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
+  const res = await supabaseAdmin.from('licenses').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
   if (res.error) throw new Error(res.error.message);
 }
 
@@ -471,7 +492,7 @@ export async function deleteLicense(id: string): Promise<void> {
 // ─── Appareils ──────────────────────────────────────────────
 
 export async function listDevices(): Promise<Device[]> {
-  const res = await supabase
+  const res = await supabaseAdmin
     .from('devices')
     .select('*, schools(name, short_name)')
     .order('created_at', { ascending: false });
@@ -581,6 +602,9 @@ export async function listSchoolCredentials(): Promise<SchoolCredential[]> {
 export async function resetSchoolAdminPassword(userId: string, newPassword: string): Promise<void> {
   const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
     password: newPassword,
+    user_metadata: {
+      initial_password: newPassword,
+    },
   });
   if (error) throw new Error(`Erreur réinitialisation mot de passe: ${error.message}`);
 }

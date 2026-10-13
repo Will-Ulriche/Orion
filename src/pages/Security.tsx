@@ -1,32 +1,90 @@
+import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ShieldCheck, Calendar, ArrowDownUp } from 'lucide-react';
+import { ShieldCheck, Calendar, Key, Hourglass } from 'lucide-react';
 import Appareils from './Appareils';
 import Licences from './Licences';
+import { useAuth } from '../contexts/AuthContext';
+import { invoke } from '@tauri-apps/api/core';
 
 export default function Security() {
+  const { schoolId } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab: 'appareils' | 'licence' =
     searchParams.get('tab') === 'licence' ? 'licence' : 'appareils';
+
+  const [activeLic, setActiveLic] = useState<{ expires_at: string | null; status: string } | null>(null);
+  const [daysLeft, setDaysLeft] = useState<number | null>(null);
+
+  useEffect(() => {
+    const fetchLic = async () => {
+      try {
+        const cached = localStorage.getItem('orion_lic_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed?.expires_at) setActiveLic(parsed);
+        }
+        const sid = schoolId;
+        if (sid) {
+          const lics = await invoke<any[]>('get_licenses', { schoolId: sid });
+          const found = lics?.find(l => l.status === 'ACTIVE');
+          if (found) setActiveLic(found);
+        }
+      } catch (_) {}
+    };
+    fetchLic();
+    window.addEventListener('orion:license-updated', fetchLic);
+    return () => window.removeEventListener('orion:license-updated', fetchLic);
+  }, [schoolId]);
+
+  useEffect(() => {
+    if (!activeLic?.expires_at) {
+      setDaysLeft(null);
+      return;
+    }
+    const updateDays = () => {
+      const diff = new Date(activeLic.expires_at!).getTime() - Date.now();
+      if (diff <= 0) setDaysLeft(0);
+      else setDaysLeft(Math.floor(diff / (1000 * 60 * 60 * 24)));
+    };
+    updateDays();
+    const t = setInterval(updateDays, 30000);
+    return () => clearInterval(t);
+  }, [activeLic]);
 
   const setActiveTab = (key: 'appareils' | 'licence') => {
     setSearchParams(key === 'licence' ? { tab: 'licence' } : {}, { replace: true });
   };
 
   const TABS = [
-    { key: 'appareils', label: 'Appareils', icon: <Calendar size={16} /> },
-    { key: 'licence', label: 'Licence', icon: <ArrowDownUp size={16} /> },
+    { key: 'appareils', label: 'Appareils autorisés', icon: <Calendar size={16} /> },
+    { key: 'licence', label: 'Licence & Décompte', icon: <Key size={16} /> },
   ] as const;
 
   return (
     <div className="px-8 pt-6 pb-4 w-full h-full flex flex-col bg-[#f8f9fc]">
-      <div className="mb-6 flex-shrink-0">
-        <h2 className="text-2xl font-bold text-[#1e293b] tracking-tight flex items-center gap-2">
-          <ShieldCheck size={28} className="text-indigo-500" />
-          Sécurité et Accès
-        </h2>
-        <p className="text-slate-500 mt-1 text-[13px]">
-          Gérez les appareils autorisés et votre licence d'utilisation.
-        </p>
+      <div className="mb-6 flex-shrink-0 flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-[#1e293b] tracking-tight flex items-center gap-2">
+            <ShieldCheck size={28} className="text-indigo-500" />
+            Sécurité et Accès
+          </h2>
+          <p className="text-slate-500 mt-1 text-[13px]">
+            Gérez les appareils autorisés et le décompte de votre licence d'utilisation.
+          </p>
+        </div>
+
+        {daysLeft !== null && (
+          <div className={`px-4 py-2 rounded-2xl border text-xs font-semibold flex items-center gap-2 shadow-2xs ${
+            daysLeft < 7
+              ? 'bg-rose-50 border-rose-200 text-rose-700 animate-pulse'
+              : daysLeft < 30
+              ? 'bg-amber-50 border-amber-200 text-amber-800'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+          }`}>
+            <Hourglass size={15} className="text-indigo-600" />
+            <span>Validité licence : <strong className="font-bold">{daysLeft} jours restants</strong></span>
+          </div>
+        )}
       </div>
 
       <div className="flex bg-white border border-slate-200/70 p-1 rounded-xl w-fit mb-6 flex-shrink-0 gap-1">
@@ -34,13 +92,24 @@ export default function Security() {
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-[13.5px] transition-all duration-200 ${
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-[13.5px] transition-all duration-200 cursor-pointer ${
               activeTab === tab.key
                 ? 'bg-[#f0f3ff] text-[#4f46e5] shadow-sm'
                 : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
             }`}
           >
             {tab.icon} {tab.label}
+            {tab.key === 'licence' && daysLeft !== null && (
+              <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ml-1 ${
+                daysLeft < 7
+                  ? 'bg-rose-100 text-rose-700 animate-pulse'
+                  : daysLeft < 30
+                  ? 'bg-amber-100 text-amber-700'
+                  : 'bg-emerald-100 text-emerald-700'
+              }`}>
+                {daysLeft}j
+              </span>
+            )}
           </button>
         ))}
       </div>

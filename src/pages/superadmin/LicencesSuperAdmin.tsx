@@ -1,4 +1,5 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { KeyRound, Plus, RefreshCw, Calendar, MonitorSmartphone, Trash2, Copy, Check, Pencil, PlusCircle } from 'lucide-react';
 import { Badge, Btn, EmptyState, Field, Loader, Modal, SearchInput, Select, TableShell, Td, Th, TextInput, type Tone } from '../../components/ui';
 import SuperAdminShell from './SuperAdminShell';
@@ -183,10 +184,33 @@ export default function LicencesSuperAdmin() {
   };
 
   // ─── Autres actions ──────────────────────────────────────────────
+  /** Purge le cache local (localStorage + SQLite) pour une licence donnée */
+  const purgeLocalLicenseCache = (licId: string, schoolId: string) => {
+    // Invalider le cache localStorage
+    try {
+      const cached = localStorage.getItem('orion_lic_cache');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed?.id === licId || parsed?.school_id === schoolId) {
+          localStorage.removeItem('orion_lic_cache');
+          localStorage.removeItem('orion_lic_ok_at');
+        }
+      }
+    } catch (_) {}
+    // Purger SQLite local
+    invoke('purge_local_licenses', { schoolId }).catch(() => {});
+    // Notifier l'app qu'une licence a changé
+    window.dispatchEvent(new Event('orion:license-updated'));
+  };
+
   const changeStatus = async (l: License, status: string) => {
     try {
       await setLicenseStatus(l.id, status);
       setLicenses((prev) => prev.map((x) => (x.id === l.id ? { ...x, status } : x)));
+      // Si la licence est révoquée ou suspendue, invalider le cache local
+      if (status === 'REVOKED' || status === 'SUSPENDED') {
+        purgeLocalLicenseCache(l.id, l.school_id);
+      }
     } catch (e: any) { setError(e.message ?? String(e)); }
   };
 
@@ -202,6 +226,8 @@ export default function LicencesSuperAdmin() {
     try {
       await deleteLicense(deleteTarget.id);
       setLicenses((prev) => prev.filter((x) => x.id !== deleteTarget.id));
+      // Purger le cache local immédiatement
+      purgeLocalLicenseCache(deleteTarget.id, deleteTarget.school_id);
       setDeleteTarget(null);
     } catch (e: any) { setError(e.message ?? String(e)); }
     finally { setDeleting(false); }

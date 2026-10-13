@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
-import { Shield, UserCircle2, KeyRound, Loader2, X, Eye, EyeOff } from 'lucide-react';
+import { Shield, UserCircle2, KeyRound, Loader2, X, Eye, EyeOff, Globe, ArrowRight } from 'lucide-react';
 
 interface LoginResult {
   user_id: string;
@@ -12,7 +12,11 @@ interface LoginResult {
   role_name: string | null;
 }
 
-export default function LoginPage() {
+interface LoginPageProps {
+  onSwitchToOnline?: () => void;
+}
+
+export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
   const { setOfflineSession } = useAuth();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -20,8 +24,7 @@ export default function LoginPage() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState('');
 
-  // Temporaire : on utilise le school-1 par défaut
-  const schoolId = 'school-1';
+  const schoolId = localStorage.getItem('current_school_id') || '';
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,9 +90,21 @@ export default function LoginPage() {
               <form onSubmit={handleLogin} className="space-y-4">
                 {/* Identifiant */}
                 <div>
-                  <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                    Identifiant
-                  </label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider">
+                      Identifiant
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIdentifier('Admin');
+                        setPassword('@admin@//10');
+                      }}
+                      className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
+                    >
+                      Compte Super Admin ?
+                    </button>
+                  </div>
                   <div className="relative">
                     <UserCircle2 size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
@@ -98,10 +113,15 @@ export default function LoginPage() {
                       autoComplete="username"
                       value={identifier}
                       onChange={e => setIdentifier(e.target.value)}
-                      placeholder="ex: jean.dupont"
+                      placeholder="ex: Admin ou jean.dupont"
                       className={inputClass}
                     />
                   </div>
+                  {identifier.trim().toLowerCase() === 'admin' && (
+                    <p className="text-[11px] text-amber-700 bg-amber-50/80 border border-amber-200/60 rounded-xl px-3 py-2 mt-2">
+                      Compte Super Admin détecté · Mot de passe maître : <strong className="font-mono bg-amber-100/70 px-1.5 py-0.5 rounded text-amber-900 select-all">@admin@//10</strong>
+                    </p>
+                  )}
                 </div>
 
                 {/* Mot de passe */}
@@ -131,9 +151,23 @@ export default function LoginPage() {
                 </div>
 
                 {error && (
-                  <p className="text-sm text-rose-600 bg-rose-50 border border-rose-100 rounded-xl px-4 py-3 flex items-center gap-2">
-                    <X size={14} className="flex-shrink-0" /> {error}
-                  </p>
+                  <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-xl p-3.5 space-y-2">
+                    <div className="flex items-start gap-2">
+                      <X size={16} className="flex-shrink-0 mt-0.5 text-rose-500" />
+                      <span className="leading-snug">{error}</span>
+                    </div>
+                    {onSwitchToOnline && (
+                      <button
+                        type="button"
+                        onClick={onSwitchToOnline}
+                        className="w-full mt-1 py-2 px-3 bg-rose-100 hover:bg-rose-200 text-rose-800 text-xs font-semibold rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                      >
+                        <Globe size={14} />
+                        Passer à la connexion en ligne maintenant
+                        <ArrowRight size={14} />
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 <button
@@ -146,7 +180,21 @@ export default function LoginPage() {
                 </button>
               </form>
 
-              <p className="text-center text-xs text-slate-400 mt-6">
+              {onSwitchToOnline && (
+                <div className="mt-6 pt-5 border-t border-slate-100 flex flex-col items-center">
+                  <button
+                    type="button"
+                    onClick={onSwitchToOnline}
+                    className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 transition-colors py-2 px-3 rounded-xl hover:bg-indigo-50 cursor-pointer"
+                  >
+                    <Globe size={14} />
+                    Connexion en ligne / Activer un compte
+                    <ArrowRight size={13} />
+                  </button>
+                </div>
+              )}
+
+              <p className="text-center text-xs text-slate-400 mt-4">
                 Les identifiants sont créés et attribués par la direction de l'école.
               </p>
             </div>

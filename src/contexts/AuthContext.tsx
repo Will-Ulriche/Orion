@@ -109,51 +109,66 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.dispatchEvent(new Event(SCHOOL_CHANGED_EVENT));
   };
 
-  const fetchUserRoles = async (userId: string, schoolId: string) => {
+  const fetchUserRoles = async (userId: string, schoolId: string, fallbackRole?: string) => {
     try {
       const userRoles = await invoke<string[]>('get_current_user_roles', { userId, schoolId });
-      setRoles(userRoles.length > 0 ? userRoles : ['DIRECTION']); // fallback gracieux
+      const finalRoles = userRoles.length > 0 ? userRoles : (fallbackRole ? [fallbackRole] : ['DIRECTION']);
+      setRoles(finalRoles);
       setRolesLoaded(true);
     } catch (err) {
       console.error("Erreur lors de la récupération des rôles:", err);
-      // En cas d'erreur, on accorde DIRECTION par défaut (compte local seeded)
-      setRoles(['DIRECTION']);
+      setRoles(fallbackRole ? [fallbackRole] : ['DIRECTION']);
       setRolesLoaded(true);
     }
   };
 
   const syncUserToLocalDb = async (userSession: Session | null) => {
     if (userSession?.user) {
+      const userMeta = (userSession.user.user_metadata as any) || {};
+      let schoolId = userMeta.school_id || localStorage.getItem('current_school_id') || '';
+      let schoolName = 'Établissement';
+      let firstName: string = userMeta.first_name || 'Direction';
+      let lastName: string = userMeta.last_name || '';
+      const metaRole: string = userMeta.role || 'DIRECTION';
+
       try {
-        const schoolId = getCurrentSchoolId();
-        const schoolName = 'École par défaut'; // Dans un cas réel, récupérer depuis la session ou la base
-        // Si connecté en ligne, on récupère aussi l'identité (prénom/nom) du profil cloud.
-        let firstName: string | null = null;
-        let lastName: string | null = null;
+        // Si connecté en ligne, tenter de récupérer l'établissement et profil cloud.
         if (userSession.access_token !== 'offline') {
           try {
             const { data: prof } = await supabase
               .from('profiles')
-              .select('first_name, last_name')
+              .select('school_id, first_name, last_name, schools(name)')
               .eq('user_id', userSession.user.id)
               .limit(1)
               .maybeSingle();
-            firstName = (prof as any)?.first_name ?? null;
-            lastName = (prof as any)?.last_name ?? null;
+            if (prof) {
+              if ((prof as any)?.first_name) firstName = (prof as any).first_name;
+              if ((prof as any)?.last_name) lastName = (prof as any).last_name;
+              if ((prof as any)?.school_id) schoolId = (prof as any).school_id;
+              if ((prof as any)?.schools?.name) schoolName = (prof as any).schools.name;
+            }
           } catch (profileErr) {
-            console.error('Erreur de récupération du profil cloud:', profileErr);
+            console.warn('Erreur profil cloud (utilisation métadonnées):', profileErr);
           }
         }
+
+        if (schoolId) {
+          localStorage.setItem('current_school_id', schoolId);
+          setSchoolId(schoolId);
+        }
+
+        // Synchroniser l'utilisateur localement
         await invoke('sync_local_user', {
           userId: userSession.user.id,
           email: userSession.user.email || '',
-          schoolId,
+          schoolId: schoolId || 'school-main',
           schoolName,
           firstName,
-          lastName
+          lastName,
         });
-        // Si connecté en ligne, on rapatrie le(s) rôle(s) cloud vers la base locale
-        // (permettra l'usage hors-ligne et l'affichage du bon espace).
+
+        // Déterminer les rôles effectifs
+        let effectiveRoles: string[] = [];
         if (userSession.access_token !== 'offline') {
           try {
             const { data } = await supabase
@@ -163,22 +178,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const roleNames = (data ?? [])
               .map((r: any) => r.roles?.name)
               .filter((n: unknown): n is string => typeof n === 'string');
-            for (const roleName of roleNames) {
-              await invoke('set_local_user_role', {
-                userId: userSession.user.id,
-                schoolId,
-                roleName,
-              });
+            if (roleNames.length > 0) {
+              effectiveRoles = roleNames;
             }
           } catch (roleErr) {
-            console.error('Erreur de synchronisation des rôles:', roleErr);
+            console.warn('Erreur lecture user_roles cloud:', roleErr);
           }
-          // La synchronisation cloud a réussi : l'installation est activée.
-          activate();
         }
-        await fetchUserRoles(userSession.user.id, schoolId);
+
+        if (effectiveRoles.length === 0 && metaRole) {
+          effectiveRoles = [metaRole];
+        }
+        if (effectiveRoles.length === 0) {
+          effectiveRoles = ['DIRECTION'];
+        }
+
+        // Rapatrier les rôles vers SQLite local
+        for (const roleName of effectiveRoles) {
+          try {
+            await invoke('set_local_user_role', {
+              userId: userSession.user.id,
+              schoolId: schoolId || 'school-main',
+              roleName,
+            });
+          } catch (rErr) {
+            console.warn('Erreur set_local_user_role:', rErr);
+          }
+        }
+
+        activate();
+        setRoles(effectiveRoles);
+        setRolesLoaded(true);
+        await fetchUserRoles(userSession.user.id, schoolId || 'school-main', metaRole);
       } catch (err) {
         console.error("Erreur de synchronisation locale de l'utilisateur:", err);
+        // Toujours garantir que l'utilisateur a son rôle chargé pour ne pas le bloquer
+        setRoles([metaRole || 'DIRECTION']);
+        setRolesLoaded(true);
       }
     }
   };

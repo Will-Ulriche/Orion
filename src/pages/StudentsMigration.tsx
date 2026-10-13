@@ -42,7 +42,6 @@ interface Class {
   level: string | null;
 }
 
-const SCHOOL_ID = 'school-1';
 
 function formatDate(d: string | null): string {
   if (!d) return '—';
@@ -126,14 +125,14 @@ export default function StudentsMigration() {
 
   const fetchClasses = async () => {
     try {
-      const res: Class[] = await invoke('get_classes', { schoolId: schoolId || SCHOOL_ID, academicYearId: currentYear!.id });
+      const res: Class[] = await invoke('get_classes', { schoolId: schoolId, academicYearId: currentYear!.id });
       setClasses(res);
     } catch (e) { console.error(e); }
   };
 
   const fetchTargetClasses = async () => {
     try {
-      const res: Class[] = await invoke('get_classes', { schoolId: schoolId || SCHOOL_ID, academicYearId: plannedYear!.id });
+      const res: Class[] = await invoke('get_classes', { schoolId: schoolId, academicYearId: plannedYear!.id });
       setTargetClasses(res);
     } catch (e) { console.error(e); }
   };
@@ -143,7 +142,7 @@ export default function StudentsMigration() {
     setLoading(true);
     try {
       const res: StudentEnrollment[] = await invoke('get_students', {
-        schoolId: schoolId || SCHOOL_ID,
+        schoolId: schoolId,
         academicYearId: currentYear.id,
         classId: null,
         includePhotos: false,
@@ -160,7 +159,7 @@ export default function StudentsMigration() {
     e.preventDefault();
     try {
       await invoke('create_student', {
-        schoolId: schoolId || SCHOOL_ID,
+        schoolId: schoolId,
         academicYearId: currentYear!.id,
         firstName: newStudent.firstName,
         lastName: newStudent.lastName,
@@ -197,7 +196,7 @@ export default function StudentsMigration() {
     if (!migratingStudent || !plannedYear) return;
     try {
       await invoke('migrate_student', {
-        schoolId: schoolId || SCHOOL_ID,
+        schoolId: schoolId,
         studentId: migratingStudent.student_id,
         targetAcademicYearId: plannedYear.id,
         targetClassId: migrationTargetClass || null,

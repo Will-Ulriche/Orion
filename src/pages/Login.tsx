@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Eye, EyeOff, WifiOff, Loader2, AlertCircle, Shield } from 'lucide-react';
+import { Eye, EyeOff, WifiOff, Loader2, AlertCircle, Shield, ArrowLeft } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { useNetwork } from '../hooks/useNetwork';
@@ -119,7 +119,13 @@ function ConstellationCanvas() {
 }
 
 // ─── Main Login Component ─────────────────────────────────────────────────────
-export default function Login({ isActivation = false }: { isActivation?: boolean }) {
+export default function Login({
+  isActivation = false,
+  onSwitchToLocal,
+}: {
+  isActivation?: boolean;
+  onSwitchToLocal?: () => void;
+}) {
   const { setOfflineSession, schoolId } = useAuth();
   const isOnline = useNetwork();
   
@@ -478,6 +484,20 @@ export default function Login({ isActivation = false }: { isActivation?: boolean
               )}
             </button>
           </form>
+
+          {onSwitchToLocal && (
+            <button
+              type="button"
+              onClick={onSwitchToLocal}
+              className="w-full mt-3 py-2.5 rounded-xl border border-slate-750 hover:border-slate-600 text-slate-300 hover:text-white text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer bg-slate-800/40 hover:bg-slate-800/80"
+              style={{
+                border: '1px solid rgba(255,255,255,0.1)',
+              }}
+            >
+              <ArrowLeft size={14} />
+              Retour à la connexion locale
+            </button>
+          )}
 
           {/* Offline badge */}
           <div className="mt-8 flex items-center justify-center gap-2">

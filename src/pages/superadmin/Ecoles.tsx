@@ -8,7 +8,7 @@ import { Badge, Btn, EmptyState, Field, Loader, Modal, SearchInput, Select, Tabl
 import SuperAdminShell from './SuperAdminShell';
 import { useAuth } from '../../contexts/AuthContext';
 import {
-  createSchoolWithAdmin, createAdminForSchool, listSchools, setSchoolStatus, updateSchool, deleteSchool,
+  createSchoolWithAdmin, createAdminForSchool, listSchools, listSchoolCredentials, setSchoolStatus, updateSchool, deleteSchool,
   SCHOOL_STATUSES, type School, type SchoolInput, type SchoolAdminInput, type CreateSchoolResult
 } from '../../lib/superAdminApi';
 
@@ -36,6 +36,7 @@ export default function Ecoles() {
   const navigate = useNavigate();
   const { enterSchoolMode, forcedSchoolId, exitSchoolMode } = useAuth();
   const [schools, setSchools] = useState<School[]>([]);
+  const [schoolsWithDirection, setSchoolsWithDirection] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -83,7 +84,15 @@ export default function Ecoles() {
     setLoading(true);
     setError('');
     try {
-      setSchools(await listSchools());
+      const [schoolsData, credsData] = await Promise.all([
+        listSchools(),
+        listSchoolCredentials().catch(() => []),
+      ]);
+      setSchools(schoolsData);
+      const dirSet = new Set(
+        credsData.filter((c: any) => c.role === 'DIRECTION').map((c: any) => c.schoolId)
+      );
+      setSchoolsWithDirection(dirSet);
     } catch (e: any) {
       setError(e.message ?? String(e));
     } finally {
@@ -119,6 +128,10 @@ export default function Ecoles() {
   };
 
   const openAddCredentials = (s: School) => {
+    if (schoolsWithDirection.has(s.id)) {
+      setError(`Cet établissement (${s.name}) possède déjà un compte de Direction. Un seul profil de Direction est autorisé.`);
+      return;
+    }
     setExistingSchoolAccountModal(s);
     setExistingAdminForm({
       email: s.email || `direction@${(s.short_name || 'ecole').toLowerCase().replace(/\s+/g, '')}.tg`,
@@ -210,6 +223,7 @@ export default function Ecoles() {
         licenseKey: null,
       });
       setExistingSchoolAccountModal(null);
+      await load();
     } catch (e: any) {
       setError(e.message ?? String(e));
     } finally {
@@ -364,14 +378,25 @@ export default function Ecoles() {
                         <Btn variant="ghost" onClick={() => openSchoolSpace(s)} title="Ouvrir l'espace de l'établissement" className="!h-8 !px-2 text-brand-600 hover:text-brand-700 hover:bg-brand-50">
                           <ArrowUpRight size={14} />
                         </Btn>
-                        <Btn
-                          variant="ghost"
-                          onClick={() => openAddCredentials(s)}
-                          title="Créer un compte d'accès pour cette école"
-                          className="!h-8 !px-2 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
-                        >
-                          <KeyRound size={14} />
-                        </Btn>
+                        {schoolsWithDirection.has(s.id) ? (
+                          <Btn
+                            variant="ghost"
+                            disabled
+                            title="Compte Direction déjà configuré (un seul profil autorisé par établissement)"
+                            className="!h-8 !px-2 text-slate-300 cursor-not-allowed opacity-40 hover:bg-transparent"
+                          >
+                            <KeyRound size={14} />
+                          </Btn>
+                        ) : (
+                          <Btn
+                            variant="ghost"
+                            onClick={() => openAddCredentials(s)}
+                            title="Créer le compte Direction pour cette école"
+                            className="!h-8 !px-2 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
+                          >
+                            <KeyRound size={14} />
+                          </Btn>
+                        )}
                         <Btn variant="ghost" onClick={() => openEdit(s)} title="Modifier" className="!h-8 !px-2"><Pencil size={14} /></Btn>
                         <Btn variant="ghost" onClick={() => toggleStatus(s)} title={s.status === 'ACTIVE' ? 'Suspendre' : 'Activer'} className="!h-8 !px-2"><Power size={14} /></Btn>
                         <Btn
@@ -493,6 +518,17 @@ export default function Ecoles() {
               </div>
               
               <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Rôle du compte créé" required className="sm:col-span-2">
+                  <Select
+                    value={adminForm.role || 'DIRECTION'}
+                    onChange={(e) => setAdminForm((a) => ({ ...a, role: e.target.value as any }))}
+                  >
+                    <option value="DIRECTION">Direction (Administrateur principal)</option>
+                    <option value="SECRETAIRE">Secrétaire (Gestion élèves & classes)</option>
+                    <option value="PROFESSEUR">Professeur (Gestion des notes & pédagogie)</option>
+                  </Select>
+                </Field>
+
                 <Field label="Email de connexion (Identifiant)" required className="sm:col-span-2">
                   <TextInput
                     type="email"
@@ -626,6 +662,17 @@ export default function Ecoles() {
           }
         >
           <div className="space-y-4">
+            <Field label="Rôle / Profil d'accès" required>
+              <Select
+                value={existingAdminForm.role || 'DIRECTION'}
+                onChange={(e) => setExistingAdminForm((a) => ({ ...a, role: e.target.value as any }))}
+              >
+                <option value="DIRECTION">Direction (Administrateur principal)</option>
+                <option value="SECRETAIRE">Secrétaire (Gestion élèves & classes)</option>
+                <option value="PROFESSEUR">Professeur (Gestion des notes & pédagogie)</option>
+              </Select>
+            </Field>
+
             <Field label="Email de connexion (Identifiant)" required>
               <TextInput
                 type="email"

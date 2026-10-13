@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart,
-  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins, BookOpen, UserCog, Archive, Shield, UserPlus, ClipboardList,
+  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins, BookOpen, UserCog, Archive, Shield, ClipboardList,
   LayoutDashboard, Building2, KeyRound, MonitorSmartphone, WifiOff, ShieldCheck, BarChart2
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -21,7 +21,6 @@ const manageItems = [
   { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Notes', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
   { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ['PROFESSEUR'] },
   { to: '/personnel', icon: UserCog, label: 'Personnel', roles: ['DIRECTION'] },
-  { to: '/users', icon: UserPlus, label: 'Utilisateurs', roles: ['DIRECTION'] },
 ];
 
 const settingsItems = [
@@ -69,9 +68,11 @@ export default function Sidebar() {
   const email = user?.email ?? 'direction@orion.com';
 
   const hasAccess = (itemRoles: string[]) => {
-    // Tant que les rôles ne sont pas chargés, on montre tout (évite flash de contenu vide)
-    if (!rolesLoaded) return true;
+    // Items sans restriction de rôle → toujours visibles
     if (itemRoles.length === 0) return true;
+    // Tant que les rôles ne sont pas chargés, on masque les items restreints
+    // (évite le flash de "Récap des notes" visible par la DIRECTION au chargement)
+    if (!rolesLoaded) return false;
     return roles.some(r => itemRoles.includes(r) || r === 'SUPER_ADMIN');
   };
 

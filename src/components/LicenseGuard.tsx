@@ -2,8 +2,17 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { KeyRound, RefreshCw, ShieldOff, Clock, Ban, AlertTriangle, Key, CheckCircle, LogIn } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase } from '../lib/supabaseClient';
+import { supabaseAdmin } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
+
+function normalizeLicenseKey(input: string): string {
+  let cleaned = input.trim().toUpperCase().replace(/[\s_]+/g, '-');
+  if (!cleaned.startsWith('ORION-') && cleaned.replace(/-/g, '').length === 12) {
+    const raw = cleaned.replace(/-/g, '');
+    cleaned = `ORION-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
+  }
+  return cleaned;
+}
 
 // ─── Types ────────────────────────────────────────────────────
 type CheckStatus = 'checking' | 'valid' | 'expired' | 'suspended' | 'revoked' | 'missing' | 'offline_grace';
@@ -19,7 +28,7 @@ interface LicenseInfo {
 
 // ─── Constantes ───────────────────────────────────────────────
 const GRACE_MS     = 7 * 24 * 60 * 60 * 1000; // 7 jours hors-ligne toléré
-const RECHECK_MS   = 60 * 60 * 1000;           // revérification toutes les heures
+const RECHECK_MS   = 5 * 60 * 1000;            // revérification toutes les 5 minutes
 const LS_LAST_OK   = 'orion_lic_ok_at';
 const LS_CACHED    = 'orion_lic_cache';
 
@@ -60,8 +69,12 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
     try {
       // Déterminer le school_id réel
       let targetId = schoolId;
+      if (!targetId || targetId === 'school-1') {
+        const metaSchoolId = (user?.user_metadata as any)?.school_id;
+        if (metaSchoolId) targetId = metaSchoolId;
+      }
       try {
-        const { data: prof } = await supabase
+        const { data: prof } = await supabaseAdmin
           .from('profiles')
           .select('school_id')
           .eq('user_id', user.id)
@@ -69,17 +82,29 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         if (prof?.school_id) targetId = prof.school_id;
       } catch (_) {}
 
-      // Interroger Supabase
-      const { data: lics, error } = await supabase
+      // Interroger Supabase via supabaseAdmin (contourne le RLS pour vérifier la licence)
+      const { data: lics, error } = await supabaseAdmin
         .from('licenses')
-        .select('id, license_key, status, starts_at, expires_at, max_devices')
+        .select('id, school_id, license_key, status, starts_at, expires_at, max_devices')
         .eq('school_id', targetId)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
 
       const now = new Date();
-      const cloudLics: LicenseInfo[] = (lics ?? []) as LicenseInfo[];
+      let cloudLics: LicenseInfo[] = (lics ?? []) as LicenseInfo[];
+
+      // Fallback si l'école utilise encore school-1
+      if (cloudLics.length === 0 && targetId !== 'school-1') {
+        const { data: fallbackLics } = await supabaseAdmin
+          .from('licenses')
+          .select('id, school_id, license_key, status, starts_at, expires_at, max_devices')
+          .eq('school_id', 'school-1')
+          .order('created_at', { ascending: false });
+        if (fallbackLics && fallbackLics.length > 0) {
+          cloudLics = fallbackLics as LicenseInfo[];
+        }
+      }
 
       // Chercher une licence valide parmi les résultats cloud
       const validCloud = cloudLics.find(l =>
@@ -90,6 +115,9 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       if (validCloud) {
         localStorage.setItem(LS_LAST_OK, Date.now().toString());
         localStorage.setItem(LS_CACHED, JSON.stringify(validCloud));
+        try {
+          await invoke('save_license', { license: validCloud });
+        } catch (_) {}
         setLicenseInfo(validCloud);
         setCheckStatus('valid');
         return;
@@ -212,13 +240,13 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
   // ── Activation manuelle ──────────────────────────────────────
   const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanKey = activationKey.trim().toUpperCase();
+    const cleanKey = normalizeLicenseKey(activationKey);
     if (!cleanKey) return;
     setActivating(true);
     setActivationError('');
     setActivationSuccess('');
     try {
-      const { data: lic, error } = await supabase
+      const { data: lic, error } = await supabaseAdmin
         .from('licenses')
         .select('*')
         .eq('license_key', cleanKey)
@@ -229,13 +257,35 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       if (lic.status === 'SUSPENDED') throw new Error('Cette clé est suspendue.');
       if (lic.expires_at && new Date(lic.expires_at) < new Date()) throw new Error('Cette clé est expirée.');
 
-      setActivationSuccess('Licence vérifiée ! Connexion en cours…');
+      // Déterminer le school_id effectif
+      let effectiveId = schoolId;
+      if ((!effectiveId || effectiveId === 'school-1') && lic.school_id && lic.school_id !== 'unassigned') {
+        effectiveId = lic.school_id;
+        localStorage.setItem('current_school_id', effectiveId);
+        window.dispatchEvent(new Event('orion:school-changed'));
+      } else if (!lic.school_id || lic.school_id === 'unassigned') {
+        await supabaseAdmin
+          .from('licenses')
+          .update({ school_id: effectiveId, status: 'ACTIVE' })
+          .eq('id', lic.id);
+        lic.school_id = effectiveId;
+      }
+
+      localStorage.setItem(LS_LAST_OK, Date.now().toString());
+      localStorage.setItem(LS_CACHED, JSON.stringify(lic));
+      try {
+        await invoke('save_license', { license: lic });
+      } catch (_) {}
+
+      setLicenseInfo(lic);
+      setActivationSuccess('Licence vérifiée et activée avec succès !');
       setActivationKey('');
+      window.dispatchEvent(new Event('orion:license-updated'));
       setTimeout(() => {
         setShowActivation(false);
         setActivationSuccess('');
-        checkLicense();
-      }, 1500);
+        setCheckStatus('valid');
+      }, 1200);
     } catch (err: any) {
       setActivationError(err.message || 'Échec de vérification de la licence.');
     } finally {

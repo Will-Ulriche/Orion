@@ -1,8 +1,21 @@
-import { Key, CheckCircle, Clock, XCircle, Ban, RefreshCw, Plus, Copy, Check } from 'lucide-react';
+import {
+  Key, CheckCircle, Clock, XCircle, Ban, RefreshCw, Plus, Copy, Check,
+  AlertTriangle, Sparkles, Hourglass
+} from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase } from '../lib/supabaseClient';
+import { supabaseAdmin } from '../lib/supabaseClient';
+
+function normalizeLicenseKey(input: string): string {
+  let cleaned = input.trim().toUpperCase().replace(/[\s_]+/g, '-');
+  if (!cleaned.startsWith('ORION-') && cleaned.replace(/-/g, '').length === 12) {
+    const raw = cleaned.replace(/-/g, '');
+    cleaned = `ORION-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
+  }
+  return cleaned;
+}
+
 
 const statusConfig: Record<string, { label: string; color: string; icon: typeof CheckCircle }> = {
   ACTIVE:    { label: 'Active',    color: 'bg-emerald-50 text-emerald-700 border border-emerald-200',  icon: CheckCircle },
@@ -22,6 +35,296 @@ interface LicenseRec {
   issued_at?: string | null;
 }
 
+// ─── Composant Décompte du temps restant (Notion / Modern Widget) ────────────
+function LicenseCountdownCard({
+  license,
+  onCopyKey,
+  copiedKey
+}: {
+  license: LicenseRec;
+  onCopyKey: (key: string) => void;
+  copiedKey: string | null;
+}) {
+  const [timeLeft, setTimeLeft] = useState<{
+    days: number;
+    hours: number;
+    minutes: number;
+    seconds: number;
+    isExpired: boolean;
+    unlimited: boolean;
+    percentage: number;
+  }>({
+    days: 0,
+    hours: 0,
+    minutes: 0,
+    seconds: 0,
+    isExpired: false,
+    unlimited: !license.expires_at,
+    percentage: 0,
+  });
+
+  useEffect(() => {
+    if (!license.expires_at) {
+      setTimeLeft({
+        days: 0,
+        hours: 0,
+        minutes: 0,
+        seconds: 0,
+        isExpired: false,
+        unlimited: true,
+        percentage: 0,
+      });
+      return;
+    }
+
+    const calculate = () => {
+      const now = Date.now();
+      const end = new Date(license.expires_at!).getTime();
+      const diff = end - now;
+
+      if (diff <= 0) {
+        setTimeLeft({
+          days: 0,
+          hours: 0,
+          minutes: 0,
+          seconds: 0,
+          isExpired: true,
+          unlimited: false,
+          percentage: 100,
+        });
+        return;
+      }
+
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
+      const minutes = Math.floor((diff / (1000 * 60)) % 60);
+      const seconds = Math.floor((diff / 1000) % 60);
+
+      let percentage = 0;
+      if (license.starts_at) {
+        const start = new Date(license.starts_at).getTime();
+        const total = end - start;
+        if (total > 0) {
+          const elapsed = now - start;
+          percentage = Math.min(100, Math.max(0, (elapsed / total) * 100));
+        }
+      }
+
+      setTimeLeft({
+        days,
+        hours,
+        minutes,
+        seconds,
+        isExpired: false,
+        unlimited: false,
+        percentage,
+      });
+    };
+
+    calculate();
+    const interval = setInterval(calculate, 1000);
+    return () => clearInterval(interval);
+  }, [license.expires_at, license.starts_at]);
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+
+  // Niveaux d'urgence
+  const isUrgent = !timeLeft.unlimited && !timeLeft.isExpired && timeLeft.days < 7;
+  const isWarning = !timeLeft.unlimited && !timeLeft.isExpired && timeLeft.days >= 7 && timeLeft.days < 30;
+
+  return (
+    <div className={`relative overflow-hidden rounded-2xl border p-6 mb-8 transition-all shadow-sm ${
+      timeLeft.isExpired
+        ? 'bg-rose-50/60 border-rose-200 text-rose-900'
+        : isUrgent
+        ? 'bg-amber-50/70 border-amber-300 text-amber-950'
+        : 'bg-gradient-to-br from-indigo-950 via-slate-900 to-[#1e1b4b] border-indigo-900/50 text-white shadow-xl shadow-indigo-950/20'
+    }`}>
+      {/* Halo lumineux subtil */}
+      {!timeLeft.isExpired && (
+        <div className="absolute -top-24 -right-24 w-72 h-72 rounded-full bg-indigo-500/15 blur-3xl pointer-events-none" />
+      )}
+
+      {/* Header du décompte */}
+      <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-white/10">
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+            timeLeft.isExpired
+              ? 'bg-rose-100 text-rose-600'
+              : isUrgent
+              ? 'bg-amber-100 text-amber-700'
+              : 'bg-white/10 text-indigo-300 backdrop-blur-sm'
+          }`}>
+            <Hourglass size={20} className={!timeLeft.isExpired ? 'animate-pulse' : ''} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-bold tracking-tight">
+                Décompte de validité de votre licence
+              </h3>
+              <span className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1 ${
+                timeLeft.isExpired
+                  ? 'bg-rose-200 text-rose-800'
+                  : isUrgent
+                  ? 'bg-rose-500 text-white animate-pulse'
+                  : isWarning
+                  ? 'bg-amber-400 text-amber-950'
+                  : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  timeLeft.isExpired ? 'bg-rose-600' : isUrgent ? 'bg-white' : 'bg-emerald-400 animate-ping'
+                }`} />
+                {timeLeft.isExpired
+                  ? 'Expirée'
+                  : timeLeft.unlimited
+                  ? 'Illimitée'
+                  : isUrgent
+                  ? `Expire dans ${timeLeft.days}j !`
+                  : isWarning
+                  ? 'Expiration proche'
+                  : 'Licence active'}
+              </span>
+            </div>
+            <p className={`text-xs mt-0.5 ${timeLeft.isExpired ? 'text-rose-700' : isUrgent ? 'text-amber-800' : 'text-slate-300'}`}>
+              {timeLeft.unlimited
+                ? "Cette licence d'établissement n'a aucune date d'expiration fixée."
+                : license.expires_at
+                ? `Date limite : ${new Date(license.expires_at).toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`
+                : ''}
+            </p>
+          </div>
+        </div>
+
+        {/* Clé active copiée */}
+        <div className="flex items-center gap-2 self-start md:self-auto">
+          <div className={`px-3 py-1.5 rounded-xl text-xs font-mono flex items-center gap-2 ${
+            timeLeft.isExpired
+              ? 'bg-white/80 border border-rose-200 text-rose-900'
+              : 'bg-white/10 border border-white/15 text-white backdrop-blur-sm'
+          }`}>
+            <Key size={13} className="text-indigo-400" />
+            <span className="font-semibold select-all">{license.license_key}</span>
+            <button
+              onClick={() => onCopyKey(license.license_key)}
+              className="p-1 hover:bg-white/20 rounded transition-colors"
+              title="Copier la clé"
+            >
+              {copiedKey === license.license_key ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Cartes digitales du décompte en temps réel */}
+      {!timeLeft.unlimited && !timeLeft.isExpired && (
+        <div className="relative z-10 pt-5 space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {/* Jours */}
+            <div className={`rounded-xl p-3.5 flex flex-col items-center justify-center border text-center transition-transform hover:scale-[1.02] ${
+              timeLeft.isExpired
+                ? 'bg-white border-rose-200'
+                : 'bg-white/5 border-white/10 backdrop-blur-sm'
+            }`}>
+              <span className="font-mono text-3xl sm:text-4xl font-extrabold tracking-tight">
+                {pad(timeLeft.days)}
+              </span>
+              <span className={`text-[11px] font-semibold uppercase tracking-wider mt-1 ${
+                timeLeft.isExpired ? 'text-rose-600' : 'text-indigo-200/80'
+              }`}>
+                {timeLeft.days <= 1 ? 'Jour' : 'Jours'}
+              </span>
+            </div>
+
+            {/* Heures */}
+            <div className={`rounded-xl p-3.5 flex flex-col items-center justify-center border text-center transition-transform hover:scale-[1.02] ${
+              timeLeft.isExpired
+                ? 'bg-white border-rose-200'
+                : 'bg-white/5 border-white/10 backdrop-blur-sm'
+            }`}>
+              <span className="font-mono text-3xl sm:text-4xl font-extrabold tracking-tight">
+                {pad(timeLeft.hours)}
+              </span>
+              <span className={`text-[11px] font-semibold uppercase tracking-wider mt-1 ${
+                timeLeft.isExpired ? 'text-rose-600' : 'text-indigo-200/80'
+              }`}>
+                Heures
+              </span>
+            </div>
+
+            {/* Minutes */}
+            <div className={`rounded-xl p-3.5 flex flex-col items-center justify-center border text-center transition-transform hover:scale-[1.02] ${
+              timeLeft.isExpired
+                ? 'bg-white border-rose-200'
+                : 'bg-white/5 border-white/10 backdrop-blur-sm'
+            }`}>
+              <span className="font-mono text-3xl sm:text-4xl font-extrabold tracking-tight">
+                {pad(timeLeft.minutes)}
+              </span>
+              <span className={`text-[11px] font-semibold uppercase tracking-wider mt-1 ${
+                timeLeft.isExpired ? 'text-rose-600' : 'text-indigo-200/80'
+              }`}>
+                Minutes
+              </span>
+            </div>
+
+            {/* Secondes */}
+            <div className={`rounded-xl p-3.5 flex flex-col items-center justify-center border text-center transition-transform hover:scale-[1.02] ${
+              timeLeft.isExpired
+                ? 'bg-white border-rose-200'
+                : 'bg-white/5 border-white/10 backdrop-blur-sm'
+            }`}>
+              <span className="font-mono text-3xl sm:text-4xl font-extrabold tracking-tight text-indigo-400">
+                {pad(timeLeft.seconds)}
+              </span>
+              <span className={`text-[11px] font-semibold uppercase tracking-wider mt-1 ${
+                timeLeft.isExpired ? 'text-rose-600' : 'text-indigo-200/80'
+              }`}>
+                Secondes
+              </span>
+            </div>
+          </div>
+
+          {/* Jauge de progression du temps écoulé */}
+          {license.starts_at && (
+            <div className="pt-2">
+              <div className="flex justify-between text-[11px] font-medium text-slate-400 mb-1.5">
+                <span>Période d'abonnement entamée ({Math.round(timeLeft.percentage)}%)</span>
+                <span>{timeLeft.days} jours restants sur votre licence</span>
+              </div>
+              <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden p-0.5">
+                <div
+                  className={`h-full rounded-full transition-all duration-1000 ${
+                    isUrgent ? 'bg-rose-500' : isWarning ? 'bg-amber-400' : 'bg-gradient-to-r from-indigo-400 to-emerald-400'
+                  }`}
+                  style={{ width: `${Math.min(100, Math.max(2, 100 - timeLeft.percentage))}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cas : Licence expirée */}
+      {timeLeft.isExpired && (
+        <div className="relative z-10 pt-4 flex items-center justify-between flex-wrap gap-3">
+          <p className="text-xs font-semibold text-rose-800 flex items-center gap-1.5">
+            <AlertTriangle size={15} className="text-rose-600" />
+            La licence a expiré. Veuillez contacter la direction générale ou le Super Administrateur pour obtenir une nouvelle clé.
+          </p>
+        </div>
+      )}
+
+      {/* Cas : Licence illimitée */}
+      {timeLeft.unlimited && (
+        <div className="relative z-10 pt-4 flex items-center gap-2 text-xs text-emerald-300 font-medium">
+          <Sparkles size={16} className="text-emerald-400" />
+          <span>Validité perpétuelle : aucun renouvellement périodique n'est requis.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Licences() {
   const { schoolId, user } = useAuth();
   const [licenses, setLicenses] = useState<LicenseRec[]>([]);
@@ -37,7 +340,7 @@ export default function Licences() {
   const [activationSuccess, setActivationSuccess] = useState('');
   const [showActivationModal, setShowActivationModal] = useState(false);
 
-  const effectiveSchoolId = schoolId || localStorage.getItem('current_school_id') || 'school-1';
+  const effectiveSchoolId = schoolId || localStorage.getItem('current_school_id') || '';
 
   const loadLicenses = useCallback(async () => {
     setLoading(true);
@@ -47,8 +350,12 @@ export default function Licences() {
     try {
       // Résoudre le school_id précis de l'utilisateur si disponible
       let targetId = effectiveSchoolId;
+      if (!targetId || targetId === 'school-1') {
+        const metaSchoolId = (user?.user_metadata as any)?.school_id;
+        if (metaSchoolId) targetId = metaSchoolId;
+      }
       if (user?.id) {
-        const { data: prof } = await supabase
+        const { data: prof } = await supabaseAdmin
           .from('profiles')
           .select('school_id')
           .eq('user_id', user.id)
@@ -58,7 +365,7 @@ export default function Licences() {
         }
       }
 
-      const { data: cloudLics, error } = await supabase
+      const { data: cloudLics, error } = await supabaseAdmin
         .from('licenses')
         .select('*')
         .eq('school_id', targetId)
@@ -66,6 +373,23 @@ export default function Licences() {
 
       if (!error && cloudLics && cloudLics.length > 0) {
         loaded = cloudLics as LicenseRec[];
+        // Sauvegarder la première licence active dans SQLite
+        const active = loaded.find(l => l.status === 'ACTIVE');
+        if (active) {
+          try {
+            await invoke('save_license', { license: active });
+          } catch (_) {}
+        }
+      } else if (targetId !== 'school-1') {
+        // Fallback si la licence était enregistrée sous school-1
+        const { data: fallbackLics } = await supabaseAdmin
+          .from('licenses')
+          .select('*')
+          .eq('school_id', 'school-1')
+          .order('created_at', { ascending: false });
+        if (fallbackLics && fallbackLics.length > 0) {
+          loaded = fallbackLics as LicenseRec[];
+        }
       }
     } catch (cloudErr) {
       console.warn('Impossible de joindre Supabase pour les licences, repli local:', cloudErr);
@@ -113,7 +437,7 @@ export default function Licences() {
   // Activer une nouvelle clé saisie manuellement
   const handleActivateKey = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanKey = activationKey.trim().toUpperCase();
+    const cleanKey = normalizeLicenseKey(activationKey);
     if (!cleanKey) return;
 
     setActivating(true);
@@ -121,8 +445,8 @@ export default function Licences() {
     setActivationSuccess('');
 
     try {
-      // 1. Vérifier la clé sur Supabase
-      const { data: lic, error } = await supabase
+      // 1. Vérifier la clé sur Supabase via supabaseAdmin (bypass RLS)
+      const { data: lic, error } = await supabaseAdmin
         .from('licenses')
         .select('*')
         .eq('license_key', cleanKey)
@@ -132,13 +456,29 @@ export default function Licences() {
         throw new Error('Clé de licence invalide ou introuvable.');
       }
 
-      // Si la licence appartient à une autre école ou est nouvelle, lier à notre école
-      if (!lic.school_id || lic.school_id === 'unassigned') {
-        await supabase
+      if (lic.status === 'REVOKED') throw new Error('Cette clé a été révoquée.');
+      if (lic.status === 'SUSPENDED') throw new Error('Cette clé est suspendue.');
+      if (lic.expires_at && new Date(lic.expires_at) < new Date()) throw new Error('Cette clé est expirée.');
+
+      let currentId = effectiveSchoolId;
+      if ((!currentId || currentId === 'school-1') && lic.school_id && lic.school_id !== 'unassigned') {
+        currentId = lic.school_id;
+        localStorage.setItem('current_school_id', currentId);
+        window.dispatchEvent(new Event('orion:school-changed'));
+      } else if (!lic.school_id || lic.school_id === 'unassigned') {
+        await supabaseAdmin
           .from('licenses')
-          .update({ school_id: effectiveSchoolId, status: 'ACTIVE' })
+          .update({ school_id: currentId, status: 'ACTIVE' })
           .eq('id', lic.id);
+        lic.school_id = currentId;
       }
+
+      // Enregistrer dans le cache local et SQLite
+      localStorage.setItem('orion_lic_ok_at', Date.now().toString());
+      localStorage.setItem('orion_lic_cache', JSON.stringify(lic));
+      try {
+        await invoke('save_license', { license: lic });
+      } catch (_) {}
 
       setActivationSuccess('Licence activée avec succès !');
       setActivationKey('');
@@ -156,8 +496,19 @@ export default function Licences() {
     }
   };
 
+  const primaryLicense = licenses.find(l => l.status === 'ACTIVE') || licenses[0];
+
   return (
     <div className="pt-2">
+      {/* ─── DÉCOMPTE DU TEMPS RESTANT EN DIRECT (TOP WIDGET) ─── */}
+      {!loading && primaryLicense && (
+        <LicenseCountdownCard
+          license={primaryLicense}
+          onCopyKey={copyKey}
+          copiedKey={copiedKey}
+        />
+      )}
+
       {/* Header bar */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div className="flex gap-2 flex-wrap">
