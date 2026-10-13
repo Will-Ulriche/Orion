@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, ArrowRight, Cloud, WifiOff, ShieldCheck, BarChart2,
+  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, ArrowRight, Cloud, WifiOff, ShieldCheck, BarChart2, FileSpreadsheet,
 } from 'lucide-react';
 import { Badge, Btn, Card, Kpi } from '../../components/ui';
 import SuperAdminShell from './SuperAdminShell';
@@ -13,6 +13,7 @@ const QUICK_LINKS = [
   { to: '/super-admin/licences',  icon: ShieldCheck,     label: 'Licences',          desc: 'Générer et attribuer les licences' },
   { to: '/super-admin/appareils', icon: MonitorSmartphone, label: 'Appareils',         desc: 'Suivre les postes activés' },
   { to: '/super-admin/stats',     icon: BarChart2,       label: 'Statistiques',       desc: 'Analytiques, graphiques et alertes' },
+  { to: '/super-admin/export',    icon: FileSpreadsheet, label: 'Export Excel',       desc: 'Exporter toutes les données (classe, notes, profs, paiements)' },
 ];
 
 export default function SuperAdminHome() {

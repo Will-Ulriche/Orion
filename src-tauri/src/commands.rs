@@ -524,6 +524,17 @@ pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Resul
     let s: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let get = |key: &str| s.get(key).and_then(|v| v.as_str());
 
+    // Établissement de travail : la première école connue localement.
+    let school_id: String = conn
+        .query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
+        .unwrap_or_else(|_| "school-1".to_string());
+
+    // Garantir l'existence de la ligne (la colonne name est NOT NULL).
+    conn.execute(
+        "INSERT INTO schools (id, name) VALUES (?1, ?2) ON CONFLICT(id) DO NOTHING",
+        rusqlite::params![school_id, get("name").unwrap_or("")],
+    ).map_err(|e| format!("Erreur SQLite INSERT schools: {}", e))?;
+
     conn.execute(
         "UPDATE schools SET 
             name = ?1, short_name = ?2, address = ?3, city = ?4, country = ?5, 
@@ -532,7 +543,7 @@ pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Resul
             logo_url = ?12, stamp_url = ?13, signature_url = ?14,
             ministry_name = ?15, head_title = ?16, head_name = ?17,
             slogan = ?18, registration_number = ?19
-         WHERE id = 'school-1'",
+         WHERE id = ?20",
         rusqlite::params![
             get("name").unwrap_or(""),
             get("short_name"), get("address"), get("city"), get("country"),
@@ -540,7 +551,8 @@ pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Resul
             get("currency"), get("timezone"),
             get("logo_url"), get("stamp_url"), get("signature_url"),
             get("ministry_name"), get("head_title"), get("head_name"),
-            get("slogan"), get("registration_number")
+            get("slogan"), get("registration_number"),
+            school_id
         ]
     ).map_err(|e| format!("Erreur SQLite UPDATE schools: {}", e))?;
 
@@ -549,7 +561,7 @@ pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Resul
     
     conn.execute(
         "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![uuid::Uuid::new_v4().to_string(), "school-1", "UPDATE_SETTINGS", "schools", &payload]
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, "UPDATE_SETTINGS", "schools", &payload]
     ).unwrap_or(0);
 
     Ok(())
@@ -558,13 +570,22 @@ pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Resul
 #[tauri::command(async)]
 pub fn get_school_settings(state: State<'_, DbState>) -> Result<serde_json::Value, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données")?;
+
+    // L'établissement de travail est celui connu localement (installation
+    // mono-établissement) : on prend la première école enregistrée plutôt que
+    // l'identifiant fictif « school-1 », afin de refléter le nom réel créé
+    // par le super-administrateur.
+    let school_id: String = conn
+        .query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
+        .unwrap_or_else(|_| "school-1".to_string());
+
     let mut stmt = conn.prepare(
         "SELECT name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone,
                 logo_url, stamp_url, signature_url, ministry_name, head_title, head_name, slogan, registration_number
-         FROM schools WHERE id = 'school-1'"
+         FROM schools WHERE id = ?1"
     ).map_err(|e| e.to_string())?;
     
-    let settings = stmt.query_row([], |row| {
+    let settings = stmt.query_row(rusqlite::params![school_id], |row| {
         let g = |i: usize| -> rusqlite::Result<String> { Ok(row.get::<_, Option<String>>(i)?.unwrap_or_default()) };
         Ok(serde_json::json!({
             "name": g(0)?,
@@ -587,9 +608,19 @@ pub fn get_school_settings(state: State<'_, DbState>) -> Result<serde_json::Valu
             "slogan": g(17)?,
             "registration_number": g(18)?,
         }))
-    }).map_err(|e| e.to_string())?;
-    
-    Ok(settings)
+    });
+
+    match settings {
+        Ok(s) => Ok(s),
+        // Aucune ligne encore enregistrée : renvoyer un objet vide plutôt qu'une erreur,
+        // pour que le formulaire des paramètres reste utilisable.
+        Err(_) => Ok(serde_json::json!({
+            "name": "", "short_name": "", "address": "", "city": "", "country": "",
+            "phone": "", "phone_secondary": "", "email": "", "website": "",
+            "currency": "", "timezone": "", "logo_url": "", "stamp_url": "", "signature_url": "",
+            "ministry_name": "", "head_title": "", "head_name": "", "slogan": "", "registration_number": ""
+        })),
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -901,10 +932,14 @@ pub fn transfer_class_within_year(
 pub fn sync_local_user(user_id: String, email: String, school_id: String, school_name: String, first_name: Option<String>, last_name: Option<String>, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     
-    // Upsert school
+    // Upsert school — le nom issu du cloud (créé par le super-admin) écrase un
+    // éventuel libellé vide/par défaut, afin qu'il apparaisse dans les paramètres.
     conn.execute(
         "INSERT INTO schools (id, name) VALUES (?1, ?2) 
-         ON CONFLICT(id) DO NOTHING",
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name
+         WHERE schools.name IS NULL
+            OR TRIM(schools.name) = ''
+            OR schools.name IN ('École', 'Établissement', 'Établissement Principal')",
         rusqlite::params![school_id, school_name],
     ).map_err(|e| format!("Erreur sync école: {}", e))?;
 
@@ -3550,6 +3585,60 @@ pub fn store_offline_credentials(user_id: String, email: String, password: Strin
     Ok(())
 }
 
+/// Supprime complètement une école et toutes ses données du SQLite local.
+/// Appelé quand le SUPER_ADMIN supprime un établissement depuis Supabase,
+/// pour que le SQLite de cette machine soit cohérent immédiatement.
+#[tauri::command]
+pub fn purge_local_school(school_id: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    // Suppression dans l'ordre correct (enfants avant parents)
+    let tables = [
+        "grades", "teacher_assignments", "class_subjects",
+        "grading_periods", "grade_types", "subjects",
+        "payments", "fee_structures",
+        "enrollment_history", "enrollments",
+        "staff", "timetable_slots",
+        "classes", "students",
+        "academic_years",
+        "pending_mutations", "sync_inbox",
+        "audit_logs", "devices", "licenses",
+        "user_roles", "profiles", "users",
+        "schools",
+    ];
+
+    for table in &tables {
+        // Certaines tables n'ont pas de colonne school_id → on ignore l'erreur
+        let sql = if *table == "enrollment_history" {
+            // enrollment_history n'a pas school_id, on passe par enrollments
+            format!(
+                "DELETE FROM enrollment_history WHERE enrollment_id IN \
+                 (SELECT id FROM enrollments WHERE school_id = '{}')",
+                school_id
+            )
+        } else {
+            format!("DELETE FROM {} WHERE school_id = '{}'", table, school_id)
+        };
+        // On ignore silencieusement si la colonne n'existe pas dans cette table
+        let _ = conn.execute(&sql, []);
+    }
+
+    Ok(())
+}
+
+/// Vérifie si une école existe encore dans la base SQLite locale.
+/// Utilisé au démarrage pour invalider une session hors-ligne dont l'école a été supprimée.
+#[tauri::command]
+pub fn check_local_school_exists(school_id: String, state: tauri::State<'_, DbState>) -> Result<bool, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schools WHERE id = ?1",
+        rusqlite::params![school_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    Ok(count > 0)
+}
+
 #[tauri::command]
 pub fn login_offline(email: String, password: String, state: tauri::State<'_, DbState>) -> Result<String, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
@@ -3995,10 +4084,26 @@ pub fn set_user_password(user_id: String, password: String, state: State<'_, DbS
     Ok(())
 }
 
-/// Identifiant et mot de passe maîtres pour accéder au compte SUPER_ADMIN.
-/// Cette règle est la seule valable pour entrer sur le compte super administrateur.
+/// Identifiant maître pour accéder au compte SUPER_ADMIN.
 pub const SUPER_ADMIN_IDENTIFIER: &str = "Admin";
-pub const SUPER_ADMIN_MASTER_PASSWORD: &str = "@admin@//10";
+
+/// Mot de passe maître Super Admin, lu depuis la configuration (jamais en dur).
+///
+/// Ordre de résolution :
+///   1. variable d'environnement `ORION_SUPER_ADMIN_MASTER_PASSWORD` (runtime) ;
+///   2. valeur embarquée à la compilation via `option_env!` (build CI/CD) ;
+///   3. fichier `.env` (dev / à côté de l'exécutable).
+///
+/// Si aucune valeur n'est définie, la connexion par mot de passe maître est
+/// désactivée : seul un mot de passe déjà défini permet d'entrer.
+fn super_admin_master_password() -> Option<String> {
+    let _ = dotenvy::dotenv();
+    std::env::var("ORION_SUPER_ADMIN_MASTER_PASSWORD")
+        .ok()
+        .or_else(|| option_env!("ORION_SUPER_ADMIN_MASTER_PASSWORD").map(String::from))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
 
 /// Connexion locale par identifiant (nom d'utilisateur ou email) + mot de passe
 #[tauri::command]
@@ -4014,7 +4119,7 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
 
     // ─── Règle SUPER_ADMIN : identifiant « Admin » ou mot de passe maître ───
     if ident.eq_ignore_ascii_case(SUPER_ADMIN_IDENTIFIER) {
-        let is_master_pw = password.trim() == SUPER_ADMIN_MASTER_PASSWORD;
+        let is_master_pw = super_admin_master_password().as_deref() == Some(password.trim());
 
         let existing_sa: Result<(String, String, Option<String>, Option<String>), _> = conn.query_row(
             "SELECT u.id, u.email, u.username, u.password_hash
@@ -4130,7 +4235,7 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
         |row| row.get(0),
     ).unwrap_or(0);
 
-    let is_master_pw = is_super > 0 && password.trim() == SUPER_ADMIN_MASTER_PASSWORD;
+    let is_master_pw = is_super > 0 && super_admin_master_password().as_deref() == Some(password.trim());
 
     if !is_master_pw {
         match hash_str {
@@ -4293,6 +4398,47 @@ mod finance_tests {
         assert_eq!(d.total_due, 30_000);
         assert_eq!(d.total_paid, 20_000);
     }
+}
+
+// ──────────────────────────────────────────────
+// Export Excel — Écriture d'un fichier dans le dossier Téléchargements
+// ──────────────────────────────────────────────
+
+/// Écrit un fichier (contenu base64) dans le dossier Téléchargements de l'utilisateur
+/// et retourne le chemin absolu du fichier créé. Utilisé par l'export Excel du
+/// super-admin (les fichiers sont générés côté navigateur puis persistés ici).
+#[tauri::command]
+pub fn write_download_file(app: tauri::AppHandle, file_name: String, base64_content: String) -> Result<String, String> {
+    use base64::Engine;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&base64_content)
+        .map_err(|e| format!("Contenu base64 invalide : {}", e))?;
+
+    // Dossier cible : Téléchargements de l'utilisateur, sinon données applicatives.
+    let dir = app
+        .path()
+        .download_dir()
+        .unwrap_or_else(|_| app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir()));
+
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Création du dossier impossible : {}", e))?;
+    }
+
+    // Nom de fichier assaini (interdit : /\:*?"<>|)
+    let safe_name: String = file_name
+        .chars()
+        .map(|c| match c { '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_', c => c })
+        .collect();
+
+    if safe_name.trim().is_empty() {
+        return Err("Nom de fichier invalide.".to_string());
+    }
+
+    let path = dir.join(safe_name);
+    std::fs::write(&path, &bytes).map_err(|e| format!("Écriture du fichier impossible : {}", e))?;
+
+    Ok(path.to_string_lossy().to_string())
 }
 
 

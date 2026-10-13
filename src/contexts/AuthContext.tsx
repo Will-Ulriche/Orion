@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
+import { verifyCloudAccount } from '../lib/accountValidation';
 
 interface AuthContextType {
   session: Session | null;
@@ -233,7 +234,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else if (localOfflineStr) {
         try {
           const parsed = JSON.parse(localOfflineStr);
-          setOfflineSessionState(parsed.id, parsed.email);
+          const offlineSchoolId = localStorage.getItem('current_school_id') || 'school-1';
+
+          // ── Vérification de sécurité ──────────────────────────────────────
+          // Si l'école associée à la session hors-ligne n'existe plus dans la
+          // base locale (supprimée par le SUPER_ADMIN), on refuse l'accès.
+          invoke<boolean>('check_local_school_exists', { schoolId: offlineSchoolId })
+            .then((exists) => {
+              if (exists) {
+                setOfflineSessionState(parsed.id, parsed.email);
+                // Vérifier en arrière-plan que le compte n'a pas été supprimé
+                // côté cloud par l'administration (ne bloque pas le démarrage).
+                verifyCloudAccount(parsed.id).then((state) => {
+                  if (state === 'missing') {
+                    console.warn('[Auth] Session hors-ligne rejetée : compte supprimé.');
+                    localStorage.removeItem('orion_offline_session');
+                    localStorage.removeItem('current_school_id');
+                    try { invoke('delete_local_user', { userId: parsed.id }); } catch (_) {}
+                    setSession(null);
+                    setUser(null);
+                    setRoles([]);
+                  }
+                });
+              } else {
+                // L'école a été supprimée → invalider la session fantôme
+                console.warn('[Auth] Session hors-ligne rejetée : établissement supprimé.');
+                localStorage.removeItem('orion_offline_session');
+                localStorage.removeItem('current_school_id');
+              }
+            })
+            .catch(() => {
+              // En cas d'erreur Tauri, on laisse passer pour ne pas bloquer l'app
+              setOfflineSessionState(parsed.id, parsed.email);
+            })
+            .finally(() => setLoading(false));
+          return; // setLoading(false) géré dans .finally()
         } catch (e) {
           localStorage.removeItem('orion_offline_session');
         }

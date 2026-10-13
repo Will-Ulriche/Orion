@@ -118,6 +118,42 @@ export function defaultCountry(): string {
   return 'Togo';
 }
 
+/** Identifiants stables des rôles de base (cf. migration init). */
+const BASE_ROLE_IDS: Record<string, string> = {
+  DIRECTION: 'role_dir',
+  SECRETAIRE: 'role_sec',
+  PROFESSEUR: 'role_prof',
+  SUPER_ADMIN: 'role_admin',
+};
+
+/**
+ * Retourne l'id du rôle demandé, en le créant s'il n'existe pas encore.
+ * Évite ainsi les échecs silencieux d'insertion dans user_roles (contrainte FK).
+ */
+async function resolveRoleId(roleName: string): Promise<string> {
+  const { data, error } = await supabaseAdmin
+    .from('roles')
+    .select('id')
+    .eq('name', roleName)
+    .maybeSingle();
+
+  if (error) throw new Error(`Lecture du rôle ${roleName} impossible: ${error.message}`);
+  if (data?.id) return data.id;
+
+  const fallbackId = BASE_ROLE_IDS[roleName] ?? `role_${roleName.toLowerCase()}`;
+  const { data: created, error: createErr } = await supabaseAdmin
+    .from('roles')
+    .upsert(
+      { id: fallbackId, name: roleName, description: `Rôle ${roleName}` },
+      { onConflict: 'name' }
+    )
+    .select('id')
+    .single();
+
+  if (createErr) throw new Error(`Création du rôle ${roleName} impossible: ${createErr.message}`);
+  return created.id;
+}
+
 // ─── Établissements ─────────────────────────────────────────
 
 export async function listSchools(): Promise<School[]> {
@@ -199,7 +235,9 @@ export async function createSchoolWithAdmin(input: CreateSchoolWithAdminInput): 
     status: 'ACTIVE',
   });
   if (userErr) {
-    console.error('Erreur table users:', userErr);
+    await supabaseAdmin.from('schools').delete().eq('id', schoolId);
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    throw new Error(`Erreur enregistrement de l'utilisateur: ${userErr.message}`);
   }
 
   // 4. Insérer dans la table profiles
@@ -212,17 +250,14 @@ export async function createSchoolWithAdmin(input: CreateSchoolWithAdminInput): 
     phone: input.admin.phone?.trim() || null,
   });
   if (profErr) {
-    console.error('Erreur table profiles:', profErr);
+    await supabaseAdmin.from('users').delete().eq('id', userId);
+    await supabaseAdmin.from('schools').delete().eq('id', schoolId);
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    throw new Error(`Erreur enregistrement du profil: ${profErr.message}`);
   }
 
   // 5. Attribuer le rôle dans user_roles
-  const { data: roleRow } = await supabaseAdmin
-    .from('roles')
-    .select('id')
-    .eq('name', targetRole)
-    .maybeSingle();
-
-  const roleId = roleRow?.id || '11111111-1111-1111-1111-111111111101';
+  const roleId = await resolveRoleId(targetRole);
   const { error: roleErr } = await supabaseAdmin.from('user_roles').insert({
     id: crypto.randomUUID(),
     user_id: userId,
@@ -230,7 +265,11 @@ export async function createSchoolWithAdmin(input: CreateSchoolWithAdminInput): 
     role_id: roleId,
   });
   if (roleErr) {
-    console.error('Erreur attribution rôle:', roleErr);
+    await supabaseAdmin.from('profiles').delete().eq('user_id', userId);
+    await supabaseAdmin.from('users').delete().eq('id', userId);
+    await supabaseAdmin.from('schools').delete().eq('id', schoolId);
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    throw new Error(`Erreur attribution du rôle ${targetRole}: ${roleErr.message}`);
   }
 
   // 6. Licence initiale optionnelle (activée par défaut)
@@ -321,13 +360,17 @@ export async function createAdminForSchool(
 
   const userId = authData.user.id;
 
-  await supabaseAdmin.from('users').upsert({
+  const { error: userErr } = await supabaseAdmin.from('users').upsert({
     id: userId,
     email: adminEmail,
     status: 'ACTIVE',
   });
+  if (userErr) {
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    throw new Error(`Erreur enregistrement de l'utilisateur: ${userErr.message}`);
+  }
 
-  await supabaseAdmin.from('profiles').insert({
+  const { error: profErr } = await supabaseAdmin.from('profiles').insert({
     id: crypto.randomUUID(),
     user_id: userId,
     school_id: schoolId,
@@ -335,20 +378,25 @@ export async function createAdminForSchool(
     last_name: lastName,
     phone: admin.phone?.trim() || null,
   });
+  if (profErr) {
+    await supabaseAdmin.from('users').delete().eq('id', userId);
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    throw new Error(`Erreur enregistrement du profil: ${profErr.message}`);
+  }
 
-  const { data: roleRow } = await supabaseAdmin
-    .from('roles')
-    .select('id')
-    .eq('name', targetRole)
-    .maybeSingle();
-
-  const roleId = roleRow?.id || '11111111-1111-1111-1111-111111111101';
-  await supabaseAdmin.from('user_roles').insert({
+  const roleId = await resolveRoleId(targetRole);
+  const { error: roleErr } = await supabaseAdmin.from('user_roles').insert({
     id: crypto.randomUUID(),
     user_id: userId,
     school_id: schoolId,
     role_id: roleId,
   });
+  if (roleErr) {
+    await supabaseAdmin.from('profiles').delete().eq('user_id', userId);
+    await supabaseAdmin.from('users').delete().eq('id', userId);
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    throw new Error(`Erreur attribution du rôle ${targetRole}: ${roleErr.message}`);
+  }
 
   return {
     email: adminEmail,
@@ -378,9 +426,12 @@ export async function setSchoolStatus(id: string, status: string): Promise<void>
  * Les comptes d'accès (Supabase Auth) devenus orphelins après la suppression
  * sont également supprimés — sauf s'ils restent utilisés par un autre
  * établissement.
+ *
+ * @throws Error si la suppression de l'école échoue OU si des comptes Auth
+ *   n'ont pas pu être révoqués (pour éviter des accès fantômes).
  */
 export async function deleteSchool(schoolId: string): Promise<void> {
-  // 1. Repérer les utilisateurs liés à cet établissement (avant la cascade)
+  // 1. Repérer TOUS les utilisateurs liés à cet établissement (avant la cascade)
   const [urRes, profRes] = await Promise.all([
     supabaseAdmin.from('user_roles').select('user_id').eq('school_id', schoolId),
     supabaseAdmin.from('profiles').select('user_id').eq('school_id', schoolId),
@@ -393,7 +444,7 @@ export async function deleteSchool(schoolId: string): Promise<void> {
     ...(profRes.data ?? []).map((p: { user_id: string }) => p.user_id),
   ]);
 
-  // 2. Supprimer l'établissement
+  // 2. Supprimer l'établissement (déclenche ON DELETE CASCADE sur toutes les tables filles)
   //    Si l'ID n'est pas un UUID valide (ex: 'school-1' créé lors de migrations de test),
   //    on supprime directement sans appeler la fonction RPC qui attend un type UUID.
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(schoolId);
@@ -424,24 +475,43 @@ export async function deleteSchool(schoolId: string): Promise<void> {
     }
   }
 
-  // 3. Supprimer les comptes devenus orphelins (aucun autre établissement)
+  // 3. Supprimer les comptes Auth devenus orphelins (aucun autre établissement)
+  //    CRITIQUE : si un compte Auth survit, l'utilisateur peut encore se connecter
+  //    même si toutes ses données ont été supprimées.
+  const failedAuthDeletions: string[] = [];
+
   for (const userId of candidateIds) {
     try {
+      // Vérifier si l'utilisateur est encore lié à un autre établissement
       const [urAgain, profAgain] = await Promise.all([
         supabaseAdmin.from('user_roles').select('id').eq('user_id', userId).limit(1),
         supabaseAdmin.from('profiles').select('id').eq('user_id', userId).limit(1),
       ]);
       const stillUsed = (urAgain.data?.length ?? 0) > 0 || (profAgain.data?.length ?? 0) > 0;
       if (stillUsed) continue;
-      // Suppression Auth : cascade vers public.users (FK auth.users -> users)
+
+      // Suppression du compte Supabase Auth (révoque tous les tokens actifs)
       const { error: authErr } = await supabaseAdmin.auth.admin.deleteUser(userId);
-      // Ignorer « user not found » (compte déjà inexistant)
+
+      // Ignorer « user not found » (compte déjà inexistant, pas un problème)
       if (authErr && !/not found/i.test(authErr.message)) {
-        console.error(`Suppression du compte ${userId}:`, authErr.message);
+        console.error(`[deleteSchool] Échec révocation Auth pour ${userId}:`, authErr.message);
+        failedAuthDeletions.push(userId);
       }
     } catch (e) {
-      console.error(`Suppression du compte ${userId}:`, e);
+      console.error(`[deleteSchool] Exception révocation Auth pour ${userId}:`, e);
+      failedAuthDeletions.push(userId);
     }
+  }
+
+  // Si des comptes Auth n'ont pas pu être supprimés, lever une erreur explicite.
+  // L'école est déjà supprimée, mais ces comptes peuvent encore se connecter.
+  if (failedAuthDeletions.length > 0) {
+    throw new Error(
+      `Établissement supprimé, mais ${failedAuthDeletions.length} compte(s) Auth ` +
+      `n'ont pas pu être révoqués et restent actifs. ` +
+      `Supprimez-les manuellement dans Supabase Auth : ${failedAuthDeletions.join(', ')}`
+    );
   }
 }
 
@@ -545,19 +615,48 @@ export interface SchoolCredential {
   schoolCity: string | null;
   licenseKey: string | null;
   licenseStatus: string | null;
+  /**
+   * Dernier mot de passe connu, lu depuis les métadonnées Auth (`initial_password`).
+   * Renseigné lors de la création/réinitialisation par le super-admin ET lorsque
+   * l'utilisateur change lui-même son mot de passe.
+   */
+  initialPassword: string | null;
   createdAt: string;
+}
+
+/**
+ * Récupère les mots de passe stockés dans les métadonnées Auth (`initial_password`),
+ * afin que le super-admin puisse consulter le dernier mot de passe connu.
+ */
+export async function listInitialPasswords(): Promise<Record<string, string>> {
+  const map: Record<string, string> = {};
+  let page = 1;
+  const perPage = 1000;
+  for (;;) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage });
+    if (error) throw new Error(`Lecture des comptes Auth impossible: ${error.message}`);
+    const users = data?.users ?? [];
+    for (const u of users) {
+      const pwd = (u.user_metadata as Record<string, unknown> | null)?.initial_password;
+      if (typeof pwd === 'string' && pwd) map[u.id] = pwd;
+    }
+    if (users.length < perPage) break;
+    page += 1;
+  }
+  return map;
 }
 
 /**
  * Récupère tous les comptes d'accès créés pour les établissements (exclut le super admin)
  */
 export async function listSchoolCredentials(): Promise<SchoolCredential[]> {
-  const [urRes, profRes, licRes] = await Promise.all([
+  const [urRes, profRes, licRes, pwdMap] = await Promise.all([
     supabaseAdmin
       .from('user_roles')
       .select('id, user_id, school_id, role_id, created_at, roles(name), schools(id, name, short_name, city, country), users(id, email, status)'),
     supabaseAdmin.from('profiles').select('*'),
     supabaseAdmin.from('licenses').select('school_id, license_key, status').order('created_at', { ascending: false }),
+    listInitialPasswords().catch(() => ({} as Record<string, string>)),
   ]);
 
   if (urRes.error) throw new Error(urRes.error.message);
@@ -590,6 +689,7 @@ export async function listSchoolCredentials(): Promise<SchoolCredential[]> {
         schoolCity: ur.schools?.city || null,
         licenseKey: lic?.license_key || null,
         licenseStatus: lic?.status || null,
+        initialPassword: pwdMap[ur.user_id] || null,
         createdAt: ur.created_at,
       };
     })

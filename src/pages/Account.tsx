@@ -98,10 +98,16 @@ export default function Account() {
     setStatus(null);
     try {
       const updates: any = {};
-      if (password) updates.password = password;
-      if (avatarUrl !== user?.user_metadata?.avatar_url) {
-        updates.data = { avatar_url: avatarUrl };
+      const data: any = {};
+      if (password) {
+        updates.password = password;
+        // Conserver le dernier mot de passe connu pour l'espace super-admin
+        data.initial_password = password;
       }
+      if (avatarUrl !== user?.user_metadata?.avatar_url) {
+        data.avatar_url = avatarUrl;
+      }
+      if (Object.keys(data).length > 0) updates.data = data;
 
       const { error } = await supabase.auth.updateUser(updates);
       if (error) throw error;

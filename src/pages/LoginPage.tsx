@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
+import { isCloudManagedUserId, verifyCloudAccount } from '../lib/accountValidation';
 import { Shield, UserCircle2, KeyRound, Loader2, X, Eye, EyeOff, Globe, ArrowRight } from 'lucide-react';
 
 interface LoginResult {
@@ -40,7 +41,17 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
         schoolId,
       });
 
-      // 2. Mettre à jour le contexte global → accès direct à l'interface
+      // 2. Pour un compte géré côté cloud, s'assurer qu'il n'a pas été
+      //    supprimé/suspendu par l'administration (sinon on purge le compte local).
+      if (isCloudManagedUserId(res.user_id) && res.role_name !== 'SUPER_ADMIN') {
+        const state = await verifyCloudAccount(res.user_id);
+        if (state === 'missing') {
+          try { await invoke('delete_local_user', { userId: res.user_id }); } catch (_) {}
+          throw new Error("Ce compte a été supprimé ou suspendu par l'administration. Contactez le support.");
+        }
+      }
+
+      // 3. Mettre à jour le contexte global → accès direct à l'interface
       //    de travail correspondant au profil (rôle) de l'utilisateur.
       setOfflineSession(res.user_id, res.email);
 
@@ -90,21 +101,9 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
               <form onSubmit={handleLogin} className="space-y-4">
                 {/* Identifiant */}
                 <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider">
-                      Identifiant
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIdentifier('Admin');
-                        setPassword('@admin@//10');
-                      }}
-                      className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
-                    >
-                      Compte Super Admin ?
-                    </button>
-                  </div>
+                  <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                    Identifiant
+                  </label>
                   <div className="relative">
                     <UserCircle2 size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
@@ -113,15 +112,10 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
                       autoComplete="username"
                       value={identifier}
                       onChange={e => setIdentifier(e.target.value)}
-                      placeholder="ex: Admin ou jean.dupont"
+                      placeholder="ex: jean.dupont"
                       className={inputClass}
                     />
                   </div>
-                  {identifier.trim().toLowerCase() === 'admin' && (
-                    <p className="text-[11px] text-amber-700 bg-amber-50/80 border border-amber-200/60 rounded-xl px-3 py-2 mt-2">
-                      Compte Super Admin détecté · Mot de passe maître : <strong className="font-mono bg-amber-100/70 px-1.5 py-0.5 rounded text-amber-900 select-all">@admin@//10</strong>
-                    </p>
-                  )}
                 </div>
 
                 {/* Mot de passe */}

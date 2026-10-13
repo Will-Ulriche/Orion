@@ -141,7 +141,11 @@ pub fn run() {
             commands::assign_user_role,
             // ── Authentification locale (identifiant + mot de passe) ──
             commands::set_user_password,
-            commands::login_local
+            commands::login_local,
+            commands::check_local_school_exists,
+            commands::purge_local_school,
+            // ── Export Excel (super-admin) ──
+            commands::write_download_file
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

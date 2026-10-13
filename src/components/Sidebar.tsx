@@ -3,10 +3,11 @@ import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart,
   Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins, BookOpen, UserCog, Archive, Shield, ClipboardList,
-  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, WifiOff, ShieldCheck, BarChart2
+  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, WifiOff, ShieldCheck, BarChart2, FileSpreadsheet, Rocket
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useNetwork } from '../hooks/useNetwork';
 import YearSelector from './YearSelector';
 import orionLogo from '../assets/orion_logo.png';
 
@@ -14,6 +15,7 @@ import orionLogo from '../assets/orion_logo.png';
 // tout en gardant vos routes.
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord', roles: [] }, // Tous
+  { to: '/prise-en-main', icon: Rocket, label: 'Prise en main', roles: ['DIRECTION'] },
   { to: '/archives', icon: Archive, label: 'Archives', roles: ['DIRECTION'] },
   { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE'] },
@@ -37,6 +39,7 @@ const superAdminItems = [
   { to: '/super-admin/licences', icon: Shield,             label: 'Licences',           roles: ['SUPER_ADMIN'] },
   { to: '/super-admin/appareils',icon: MonitorSmartphone,  label: 'Appareils',          roles: ['SUPER_ADMIN'] },
   { to: '/super-admin/stats',    icon: BarChart2,          label: 'Statistiques',       roles: ['SUPER_ADMIN'] },
+  { to: '/super-admin/export',   icon: FileSpreadsheet,    label: 'Export Excel',       roles: ['SUPER_ADMIN'] },
 ];
 
 export default function Sidebar() {
@@ -219,7 +222,10 @@ function UserProfileMenu({
   const { signOut, session } = useAuth();
   const [open, setOpen] = useState(false);
 
-  const isOffline = session?.access_token === 'offline';
+  const isOnline = useNetwork();
+  // Session locale (compte « Admin » local) ≠ absence de réseau
+  const isLocalSession = session?.access_token === 'offline';
+  const isOffline = isLocalSession && !isOnline;
 
   const handleSignOut = async () => {
     setOpen(false);
@@ -260,21 +266,28 @@ function UserProfileMenu({
                 </div>
               </div>
 
-              {/* Badge offline */}
-              {isOffline && (
+              {/* Badge session locale / hors-ligne */}
+              {isLocalSession && (
                 <div className="mt-3 flex items-center gap-2.5 px-1">
                   <span
                     className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg"
-                    style={{ background: 'rgba(251,191,36,0.16)', color: '#fbbf24' }}
+                    style={
+                      isOffline
+                        ? { background: 'rgba(251,191,36,0.16)', color: '#fbbf24' }
+                        : { background: 'rgba(148,163,184,0.16)', color: '#94a3b8' }
+                    }
                   >
-                    <WifiOff size={13} />
+                    {isOffline ? <WifiOff size={13} /> : <ShieldCheck size={13} />}
                   </span>
                   <div className="min-w-0">
-                    <p className="text-[11px] font-semibold leading-tight" style={{ color: '#fbbf24' }}>
-                      Mode hors-ligne
+                    <p
+                      className="text-[11px] font-semibold leading-tight"
+                      style={{ color: isOffline ? '#fbbf24' : '#cbd5e1' }}
+                    >
+                      {isOffline ? 'Mode hors-ligne' : 'Session locale'}
                     </p>
                     <p className="text-[10px] leading-tight text-slate-500">
-                      Données enregistrées localement
+                      {isOffline ? 'Données enregistrées localement' : 'Connecté en ligne · compte local'}
                     </p>
                   </div>
                 </div>

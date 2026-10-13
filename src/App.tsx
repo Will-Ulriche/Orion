@@ -18,13 +18,16 @@ import Pedagogie from './pages/Pedagogie';
 import RecapNotes from './pages/RecapNotes';
 import Personnel from './pages/Personnel';
 import Archives from './pages/Archives';
+import PriseEnMain from './pages/PriseEnMain';
 import SuperAdminHome from './pages/superadmin/SuperAdminHome';
 import Ecoles from './pages/superadmin/Ecoles';
 import ComptesSuperAdmin from './pages/superadmin/ComptesSuperAdmin';
 import LicencesSuperAdmin from './pages/superadmin/LicencesSuperAdmin';
 import AppareilsSuperAdmin from './pages/superadmin/AppareilsSuperAdmin';
 import StatsSuperAdmin from './pages/superadmin/StatsSuperAdmin';
+import ExportSuperAdmin from './pages/superadmin/ExportSuperAdmin';
 import LicenseGuard from './components/LicenseGuard';
+import FirstConnectionGate from './components/FirstConnectionGate';
 import './App.css';
 
 // Route protégée : redirige vers /login si non connecté
@@ -111,9 +114,11 @@ function AppRoutes() {
       <Route
         element={
           <ProtectedRoute>
-            <LicenseGuard>
-              <Layout />
-            </LicenseGuard>
+            <FirstConnectionGate>
+              <LicenseGuard>
+                <Layout />
+              </LicenseGuard>
+            </FirstConnectionGate>
           </ProtectedRoute>
         }
       >
@@ -126,10 +131,12 @@ function AppRoutes() {
         <Route path="/super-admin/licences" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><LicencesSuperAdmin /></RoleProtectedRoute>} />
         <Route path="/super-admin/appareils" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><AppareilsSuperAdmin /></RoleProtectedRoute>} />
         <Route path="/super-admin/stats" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><StatsSuperAdmin /></RoleProtectedRoute>} />
+        <Route path="/super-admin/export" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><ExportSuperAdmin /></RoleProtectedRoute>} />
         
         {/* Réservé à DIRECTION, SECRETAIRE, SUPER_ADMIN */}
         <Route path="/students" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><StudentsMigration /></RoleProtectedRoute>} />
         <Route path="/classes" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><Classes /></RoleProtectedRoute>} />
+        <Route path="/prise-en-main" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><PriseEnMain /></RoleProtectedRoute>} />
         
         {/* Réservé à DIRECTION, SUPER_ADMIN */}
         <Route path="/finances" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Finances /></RoleProtectedRoute>} />

@@ -126,6 +126,9 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       if (cloudLics.length > 0) {
         const latest = cloudLics[0];
         setLicenseInfo(latest);
+        // Réponse cloud sans licence valide : le cache local encore présent est périmé
+        localStorage.removeItem(LS_CACHED);
+        localStorage.removeItem(LS_LAST_OK);
         // Déterminer le statut précis
         if (latest.status === 'SUSPENDED') { setCheckStatus('suspended'); return; }
         if (latest.status === 'REVOKED')   { setCheckStatus('revoked');   return; }
@@ -157,6 +160,9 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         }
       } catch (_) {}
 
+      // Le cloud (joignable) ne renvoie aucune licence : on purge le cache local périmé
+      localStorage.removeItem(LS_CACHED);
+      localStorage.removeItem(LS_LAST_OK);
       setCheckStatus('missing');
 
     } catch (_networkErr) {

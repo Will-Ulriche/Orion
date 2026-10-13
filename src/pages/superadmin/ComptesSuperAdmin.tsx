@@ -476,6 +476,16 @@ export default function ComptesSuperAdmin() {
       const [creds, schs] = await Promise.all([listSchoolCredentials(), listSchools()]);
       setCredentials(creds);
       setSchools(schs);
+      setPasswordsMap(prev => {
+        const next = { ...prev };
+        creds.forEach(c => {
+          if (c.initialPassword) {
+            next[c.userId] = c.initialPassword;
+            next[c.email] = c.initialPassword;
+          }
+        });
+        return next;
+      });
     } catch (e: any) {
       setError(e.message ?? String(e));
     } finally {

@@ -109,7 +109,10 @@ export default function LicencesSuperAdmin() {
   // ─── Helpers création ────────────────────────────────────────────
   function computeExpiresAt(): string | null {
     if (durMode === 'custom') return form.expires_at ? new Date(form.expires_at).toISOString() : null;
-    const base = form.starts_at ? new Date(form.starts_at) : new Date();
+    // La durée court à partir de maintenant, sauf si une date de début future est fixée.
+    // Partir de la date de début (minuit) rendait les durées courtes déjà expirées.
+    const start = form.starts_at ? new Date(form.starts_at) : null;
+    const base = start && start.getTime() > Date.now() ? start : new Date();
     return addDuration(base, durValue, durUnit).toISOString();
   }
   function expirationPreview(): string {
@@ -158,8 +161,9 @@ export default function LicencesSuperAdmin() {
     if (editMode === 'set') {
       return editForm.expires_at ? new Date(editForm.expires_at).toISOString() : null;
     }
-    // Mode "extend" : part de l'expiration actuelle (ou maintenant si pas de date)
-    const base = editTarget?.expires_at ? new Date(editTarget.expires_at) : new Date();
+    // Mode "extend" : part de l'expiration actuelle (ou maintenant si déjà expirée/absente)
+    const current = editTarget?.expires_at ? new Date(editTarget.expires_at) : null;
+    const base = current && current.getTime() > Date.now() ? current : new Date();
     return addDuration(base, extValue, extUnit).toISOString();
   }
 

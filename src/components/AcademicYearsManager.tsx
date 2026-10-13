@@ -179,16 +179,16 @@ export default function AcademicYearsManager() {
 
       <div className="bg-[#fcfdfd] rounded-2xl border border-slate-100 shadow-[0_2px_15px_-3px_rgba(0,0,0,0.03)] overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[720px] table-fixed">
+          <table className="w-full text-left border-collapse min-w-[880px] table-fixed">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100 text-[12px] font-bold text-slate-500">
-                <th className="py-4 px-3 text-center w-20">Icône</th>
-                <th className="py-4 px-3">Nom de l'année</th>
-                <th className="py-4 px-3">Date de début</th>
-                <th className="py-4 px-3">Date de fin</th>
-                <th className="py-4 px-3 w-32">Statut</th>
-                <th className="py-4 px-3 text-center w-48">Opérations</th>
-                <th className="py-4 px-3 text-center w-36">Action</th>
+                <th className="py-4 px-3 text-center w-16">Icône</th>
+                <th className="py-4 px-3 w-44">Nom de l'année</th>
+                <th className="py-4 px-3 w-32">Date de début</th>
+                <th className="py-4 px-3 w-32">Date de fin</th>
+                <th className="py-4 px-3 w-28">Statut</th>
+                <th className="py-4 px-3 text-center w-40">Opérations</th>
+                <th className="py-4 px-3 text-center w-32">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -213,7 +213,7 @@ export default function AcademicYearsManager() {
                     {editingYearId === year.id ? (
                       <td colSpan={6} className="py-4 px-3 bg-[#f4f7fb]">
                         <div className="flex items-center gap-4">
-                          <input type="text" placeholder="Nom" value={editYearData.name} onChange={e => setEditYearData({...editYearData, name: e.target.value})} className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg outline-none text-[13px] w-32" />
+                          <input type="text" placeholder="Nom" value={editYearData.name} onChange={e => setEditYearData({...editYearData, name: e.target.value})} className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg outline-none text-[13px] font-semibold w-44" />
                           <input type="date" value={editYearData.start_date} onChange={e => setEditYearData({...editYearData, start_date: e.target.value})} className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg outline-none text-[13px]" />
                           <input type="date" value={editYearData.end_date} onChange={e => setEditYearData({...editYearData, end_date: e.target.value})} className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg outline-none text-[13px]" />
                           
@@ -232,7 +232,7 @@ export default function AcademicYearsManager() {
                         {/* Colonne Nom */}
                         <td className="py-4 px-3">
                           <div className="flex items-center gap-3">
-                            <span className="font-semibold text-slate-800 text-[14px] truncate">{year.name}</span>
+                            <span className="font-bold text-slate-900 text-[16px] whitespace-nowrap">{year.name}</span>
                             {selectedYear?.id === year.id && (
                               <span className="text-[10px] bg-[#f0eaff] text-[#8b5cf6] px-2.5 py-1 rounded-md font-medium whitespace-nowrap">Dashboard</span>
                             )}

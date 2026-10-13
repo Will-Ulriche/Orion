@@ -301,7 +301,7 @@ export default function Settings() {
                     </div>
 
                     {/* Titre & Slogan */}
-                    <div className="min-w-0 pb-1 pt-10 sm:pt-0">
+                    <div className="relative z-10 min-w-0 pb-1 pt-10 sm:pt-0">
                       <h1 className="text-[22px] sm:text-[26px] font-bold text-[#37352f] tracking-tight leading-tight">
                         {formData.name || <span className="text-[#b5b3ad] font-medium italic">Nom de l'établissement</span>}
                       </h1>
@@ -450,7 +450,7 @@ export default function Settings() {
                   <div className="bg-[#fbfbfa] border border-[#e9e8e4] rounded-lg p-3.5 text-[12.5px] text-[#37352f] flex items-start gap-2.5">
                     <Lightbulb size={16} className="text-[#f2994a] flex-shrink-0 mt-0.5" />
                     <span className="leading-relaxed text-[#787774]">
-                      Le titre et le nom renseignés ici seront automatiquement apposés au bas de tous les <strong className="text-[#37352f]">bulletins de notes</strong>, <strong className="text-[#37352f]">reçus de paiement</strong> et <strong className="text-[#37352f]">certificats de scolarité</strong>.
+                      Le titre et le nom renseignés ici seront automatiquement apposés au bas de tous les <strong className="text-[#eb5757]">bulletins de notes</strong>, <strong className="text-[#eb5757]">reçus de paiement</strong> et <strong className="text-[#eb5757]">certificats de scolarité</strong>.
                     </span>
                   </div>
                 </NotionSection>

@@ -4,10 +4,11 @@ import { ShieldCheck, Calendar, Key, Hourglass } from 'lucide-react';
 import Appareils from './Appareils';
 import Licences from './Licences';
 import { useAuth } from '../contexts/AuthContext';
+import { supabaseAdmin } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
 
 export default function Security() {
-  const { schoolId } = useAuth();
+  const { schoolId, user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab: 'appareils' | 'licence' =
     searchParams.get('tab') === 'licence' ? 'licence' : 'appareils';
@@ -18,23 +19,87 @@ export default function Security() {
   useEffect(() => {
     const fetchLic = async () => {
       try {
+        // Résoudre le school_id réel
+        let targetId = schoolId || localStorage.getItem('current_school_id') || '';
+        if (user?.id) {
+          try {
+            const { data: prof } = await supabaseAdmin
+              .from('profiles')
+              .select('school_id')
+              .eq('user_id', user.id)
+              .maybeSingle();
+            if (prof?.school_id) targetId = prof.school_id;
+          } catch (_) {}
+        }
+
+        const isValidActive = (l: any) =>
+          l?.status === 'ACTIVE' && (!l?.expires_at || new Date(l.expires_at) > new Date());
+
+        // 1. Le cloud est la source de vérité
+        let cloudReachable = false;
+        let found: { expires_at: string | null; status: string } | null = null;
+        try {
+          const { data: lics, error } = await supabaseAdmin
+            .from('licenses')
+            .select('status, expires_at, school_id, created_at')
+            .eq('school_id', targetId)
+            .order('created_at', { ascending: false });
+          if (error) throw error;
+          cloudReachable = true;
+
+          let rows: any[] = lics ?? [];
+          if (rows.length === 0 && targetId && targetId !== 'school-1') {
+            const { data: fb } = await supabaseAdmin
+              .from('licenses')
+              .select('status, expires_at, school_id, created_at')
+              .eq('school_id', 'school-1')
+              .order('created_at', { ascending: false });
+            rows = fb ?? [];
+          }
+          const active = rows.find(isValidActive);
+          if (active) found = { expires_at: active.expires_at ?? null, status: active.status };
+        } catch (_) {
+          cloudReachable = false;
+        }
+
+        if (cloudReachable) {
+          // Aucune licence active côté cloud : on efface le décompte ET le cache périmé
+          setActiveLic(found);
+          if (!found) {
+            localStorage.removeItem('orion_lic_cache');
+            localStorage.removeItem('orion_lic_ok_at');
+            try { await invoke('purge_local_licenses', { schoolId: targetId }); } catch (_) {}
+          }
+          return;
+        }
+
+        // 2. Cloud injoignable → repli SQLite local
+        if (targetId) {
+          const lics = await invoke<any[]>('get_licenses', { schoolId: targetId });
+          const active = lics?.find(isValidActive);
+          if (active) {
+            setActiveLic({ expires_at: active.expires_at ?? null, status: active.status });
+            return;
+          }
+        }
+
+        // 3. Dernier repli : cache local, uniquement s'il est encore valide
         const cached = localStorage.getItem('orion_lic_cache');
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (parsed?.expires_at) setActiveLic(parsed);
+          if (isValidActive(parsed)) {
+            setActiveLic({ expires_at: parsed.expires_at ?? null, status: parsed.status });
+            return;
+          }
         }
-        const sid = schoolId;
-        if (sid) {
-          const lics = await invoke<any[]>('get_licenses', { schoolId: sid });
-          const found = lics?.find(l => l.status === 'ACTIVE');
-          if (found) setActiveLic(found);
-        }
+
+        setActiveLic(null);
       } catch (_) {}
     };
     fetchLic();
     window.addEventListener('orion:license-updated', fetchLic);
     return () => window.removeEventListener('orion:license-updated', fetchLic);
-  }, [schoolId]);
+  }, [schoolId, user?.id]);
 
   useEffect(() => {
     if (!activeLic?.expires_at) {
