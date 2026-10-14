@@ -226,7 +226,7 @@ export default function TimetableModal({
   useEffect(() => {
     Promise.all([
       loadTimetableAssets(),
-      invoke<any>("get_school_settings").catch(() => null)
+      invoke<any>("get_school_settings", { schoolId }).catch(() => null)
     ]).then(([baseAssets, school]) => {
       if (school && school.logo_url) {
         setAssets({ ...baseAssets, logo: school.logo_url });
@@ -234,7 +234,7 @@ export default function TimetableModal({
         setAssets(baseAssets);
       }
     }).catch(console.error);
-  }, []);
+  }, [schoolId]);
 
   // Load subjects once
   useEffect(() => {

@@ -2,10 +2,15 @@ import { useState, useEffect, type ReactNode } from 'react';
 import {
   Building2, Save, MapPin, Phone, Mail, Calendar, Check, Globe, Coins, Clock,
   Upload, X, Image as ImageIcon, Landmark, UserCog, Contact, Lightbulb,
-  Tag, Hash, School, ShieldCheck
+  Tag, Hash, School, ShieldCheck, Sparkles, Download, DownloadCloud, RefreshCw,
+  AlertTriangle, CheckCircle2, HardDriveDownload, Rocket
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import AcademicYearsManager from '../components/AcademicYearsManager';
+import { useAuth } from '../contexts/AuthContext';
+import { useUpdater } from '../contexts/UpdateContext';
+import { updateSchoolSettings } from '../lib/superAdminApi';
+import orionLogo from '../assets/orion_logo.png';
 
 interface SchoolSettings {
   name: string;
@@ -166,16 +171,31 @@ function NotionField({
 }
 
 export default function Settings() {
+  const { schoolId } = useAuth();
+  const {
+    status: updateStatus,
+    currentVersion,
+    updateInfo,
+    progress: updateProgress,
+    errorMessage: updateError,
+    lastChecked,
+    autoCheck,
+    setAutoCheck,
+    checkForUpdates,
+    downloadAndInstall,
+    restartApp,
+  } = useUpdater();
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
   const [formData, setFormData] = useState<SchoolSettings>(EMPTY);
-  const [activeTab, setActiveTab] = useState<'general' | 'identity' | 'years'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'identity' | 'years' | 'updates'>('general');
 
   useEffect(() => {
-    invoke('get_school_settings').then((data: any) => {
-      if (data) setFormData(prev => ({ ...prev, ...data }));
-    }).catch(console.error);
-  }, []);
+    invoke('get_school_settings', { schoolId })
+      .then((data: any) => {
+        if (data) setFormData(prev => ({ ...prev, ...data }));
+      }).catch(console.error);
+  }, [schoolId]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -189,9 +209,27 @@ export default function Settings() {
     setSaving(true);
     setStatus(null);
     try {
-      await invoke('save_school_settings', { payload: JSON.stringify(formData) });
+      await invoke('save_school_settings', { payload: JSON.stringify(formData), schoolId });
       setStatus({ type: 'success', msg: 'Modifications enregistrées' });
       setTimeout(() => setStatus(null), 4000);
+
+      // Propagation best-effort vers le cloud : la direction et la
+      // super-administration partagent ainsi les mêmes informations.
+      if (schoolId && schoolId !== 'school-1') {
+        updateSchoolSettings(schoolId, {
+          name: formData.name,
+          short_name: formData.short_name || null,
+          address: formData.address || null,
+          city: formData.city || null,
+          country: formData.country || null,
+          phone_primary: formData.phone || null,
+          phone_secondary: formData.phone_secondary || null,
+          email: formData.email || null,
+          website: formData.website || null,
+          currency: formData.currency || null,
+          timezone: formData.timezone || null,
+        }).catch(err => console.warn('Propagation cloud des paramètres échouée:', err));
+      }
     } catch (err) {
       setStatus({ type: 'error', msg: `Erreur: ${err}` });
     } finally {
@@ -203,6 +241,7 @@ export default function Settings() {
     { key: 'general', label: 'Informations générales', icon: <Building2 size={14} /> },
     { key: 'identity', label: 'Identité visuelle', icon: <ImageIcon size={14} /> },
     { key: 'years', label: 'Années scolaires', icon: <Calendar size={14} /> },
+    { key: 'updates', label: 'Mises à jour', icon: <DownloadCloud size={14} /> },
   ] as const;
 
   return (
@@ -227,14 +266,25 @@ export default function Settings() {
               {status.msg}
             </span>
           )}
-          <button
-            onClick={handleSave}
-            disabled={saving || !formData.name}
-            className="bg-[#2383e2] hover:bg-[#1a73e8] text-white px-3.5 py-1.5 rounded-md text-[13px] font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm cursor-pointer"
-          >
-            <Save size={14} />
-            {saving ? 'Enregistrement...' : 'Enregistrer'}
-          </button>
+          {activeTab === 'updates' ? (
+            <button
+              onClick={() => checkForUpdates(false)}
+              disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
+              className="bg-[#2383e2] hover:bg-[#1a73e8] text-white px-3.5 py-1.5 rounded-md text-[13px] font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm cursor-pointer"
+            >
+              <RefreshCw size={14} className={updateStatus === 'checking' ? 'animate-spin' : ''} />
+              {updateStatus === 'checking' ? 'Vérification...' : 'Rechercher les mises à jour'}
+            </button>
+          ) : (
+            <button
+              onClick={handleSave}
+              disabled={saving || !formData.name}
+              className="bg-[#2383e2] hover:bg-[#1a73e8] text-white px-3.5 py-1.5 rounded-md text-[13px] font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm cursor-pointer"
+            >
+              <Save size={14} />
+              {saving ? 'Enregistrement...' : 'Enregistrer'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -673,6 +723,222 @@ export default function Settings() {
           {activeTab === 'years' && (
             <div className="bg-white rounded-xl p-6 border border-[#e9e8e4] shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
               <AcademicYearsManager />
+            </div>
+          )}
+
+          {/* ═════════════════════════════════════════════════════════════════════ */}
+          {/* ── ONGLET : MISES À JOUR (DIRECT DOWNLOAD OTA) ── */}
+          {/* ═════════════════════════════════════════════════════════════════════ */}
+          {activeTab === 'updates' && (
+            <div className="space-y-6 animate-in fade-in duration-200">
+
+              {/* 1. Carte principale : État & Téléchargement */}
+              <div className="bg-white rounded-xl border border-[#e9e8e4] p-6 shadow-[0_1px_3px_rgba(15,15,15,0.02)] space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#f1f1ef]">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-[#fbfbfa] border border-[#e3e2de] p-2 flex items-center justify-center shadow-xs">
+                      <img src={orionLogo} alt="Orion" className="w-full h-full object-contain" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-semibold text-[#37352f]">Mises à jour d'Orion</h3>
+                        <span className="text-[11px] font-mono font-medium px-2 py-0.5 rounded-full bg-[#f1f1ef] text-[#787774] border border-[#e3e2de]">
+                          v{currentVersion}
+                        </span>
+                      </div>
+                      <p className="text-[12.5px] text-[#787774] mt-0.5">
+                        Canal officiel de distribution · Téléchargement et installation directe
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => checkForUpdates(false)}
+                    disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
+                    className="bg-[#2383e2] hover:bg-[#1a73e8] text-white px-4 py-2 rounded-lg text-[13px] font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm cursor-pointer self-start sm:self-auto"
+                  >
+                    <RefreshCw size={14} className={updateStatus === 'checking' ? 'animate-spin' : ''} />
+                    {updateStatus === 'checking' ? 'Vérification...' : 'Vérifier maintenant'}
+                  </button>
+                </div>
+
+                {/* Statut dynamique */}
+                {updateStatus === 'checking' && (
+                  <div className="p-5 rounded-xl bg-[#fbfbfa] border border-[#e9e8e4] flex items-center gap-3 text-[13px] text-[#787774]">
+                    <RefreshCw size={18} className="animate-spin text-[#2383e2] flex-shrink-0" />
+                    <span>Recherche de mises à jour auprès du serveur officiel Orion...</span>
+                  </div>
+                )}
+
+                {/* MISE À JOUR DISPONIBLE */}
+                {updateStatus === 'available' && updateInfo && (
+                  <div className="p-5 rounded-xl bg-gradient-to-br from-[#ebf5ff] to-[#f0f4fa] border border-[#b8dbfc] space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#0066cc] uppercase tracking-wider bg-white/80 px-2 py-0.5 rounded-md border border-[#cce4ff]">
+                          <Sparkles size={12} className="text-[#0066cc]" /> Nouvelle version disponible
+                        </span>
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <span className="text-base font-bold text-[#1f2937]">Orion v{updateInfo.version}</span>
+                          <span className="text-[12px] text-[#4b5563]">
+                            (actuelle : v{currentVersion})
+                          </span>
+                        </div>
+                        {updateInfo.date && (
+                          <p className="text-[11.5px] text-[#6b7280] mt-0.5">
+                            Date de publication : {new Date(updateInfo.date).toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })}
+                          </p>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={downloadAndInstall}
+                        className="bg-[#2383e2] hover:bg-[#1a73e8] active:scale-[0.98] text-white px-5 py-2.5 rounded-lg text-[13px] font-semibold flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 transition-all cursor-pointer self-start sm:self-auto"
+                      >
+                        <Download size={15} />
+                        Télécharger et installer
+                      </button>
+                    </div>
+
+                    {/* Notes de version */}
+                    <div className="bg-white/90 rounded-lg p-3.5 border border-[#d8e6f5] space-y-1.5">
+                      <p className="text-[11.5px] font-bold text-[#4b5563] uppercase tracking-wider">
+                        Nouveautés & Correctifs inclus
+                      </p>
+                      <div className="text-[12.5px] text-[#374151] whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
+                        {updateInfo.body || "Mise à niveau de stabilité, de sécurité et améliorations ergonomiques d'Orion."}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* TÉLÉCHARGEMENT EN COURS */}
+                {updateStatus === 'downloading' && (
+                  <div className="p-5 rounded-xl bg-[#f0f9ff] border border-[#bae6fd] space-y-3">
+                    <div className="flex items-center justify-between text-[13px]">
+                      <div className="flex items-center gap-2 text-[#0369a1] font-semibold">
+                        <HardDriveDownload size={18} className="animate-bounce" />
+                        <span>Téléchargement d'Orion v{updateInfo?.version || ''}...</span>
+                      </div>
+                      <span className="font-bold text-[#0284c7]">{updateProgress.percent}%</span>
+                    </div>
+
+                    <div className="w-full bg-[#e0f2fe] rounded-full h-3 overflow-hidden p-0.5 border border-[#bae6fd]">
+                      <div
+                        className="bg-[#0284c7] h-full rounded-full transition-all duration-200"
+                        style={{ width: `${Math.max(5, updateProgress.percent)}%` }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between text-[11.5px] text-[#64748b]">
+                      <span>Volume transféré</span>
+                      <span className="font-mono">
+                        {(updateProgress.downloaded / (1024 * 1024)).toFixed(1)} Mo
+                        {updateProgress.total > 0 && ` / ${(updateProgress.total / (1024 * 1024)).toFixed(1)} Mo`}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* TÉLÉCHARGÉ ET PRÊT À INSTALLER */}
+                {updateStatus === 'downloaded' && (
+                  <div className="p-5 rounded-xl bg-[#ecfdf5] border border-[#a7f3d0] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <CheckCircle2 size={22} className="text-[#059669] flex-shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="text-[13.5px] font-bold text-[#065f46]">Mise à jour prête pour l'installation</h4>
+                        <p className="text-[12px] text-[#047857] mt-0.5">
+                          Le fichier d'installation a été téléchargé et validé cryptographiquement. Relancez l'application pour finaliser.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={restartApp}
+                      className="bg-[#059669] hover:bg-[#047857] text-white px-5 py-2.5 rounded-lg text-[13px] font-semibold flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 transition-all cursor-pointer self-start sm:self-auto"
+                    >
+                      <Rocket size={15} />
+                      Redémarrer Orion
+                    </button>
+                  </div>
+                )}
+
+                {/* DÉJÀ À JOUR */}
+                {updateStatus === 'up-to-date' && (
+                  <div className="p-4 rounded-xl bg-[#f6fbf7] border border-[#d1ebd7] flex items-center justify-between gap-3 text-[13px]">
+                    <div className="flex items-center gap-2.5 text-[#2e7d32]">
+                      <CheckCircle2 size={18} className="flex-shrink-0 text-[#2e7d32]" />
+                      <span>Votre application est parfaitement à jour (version <strong>v{currentVersion}</strong>).</span>
+                    </div>
+                    {lastChecked && (
+                      <span className="text-[11.5px] text-[#787774]">
+                        Dernier contrôle : {lastChecked.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* ERREUR */}
+                {updateStatus === 'error' && (
+                  <div className="p-4 rounded-xl bg-[#fff8f5] border border-[#fed7aa] space-y-2">
+                    <div className="flex items-start gap-2.5 text-[#c2410c]">
+                      <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-[13px] font-semibold">Impossible de vérifier les mises à jour</p>
+                        <p className="text-[12px] text-[#9a3412] mt-0.5">
+                          {updateError || "Vérifiez votre connexion Internet ou réessayez dans quelques instants."}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 2. Préférences : Vérification automatique */}
+              <div className="bg-white rounded-xl border border-[#e9e8e4] p-5 shadow-[0_1px_3px_rgba(15,15,15,0.02)] space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <h4 className="text-[13.5px] font-semibold text-[#37352f]">
+                      Recherche automatique au démarrage
+                    </h4>
+                    <p className="text-[12px] text-[#787774]">
+                      Orion vérifiera automatiquement en arrière-plan la disponibilité d'une nouvelle version chaque fois que l'application s'ouvre.
+                    </p>
+                  </div>
+
+                  <label className="relative inline-flex items-center cursor-pointer flex-shrink-0 ml-4">
+                    <input
+                      type="checkbox"
+                      checked={autoCheck}
+                      onChange={(e) => setAutoCheck(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-10 h-6 bg-[#e3e2de] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#2383e2]"></div>
+                  </label>
+                </div>
+              </div>
+
+              {/* 3. Informations techniques et sécurité */}
+              <div className="bg-white rounded-xl border border-[#e9e8e4] p-5 shadow-[0_1px_3px_rgba(15,15,15,0.02)] space-y-3">
+                <h4 className="text-[13.5px] font-semibold text-[#37352f] flex items-center gap-2">
+                  <ShieldCheck size={16} className="text-[#2e7d32]" /> Sécurité et Intégrité
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[12.5px] pt-1">
+                  <div className="p-3 rounded-lg bg-[#fbfbfa] border border-[#e9e8e4]">
+                    <span className="text-[#787774] block text-[11px] uppercase tracking-wider font-medium">Source officielle</span>
+                    <span className="text-[#37352f] font-medium text-[12px] truncate block mt-0.5">
+                      Serveur officiel sécurisé Orion
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[#fbfbfa] border border-[#e9e8e4]">
+                    <span className="text-[#787774] block text-[11px] uppercase tracking-wider font-medium">Signature cryptographique</span>
+                    <span className="text-[#2e7d32] font-semibold flex items-center gap-1 mt-0.5">
+                      <Check size={13} /> Minisign Ed25519 vérifiée
+                    </span>
+                  </div>
+                </div>
+              </div>
+
             </div>
           )}
 

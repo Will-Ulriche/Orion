@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
-import { isCloudManagedUserId, verifyCloudAccount } from '../lib/accountValidation';
+import { isCloudManagedUserId, verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation';
 import { Shield, UserCircle2, KeyRound, Loader2, X, Eye, EyeOff, Globe, ArrowRight } from 'lucide-react';
 
 interface LoginResult {
@@ -48,6 +48,18 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
         if (state === 'missing') {
           try { await invoke('delete_local_user', { userId: res.user_id }); } catch (_) {}
           throw new Error("Ce compte a été supprimé ou suspendu par l'administration. Contactez le support.");
+        }
+
+        // S'assurer aussi que l'établissement n'a pas été supprimé côté cloud :
+        // sans ce contrôle, un compte rattaché à une école supprimée pourrait
+        // encore se connecter localement tant que ses données locales subsistent.
+        if (isCloudManagedUserId(schoolId)) {
+          const schoolState = await verifyCloudSchool(schoolId);
+          if (schoolState === 'missing') {
+            try { await invoke('purge_local_school', { schoolId }); } catch (_) {}
+            try { await invoke('delete_local_user', { userId: res.user_id }); } catch (_) {}
+            throw new Error("Cet établissement a été supprimé par l'administration. Accès refusé.");
+          }
         }
       }
 

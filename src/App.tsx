@@ -28,6 +28,7 @@ import StatsSuperAdmin from './pages/superadmin/StatsSuperAdmin';
 import ExportSuperAdmin from './pages/superadmin/ExportSuperAdmin';
 import LicenseGuard from './components/LicenseGuard';
 import FirstConnectionGate from './components/FirstConnectionGate';
+import { UpdateProvider } from './contexts/UpdateContext';
 import './App.css';
 
 // Route protégée : redirige vers /login si non connecté
@@ -163,7 +164,9 @@ function App() {
     <AuthProvider>
       <YearProvider>
         <BrowserRouter>
-          <AppRoutes />
+          <UpdateProvider>
+            <AppRoutes />
+          </UpdateProvider>
         </BrowserRouter>
       </YearProvider>
     </AuthProvider>

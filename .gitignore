@@ -17,9 +17,18 @@ dist-ssr
 .env.*
 !.env.example
 
+# Clés de signature des mises à jour (ne JAMAIS committer)
+*.key
+*.key.pub
+orion.key
+orion.key.pub
+
 # Fichiers temporaires d'analyse
 .tmp*
 .tmp-*
+
+# Supabase temporaires
+supabase/.temp/
 
 # Editor directories and files
 .vscode/*

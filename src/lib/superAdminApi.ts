@@ -411,6 +411,35 @@ export async function updateSchool(id: string, input: Partial<SchoolInput>): Pro
   if (res.error) throw new Error(res.error.message);
 }
 
+/** Champs "identité" de l'établissement modifiables depuis l'espace direction. */
+export interface SchoolSettingsInput {
+  name?: string;
+  short_name?: string | null;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  phone_primary?: string | null;
+  phone_secondary?: string | null;
+  email?: string | null;
+  website?: string | null;
+  currency?: string | null;
+  timezone?: string | null;
+}
+
+/**
+ * Propage les informations d'identité de l'établissement saisies par la
+ * direction vers le cloud, afin que la super-administration voie les mêmes
+ * données (source de vérité unique). Utilise la clé de service car la direction
+ * ne dispose pas de politique RLS d'écriture sur `schools`.
+ */
+export async function updateSchoolSettings(id: string, input: SchoolSettingsInput): Promise<void> {
+  const res = await supabaseAdmin
+    .from('schools')
+    .update({ ...input, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (res.error) throw new Error(res.error.message);
+}
+
 export async function setSchoolStatus(id: string, status: string): Promise<void> {
   const res = await supabase.from('schools').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
   if (res.error) throw new Error(res.error.message);
@@ -419,9 +448,11 @@ export async function setSchoolStatus(id: string, status: string): Promise<void>
 /**
  * Supprime définitivement un établissement.
  *
- * Toutes les données liées à l'école (profils, rôles, licences, appareils,
- * années scolaires, journaux d'audit, données pédagogiques…) sont supprimées
- * en cascade par les contraintes SQL (`ON DELETE CASCADE` sur schools.id).
+ * La suppression est assurée par la fonction serveur `delete_school_cascade`
+ * (SECURITY DEFINER) qui efface explicitement toutes les tables filles — y
+ * compris celles dont la clé étrangère n'a pas de « ON DELETE CASCADE » en
+ * base (classes, élèves, notes, etc.) — puis l'établissement. Les comparaisons
+ * d'identifiants se font en texte côté serveur : insensible aux types uuid/text.
  *
  * Les comptes d'accès (Supabase Auth) devenus orphelins après la suppression
  * sont également supprimés — sauf s'ils restent utilisés par un autre
@@ -431,7 +462,7 @@ export async function setSchoolStatus(id: string, status: string): Promise<void>
  *   n'ont pas pu être révoqués (pour éviter des accès fantômes).
  */
 export async function deleteSchool(schoolId: string): Promise<void> {
-  // 1. Repérer TOUS les utilisateurs liés à cet établissement (avant la cascade)
+  // 1. Repérer TOUS les utilisateurs liés à cet établissement (avant suppression)
   const [urRes, profRes] = await Promise.all([
     supabaseAdmin.from('user_roles').select('user_id').eq('school_id', schoolId),
     supabaseAdmin.from('profiles').select('user_id').eq('school_id', schoolId),
@@ -444,30 +475,35 @@ export async function deleteSchool(schoolId: string): Promise<void> {
     ...(profRes.data ?? []).map((p: { user_id: string }) => p.user_id),
   ]);
 
-  // 2. Supprimer l'établissement (déclenche ON DELETE CASCADE sur toutes les tables filles)
-  //    Si l'ID n'est pas un UUID valide (ex: 'school-1' créé lors de migrations de test),
-  //    on supprime directement sans appeler la fonction RPC qui attend un type UUID.
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(schoolId);
+  // 2. Suppression atomique côté serveur (fonction SECURITY DEFINER).
+  const rpcRes = await supabaseAdmin.rpc('delete_school_cascade', { p_school_id: schoolId });
 
-  let rpcFailed = false;
-  if (isUuid) {
-    const rpcRes = await supabaseAdmin.rpc('delete_school_cascade', { p_school_id: schoolId });
-    if (rpcRes.error) {
-      rpcFailed = true;
+  if (rpcRes.error) {
+    // Repli : suppression explicite via la clé de service (contourne le RLS),
+    // enfants d'abord pour ne jamais violer une clé étrangère.
+    // Historique des inscriptions (rattaché aux inscriptions, sans school_id).
+    try {
+      const { data: enr } = await supabaseAdmin.from('enrollments').select('id').eq('school_id', schoolId);
+      const enrollmentIds = (enr ?? []).map((e: { id: string }) => e.id);
+      if (enrollmentIds.length > 0) {
+        await supabaseAdmin.from('enrollment_history').delete().in('enrollment_id', enrollmentIds);
+      }
+    } catch { /* table absente ou déjà nettoyée */ }
+
+    // Inscriptions avant les années/élèves/classes, puis le reste dans l'ordre.
+    await supabaseAdmin.from('enrollments').delete().eq('school_id', schoolId);
+    const childTables = [
+      'grades', 'teacher_assignments', 'class_subjects', 'grading_periods',
+      'grade_types', 'subjects', 'classes', 'students', 'academic_years',
+      'audit_logs', 'devices', 'licenses', 'user_roles', 'profiles',
+    ];
+    for (const table of childTables) {
+      const { error } = await supabaseAdmin.from(table).delete().eq('school_id', schoolId);
+      // Ignorer « table absente » (migration non appliquée) — on nettoie le reste.
+      if (error && !/does not exist/i.test(error.message)) {
+        console.warn(`[deleteSchool] Nettoyage ${table}:`, error.message);
+      }
     }
-  } else {
-    rpcFailed = true;
-  }
-
-  if (rpcFailed) {
-    // Suppression directe (avec clé de service pour contourner le RLS)
-    // 2a. Nettoyage explicite des profils et rôles rattachés
-    await Promise.all([
-      supabaseAdmin.from('profiles').delete().eq('school_id', schoolId),
-      supabaseAdmin.from('user_roles').delete().eq('school_id', schoolId),
-      supabaseAdmin.from('licenses').delete().eq('school_id', schoolId),
-      supabaseAdmin.from('devices').delete().eq('school_id', schoolId),
-    ]);
 
     const res = await supabaseAdmin.from('schools').delete().eq('id', schoolId);
     if (res.error) {
@@ -479,6 +515,7 @@ export async function deleteSchool(schoolId: string): Promise<void> {
   //    CRITIQUE : si un compte Auth survit, l'utilisateur peut encore se connecter
   //    même si toutes ses données ont été supprimées.
   const failedAuthDeletions: string[] = [];
+  const unlinkedUserIds: string[] = [];
 
   for (const userId of candidateIds) {
     try {
@@ -489,6 +526,8 @@ export async function deleteSchool(schoolId: string): Promise<void> {
       ]);
       const stillUsed = (urAgain.data?.length ?? 0) > 0 || (profAgain.data?.length ?? 0) > 0;
       if (stillUsed) continue;
+
+      unlinkedUserIds.push(userId);
 
       // Suppression du compte Supabase Auth (révoque tous les tokens actifs)
       const { error: authErr } = await supabaseAdmin.auth.admin.deleteUser(userId);
@@ -501,6 +540,19 @@ export async function deleteSchool(schoolId: string): Promise<void> {
     } catch (e) {
       console.error(`[deleteSchool] Exception révocation Auth pour ${userId}:`, e);
       failedAuthDeletions.push(userId);
+    }
+  }
+
+  // 4. Garantir la disparition des lignes `public.users` côté cloud.
+  //    C'est ce que consulte la validation de connexion (verifyCloudAccount) :
+  //    tant que la ligne subsiste, un compte d'un établissement supprimé peut
+  //    encore se connecter (notamment hors-ligne). La suppression Auth ci-dessus
+  //    cascade vers `users` si la clé étrangère est bien configurée ; on la force
+  //    ici pour être certain du résultat.
+  if (unlinkedUserIds.length > 0) {
+    const { error: usersErr } = await supabaseAdmin.from('users').delete().in('id', unlinkedUserIds);
+    if (usersErr) {
+      console.warn('[deleteSchool] Nettoyage des lignes users:', usersErr.message);
     }
   }
 

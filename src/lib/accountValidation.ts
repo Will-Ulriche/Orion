@@ -34,3 +34,28 @@ export async function verifyCloudAccount(userId: string): Promise<CloudAccountSt
     return 'unknown';
   }
 }
+
+/**
+ * Vérifie que l'établissement existe toujours et est actif côté cloud.
+ *  - 'active'  : l'établissement existe et n'est pas clôturé
+ *  - 'missing' : l'établissement a été supprimé (ou suspendu/clôturé)
+ *  - 'unknown' : cloud injoignable → aucune conclusion (mode hors-ligne toléré)
+ *
+ * Sert à bloquer l'accès aux comptes d'un établissement supprimé par le
+ * Super Admin, même si la ligne utilisateur correspondante subsiste.
+ */
+export async function verifyCloudSchool(schoolId: string): Promise<CloudAccountState> {
+  if (!isCloudManagedUserId(schoolId)) return 'unknown';
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('schools')
+      .select('id, status')
+      .eq('id', schoolId)
+      .maybeSingle();
+    if (error) return 'unknown';
+    if (!data) return 'missing';
+    return data.status === 'CLOSED' ? 'missing' : 'active';
+  } catch (_) {
+    return 'unknown';
+  }
+}

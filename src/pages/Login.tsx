@@ -4,6 +4,7 @@ import { Eye, EyeOff, WifiOff, Loader2, AlertCircle, Shield, ArrowLeft } from 'l
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { useNetwork } from '../hooks/useNetwork';
+import { isCloudManagedUserId, verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation';
 import orionLogo from '../assets/orion_logo.png';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -175,6 +176,24 @@ export default function Login({
           setError(error.message);
         }
       } else if (data.user) {
+        // L'établissement (ou le compte) a-t-il été supprimé/suspendu par
+        // l'administration ? On vérifie avant d'accorder l'accès.
+        const metaSchoolId = (data.user.user_metadata as any)?.school_id as string | undefined;
+        const accountState = await verifyCloudAccount(data.user.id);
+        const schoolState = isCloudManagedUserId(metaSchoolId)
+          ? await verifyCloudSchool(metaSchoolId!)
+          : 'unknown';
+
+        if (accountState === 'missing' || schoolState === 'missing') {
+          await supabase.auth.signOut().catch(() => {});
+          setError(
+            schoolState === 'missing'
+              ? "Cet établissement a été supprimé par l'administration. Accès refusé."
+              : "Ce compte a été supprimé ou suspendu par l'administration. Contactez le support."
+          );
+          return;
+        }
+
         // Succès en ligne — enregistrer pour usage futur hors-ligne
         try {
           await invoke('store_offline_credentials', {

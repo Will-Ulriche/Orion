@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabaseClient';
+import { supabase, supabaseAdmin } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
-import { verifyCloudAccount } from '../lib/accountValidation';
+import { verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation';
 
 interface AuthContextType {
   session: Session | null;
@@ -131,6 +131,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       let firstName: string = userMeta.first_name || 'Direction';
       let lastName: string = userMeta.last_name || '';
       const metaRole: string = userMeta.role || 'DIRECTION';
+      // Fiche complète de l'établissement (renseignée par le super-administrateur
+      // dans le cloud). Elle est rapatriée localement pour que la direction
+      // retrouve les informations sans les ressaisir.
+      let school: any = null;
 
       try {
         // Si connecté en ligne, tenter de récupérer l'établissement et profil cloud.
@@ -138,7 +142,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const { data: prof } = await supabase
               .from('profiles')
-              .select('school_id, first_name, last_name, schools(name)')
+              .select('school_id, first_name, last_name')
               .eq('user_id', userSession.user.id)
               .limit(1)
               .maybeSingle();
@@ -146,10 +150,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if ((prof as any)?.first_name) firstName = (prof as any).first_name;
               if ((prof as any)?.last_name) lastName = (prof as any).last_name;
               if ((prof as any)?.school_id) schoolId = (prof as any).school_id;
-              if ((prof as any)?.schools?.name) schoolName = (prof as any).schools.name;
             }
           } catch (profileErr) {
             console.warn('Erreur profil cloud (utilisation métadonnées):', profileErr);
+          }
+
+          // Lecture de l'établissement via la clé de service : seule la
+          // super-administration dispose d'une politique RLS de lecture sur
+          // `schools`, la direction ne peut donc pas le lire avec le client anon.
+          if (schoolId) {
+            try {
+              const { data: sch } = await supabaseAdmin
+                .from('schools')
+                .select('name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone, logo_url')
+                .eq('id', schoolId)
+                .maybeSingle();
+              if (sch) {
+                school = sch;
+                if ((sch as any).name) schoolName = (sch as any).name;
+              }
+            } catch (schoolErr) {
+              console.warn('Erreur lecture établissement cloud:', schoolErr);
+            }
           }
         }
 
@@ -166,6 +188,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           schoolName,
           firstName,
           lastName,
+          shortName: school?.short_name ?? null,
+          address: school?.address ?? null,
+          city: school?.city ?? null,
+          country: school?.country ?? null,
+          phonePrimary: school?.phone_primary ?? null,
+          phoneSecondary: school?.phone_secondary ?? null,
+          schoolEmail: school?.email ?? null,
+          website: school?.website ?? null,
+          currency: school?.currency ?? null,
+          timezone: school?.timezone ?? null,
+          logoUrl: school?.logo_url ?? null,
         });
 
         // Déterminer les rôles effectifs
@@ -243,14 +276,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             .then((exists) => {
               if (exists) {
                 setOfflineSessionState(parsed.id, parsed.email);
-                // Vérifier en arrière-plan que le compte n'a pas été supprimé
-                // côté cloud par l'administration (ne bloque pas le démarrage).
-                verifyCloudAccount(parsed.id).then((state) => {
-                  if (state === 'missing') {
-                    console.warn('[Auth] Session hors-ligne rejetée : compte supprimé.');
+                // Vérifier en arrière-plan que le compte ET l'établissement
+                // n'ont pas été supprimés/suspendus côté cloud par
+                // l'administration (ne bloque pas le démarrage).
+                Promise.all([
+                  verifyCloudAccount(parsed.id),
+                  verifyCloudSchool(offlineSchoolId),
+                ]).then(([accountState, schoolState]) => {
+                  if (accountState === 'missing' || schoolState === 'missing') {
+                    console.warn('[Auth] Session hors-ligne rejetée : compte ou établissement supprimé.');
                     localStorage.removeItem('orion_offline_session');
                     localStorage.removeItem('current_school_id');
                     try { invoke('delete_local_user', { userId: parsed.id }); } catch (_) {}
+                    if (schoolState === 'missing') {
+                      try { invoke('purge_local_school', { schoolId: offlineSchoolId }); } catch (_) {}
+                    }
                     setSession(null);
                     setUser(null);
                     setRoles([]);

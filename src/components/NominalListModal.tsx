@@ -13,6 +13,7 @@ import {
   buildNominalListPdf, loadNominalListAssets,
   type NominalListAssets,
 } from '../lib/nominalListPdf';
+import { getCurrentSchoolId } from '../contexts/AuthContext';
 
 interface NominalListModalProps {
   /** Classes de l'onglet courant (Collège), déjà filtrées par l'établissement. */
@@ -75,7 +76,7 @@ export default function NominalListModal({
     let cancelled = false;
     Promise.all([
       loadNominalListAssets(),
-      invoke<any>("get_school_settings").catch(() => null)
+      invoke<any>("get_school_settings", { schoolId: schoolId ?? getCurrentSchoolId() }).catch(() => null)
     ])
       .then(([a, school]) => {
         if (cancelled) return;
@@ -90,7 +91,7 @@ export default function NominalListModal({
         onError(`Images du modèle indisponibles : ${String(e)} — aperçu généré sans logo.`);
       });
     return () => { cancelled = true; };
-  }, [onError]);
+  }, [onError, schoolId]);
 
   // ── Recherche sur le nom de la classe ─────────────────────────────────────
   const filtered = useMemo(() => {

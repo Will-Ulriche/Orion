@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Building2, Plus, RefreshCw, Pencil, Power, MapPin, KeyRound,
   Eye, EyeOff, Copy, Check, Sparkles, ArrowUpRight, Trash2, AlertTriangle
@@ -249,6 +250,9 @@ export default function Ecoles() {
     try {
       const target = deleteTarget;
       await deleteSchool(target.id);
+      // Nettoyer la copie locale de cet établissement sur cette machine
+      // (comptes, données) pour empêcher toute connexion locale résiduelle.
+      try { await invoke('purge_local_school', { schoolId: target.id }); } catch (_) {}
       setSchools(prev => prev.filter(s => s.id !== target.id));
       // Si cet établissement était ouvert en mode « direction », on en sort
       if (forcedSchoolId === target.id) exitSchoolMode();

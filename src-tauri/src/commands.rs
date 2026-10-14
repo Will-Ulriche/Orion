@@ -518,16 +518,20 @@ pub fn resolve_sync_conflict(
 // COMMANDE : Enregistrer les paramètres de l'établissement (Offline-First)
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn save_school_settings(payload: String, school_id: Option<String>, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données")?;
-    
+
     let s: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let get = |key: &str| s.get(key).and_then(|v| v.as_str());
 
-    // Établissement de travail : la première école connue localement.
-    let school_id: String = conn
-        .query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
-        .unwrap_or_else(|_| "school-1".to_string());
+    // Établissement courant : l'identifiant transmis par le front (école de
+    // l'utilisateur connecté) est prioritaire ; à défaut, première école locale.
+    let school_id: String = school_id
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            conn.query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
+                .unwrap_or_else(|_| "school-1".to_string())
+        });
 
     // Garantir l'existence de la ligne (la colonne name est NOT NULL).
     conn.execute(
@@ -568,16 +572,19 @@ pub fn save_school_settings(payload: String, state: State<'_, DbState>) -> Resul
 }
 
 #[tauri::command(async)]
-pub fn get_school_settings(state: State<'_, DbState>) -> Result<serde_json::Value, String> {
+pub fn get_school_settings(school_id: Option<String>, state: State<'_, DbState>) -> Result<serde_json::Value, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données")?;
 
-    // L'établissement de travail est celui connu localement (installation
-    // mono-établissement) : on prend la première école enregistrée plutôt que
-    // l'identifiant fictif « school-1 », afin de refléter le nom réel créé
-    // par le super-administrateur.
-    let school_id: String = conn
-        .query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
-        .unwrap_or_else(|_| "school-1".to_string());
+    // Établissement courant : l'identifiant transmis par le front (école de
+    // l'utilisateur connecté) est prioritaire ; à défaut, on retombe sur la
+    // première école locale connue (compatibilité mono-établissement), afin de
+    // refléter le nom réel créé par le super-administrateur.
+    let school_id: String = school_id
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            conn.query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
+                .unwrap_or_else(|_| "school-1".to_string())
+        });
 
     let mut stmt = conn.prepare(
         "SELECT name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone,
@@ -929,18 +936,59 @@ pub fn transfer_class_within_year(
 // COMMANDE : Synchroniser l'utilisateur Supabase en local
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn sync_local_user(user_id: String, email: String, school_id: String, school_name: String, first_name: Option<String>, last_name: Option<String>, state: State<'_, DbState>) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub fn sync_local_user(
+    user_id: String,
+    email: String,
+    school_id: String,
+    school_name: String,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    short_name: Option<String>,
+    address: Option<String>,
+    city: Option<String>,
+    country: Option<String>,
+    phone_primary: Option<String>,
+    phone_secondary: Option<String>,
+    school_email: Option<String>,
+    website: Option<String>,
+    currency: Option<String>,
+    timezone: Option<String>,
+    logo_url: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
-    // Upsert school — le nom issu du cloud (créé par le super-admin) écrase un
-    // éventuel libellé vide/par défaut, afin qu'il apparaisse dans les paramètres.
+
+    // Upsert établissement — les informations saisies par le super-administrateur
+    // dans le cloud sont rapatriées localement, afin que la direction les
+    // retrouve dans « Paramètres » sans les ressaisir (source de vérité unique).
+    // - Le nom n'écrase un libellé local que s'il n'est pas un placeholder.
+    // - Les autres champs priment lorsqu'ils sont renseignés dans le cloud,
+    //   sinon la valeur locale (éditée par la direction) est conservée.
     conn.execute(
-        "INSERT INTO schools (id, name) VALUES (?1, ?2) 
-         ON CONFLICT(id) DO UPDATE SET name = excluded.name
-         WHERE schools.name IS NULL
-            OR TRIM(schools.name) = ''
-            OR schools.name IN ('École', 'Établissement', 'Établissement Principal')",
-        rusqlite::params![school_id, school_name],
+        "INSERT INTO schools (id, name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone, logo_url)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(id) DO UPDATE SET
+            name = CASE
+                     WHEN TRIM(COALESCE(excluded.name, '')) <> ''
+                          AND excluded.name NOT IN ('École', 'Établissement', 'Établissement Principal')
+                     THEN excluded.name
+                     ELSE schools.name END,
+            short_name      = COALESCE(NULLIF(TRIM(COALESCE(excluded.short_name, '')), ''), schools.short_name),
+            address         = COALESCE(NULLIF(TRIM(COALESCE(excluded.address, '')), ''), schools.address),
+            city            = COALESCE(NULLIF(TRIM(COALESCE(excluded.city, '')), ''), schools.city),
+            country         = COALESCE(NULLIF(TRIM(COALESCE(excluded.country, '')), ''), schools.country),
+            phone_primary   = COALESCE(NULLIF(TRIM(COALESCE(excluded.phone_primary, '')), ''), schools.phone_primary),
+            phone_secondary = COALESCE(NULLIF(TRIM(COALESCE(excluded.phone_secondary, '')), ''), schools.phone_secondary),
+            email           = COALESCE(NULLIF(TRIM(COALESCE(excluded.email, '')), ''), schools.email),
+            website         = COALESCE(NULLIF(TRIM(COALESCE(excluded.website, '')), ''), schools.website),
+            currency        = COALESCE(NULLIF(TRIM(COALESCE(excluded.currency, '')), ''), schools.currency),
+            timezone        = COALESCE(NULLIF(TRIM(COALESCE(excluded.timezone, '')), ''), schools.timezone),
+            logo_url        = COALESCE(NULLIF(TRIM(COALESCE(excluded.logo_url, '')), ''), schools.logo_url)",
+        rusqlite::params![
+            school_id, school_name, short_name, address, city, country,
+            phone_primary, phone_secondary, school_email, website, currency, timezone, logo_url
+        ],
     ).map_err(|e| format!("Erreur sync école: {}", e))?;
 
     // Upsert user — le nom d'utilisateur par défaut reprend l'email pour
@@ -4246,6 +4294,23 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
                     return Err("Identifiant ou mot de passe incorrect.".to_string());
                 }
             }
+        }
+    }
+
+    // ─── Vérification de l'établissement ─────────────────────────────────────
+    // Pour un utilisateur non Super Admin : si un établissement précis est
+    // demandé et qu'il n'existe plus localement (supprimé par le Super Admin),
+    // on refuse la connexion — même hors-ligne. Empêche un compte rattaché à
+    // une école supprimée de se connecter tant que des données locales
+    // résiduelles subsistent sur cette machine.
+    if is_super == 0 && !school_id.trim().is_empty() && school_id != "school-1" {
+        let school_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schools WHERE id = ?1",
+            rusqlite::params![school_id],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        if school_exists == 0 {
+            return Err("Établissement introuvable ou supprimé. Accès refusé.".to_string());
         }
     }
 

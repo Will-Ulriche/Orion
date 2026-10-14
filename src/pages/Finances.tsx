@@ -194,7 +194,7 @@ export default function Finances() {
   }, [schoolId, selectedYear, loadFees]);
 
   useEffect(() => {
-    invoke<Partial<ReceiptSchoolInfo>>('get_school_settings')
+    invoke<Partial<ReceiptSchoolInfo>>('get_school_settings', { schoolId })
       .then(s => {
         if (s?.currency) setCurrency(s.currency);
         setSchoolInfo({
@@ -218,7 +218,7 @@ export default function Finances() {
         });
       })
       .catch(() => { /* devise par défaut */ });
-  }, []);
+  }, [schoolId]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 

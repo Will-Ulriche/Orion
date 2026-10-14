@@ -292,7 +292,7 @@ export default function Archives() {
           invoke<SectionRow[]>('get_sections', { schoolId }),
           invoke<LevelRow[]>('get_levels', { schoolId, sectionId: null }),
           invoke<ClassRow[]>('get_classes', { schoolId, academicYearId: yearId }),
-          invoke<Partial<ReceiptSchoolInfo>>('get_school_settings').catch(() => ({} as Partial<ReceiptSchoolInfo>)),
+          invoke<Partial<ReceiptSchoolInfo>>('get_school_settings', { schoolId }).catch(() => ({} as Partial<ReceiptSchoolInfo>)),
         ]);
         if (cancelled) return;
         const schoolInfo = { ...EMPTY_SCHOOL_INFO, ...settings };

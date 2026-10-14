@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Download, GraduationCap, LoaderCircle, Search, Users, X, ClipboardCheck, ZoomIn, ZoomOut } from 'lucide-react';
 import type { NominalListClassInput } from '../lib/nominalListTemplate';
 import { buildPresenceListPdf, nominalListFileName, preloadPresenceTemplate } from '../lib/presenceListPdf';
+import { getCurrentSchoolId } from '../contexts/AuthContext';
 
 interface PresenceListModalProps {
   classes: NominalListClassInput[];
@@ -73,7 +74,7 @@ export default function PresenceListModal({
   useEffect(() => {
     // Modèle PDF déjà en cache → le 1er aperçu ne re-fetch/re-parse pas.
     preloadPresenceTemplate();
-    invoke<any>('get_school_settings').then(s => {
+    invoke<any>('get_school_settings', { schoolId: getCurrentSchoolId() }).then(s => {
       if (s && s.logo_url) setLogoUrl(s.logo_url);
       if (s && s.name) setSchoolName(s.name);
     }).catch(() => {});

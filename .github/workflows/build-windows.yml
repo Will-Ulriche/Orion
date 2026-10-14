@@ -1,19 +1,16 @@
-name: Build & Package Windows App
+name: Release Windows App
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-windows:
+  release-windows:
     runs-on: windows-latest
 
     steps:
@@ -35,20 +32,25 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Build Tauri App (.exe & installer)
+      - name: Build, sign & publish release
+        uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Clé privée de signature des mises à jour (OBLIGATOIRE).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || 'https://reyxonfhvlybjhxlthvy.supabase.co' }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA1NDg1MDIsImV4cCI6MjEwNjEyNDUwMn0.E1r_pWl09sqbr0pjakApgC2YgSXzfsuOLoSFmk5efaw' }}
           VITE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.VITE_SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDU0ODUwMiwiZXhwIjoyMTA2MTI0NTAyfQ.EGNHM3sq_EtjBALI0qt1augVEYntd7f4p2u-IYWwn0Q' }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDU0ODUwMiwiZXhwIjoyMTA2MTI0NTAyfQ.EGNHM3sq_EtjBALI0qt1augVEYntd7f4p2u-IYWwn0Q' }}
-        run: npm run tauri build
-
-      - name: Upload Windows Executable & Setup Installer
-        uses: actions/upload-artifact@v4
         with:
-          name: Orion-Windows-Setup-exe
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/Orion.exe
-          if-no-files-found: warn
+          tagName: v__VERSION__
+          releaseName: 'Orion v__VERSION__'
+          releaseBody: |
+            Mise à jour Orion v__VERSION__.
+
+            L'application détecte automatiquement cette version depuis
+            l'espace Direction/Super Admin (Paramètres → Mises à jour).
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true

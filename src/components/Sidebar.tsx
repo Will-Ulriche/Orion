@@ -3,11 +3,13 @@ import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart,
   Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins, BookOpen, UserCog, Archive, Shield, ClipboardList,
-  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, WifiOff, ShieldCheck, BarChart2, FileSpreadsheet, Rocket
+  LayoutDashboard, Building2, KeyRound, MonitorSmartphone, WifiOff, ShieldCheck, BarChart2, FileSpreadsheet, Rocket,
+  Sparkles
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useNetwork } from '../hooks/useNetwork';
+import { useUpdater } from '../contexts/UpdateContext';
 import YearSelector from './YearSelector';
 import orionLogo from '../assets/orion_logo.png';
 
@@ -44,6 +46,7 @@ const superAdminItems = [
 
 export default function Sidebar() {
   const { user, roles, rolesLoaded, inSchoolMode, forcedSchoolName, exitSchoolMode, schoolId } = useAuth();
+  const { status, currentVersion, openModal, checkForUpdates } = useUpdater();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [schoolName, setSchoolName] = useState('');
@@ -56,7 +59,7 @@ export default function Sidebar() {
       return;
     }
     let cancelled = false;
-    invoke<any>('get_school_settings')
+    invoke<any>('get_school_settings', { schoolId })
       .then(s => { if (!cancelled && s?.name) setSchoolName(s.name); })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -203,6 +206,42 @@ export default function Sidebar() {
 
       </nav>
 
+      {/* Tag de version au pied du menu — stable sans déformation de la sidebar */}
+      <div className={`py-1.5 ${collapsed ? 'flex justify-center px-0' : 'px-6'}`}>
+        <button
+          onClick={() => {
+            openModal();
+            if (status === 'idle' || status === 'up-to-date') {
+              checkForUpdates(false);
+            }
+          }}
+          className={`flex items-center gap-2 text-[11px] font-mono text-slate-400 hover:text-slate-200 transition-colors py-1 cursor-pointer ${
+            collapsed ? 'justify-center' : ''
+          }`}
+          title="Vérifier les mises à jour logicielles"
+        >
+          <span
+            className={`w-2 h-2 rounded-full flex-shrink-0 ${
+              status === 'available' || status === 'downloaded'
+                ? 'bg-blue-400 animate-pulse'
+                : status === 'checking'
+                ? 'bg-amber-400 animate-spin'
+                : 'bg-emerald-500'
+            }`}
+          />
+          {!collapsed && (
+            <span className="flex items-center gap-1.5">
+              <span>Orion v{currentVersion}</span>
+              {(status === 'available' || status === 'downloaded') && (
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-sans font-bold bg-blue-500/25 text-blue-300 border border-blue-500/40">
+                  Màj dispo
+                </span>
+              )}
+            </span>
+          )}
+        </button>
+      </div>
+
       {/* User Profile — cliquable avec menu popup */}
       <UserProfileMenu collapsed={collapsed} displayName={displayName} email={email} />
     </aside>
@@ -220,6 +259,7 @@ function UserProfileMenu({
   email: string;
 }) {
   const { signOut, session } = useAuth();
+  const { status, currentVersion, openModal, checkForUpdates } = useUpdater();
   const [open, setOpen] = useState(false);
 
   const isOnline = useNetwork();
@@ -304,6 +344,29 @@ function UserProfileMenu({
                 <UserCog size={15} />
                 Mon compte
               </NavLink>
+
+              <button
+                onClick={() => {
+                  setOpen(false);
+                  openModal();
+                  if (status === 'idle' || status === 'up-to-date') {
+                    checkForUpdates(false);
+                  }
+                }}
+                className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm text-slate-400 hover:text-slate-100 hover:bg-white/5 transition-colors cursor-pointer text-left"
+              >
+                <div className="flex items-center gap-3">
+                  <Sparkles size={15} className={status === 'available' ? 'text-blue-400' : ''} />
+                  <span>Mises à jour</span>
+                </div>
+                {status === 'available' || status === 'downloaded' ? (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">
+                    Dispo
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-slate-500 font-mono">v{currentVersion}</span>
+                )}
+              </button>
 
               <div className="h-px bg-white/5 my-1" />
 
