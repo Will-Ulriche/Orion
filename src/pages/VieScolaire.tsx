@@ -11,8 +11,8 @@ export default function VieScolaire() {
                 <School size={22} />
               </span>
               <div>
-                <h1 className="text-xl font-bold tracking-tight text-slate-800">Vie scolaire</h1>
-                <p className="text-[13px] text-slate-400">Présences, absences, retards, sanctions et discipline.</p>
+                <h1 className="text-xl font-bold tracking-tight text-slate-800">Bibliothèque</h1>
+                <p className="text-[13px] text-slate-400">Ouvrages, emprunts, retours et gestion du catalogue.</p>
               </div>
             </div>
           </div>
@@ -28,7 +28,7 @@ export default function VieScolaire() {
               </div>
               <h2 className="text-lg font-semibold text-slate-800">Module en cours de développement</h2>
               <p className="mt-2 max-w-md text-sm text-slate-500">
-                La gestion de la vie scolaire (présences, absences, retards, discipline et sanctions) sera bientôt disponible.
+                La gestion de la bibliothèque (catalogue, emprunts, retours) sera bientôt disponible.
               </p>
             </div>
           </div>
