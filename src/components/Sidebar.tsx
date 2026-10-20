@@ -32,7 +32,7 @@ const manageItems = [
 const settingsItems = [
   { to: '/sync', icon: RefreshCw, label: 'Synchronisation', roles: ['DIRECTION'] },
   { to: '/security', icon: Shield, label: 'Sécurité', roles: ['DIRECTION'] },
-  { to: '/settings', icon: Settings, label: "Administration du logiciel", roles: ['DIRECTION'] },
+  { to: '/settings', icon: Settings, label: "Paramètres", roles: ['DIRECTION'] },
 ];
 
 // Menu dédié au SUPER_ADMIN : école de base + licences (gérés dans le cloud).
