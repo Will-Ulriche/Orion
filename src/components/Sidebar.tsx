@@ -32,7 +32,7 @@ const manageItems = [
 const settingsItems = [
   { to: '/sync', icon: RefreshCw, label: 'Synchronisation', roles: ['DIRECTION'] },
   { to: '/security', icon: Shield, label: 'Sécurité', roles: ['DIRECTION'] },
-  { to: '/settings', icon: Settings, label: "Paramètres", roles: ['DIRECTION'] },
+  { to: '/settings', icon: Settings, label: "Administration du logiciel", roles: ['DIRECTION'] },
 ];
 
 // Menu dédié au SUPER_ADMIN : école de base + licences (gérés dans le cloud).
@@ -213,7 +213,7 @@ export default function Sidebar() {
         {!isSuperAdmin && visibleSettingsItems.length > 0 && (
           <div>
             <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v-sm)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
-              SETTINGS
+              PARAMÈTRES
             </p>
             <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
               {visibleSettingsItems.map((item) => (
