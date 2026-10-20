@@ -113,7 +113,7 @@ export default function Sidebar() {
   const visibleManageItems = manageItems.filter(item => hasAccess(item.roles));
   const visibleSettingsItems = settingsItems.filter(item => hasAccess(item.roles));
   const mainItems = isSuperAdmin ? superAdminItems : visibleManageItems;
-  const sectionLabel = isSuperAdmin ? 'SUPER ADMIN' : 'MANAGE';
+  const sectionLabel = isSuperAdmin ? 'SUPER ADMIN' : 'GESTION SCOLAIRE';
 
   return (
     <aside
