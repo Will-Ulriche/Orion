@@ -23,7 +23,7 @@ const manageItems = [
   { to: '/archives', icon: Archive, label: 'Archives', roles: ['DIRECTION'] },
   { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/finances', icon: Coins, label: 'Finances & Paiements', roles: ['DIRECTION'] },
-  { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Notes', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
+  { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Examens', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
   { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ['PROFESSEUR'] },
   { to: '/personnel', icon: UserCog, label: 'Personnel', roles: ['DIRECTION'] },
 ];
