@@ -12,7 +12,7 @@ import { useNetwork } from '../hooks/useNetwork';
 import { useUpdater } from '../contexts/UpdateContext';
 import YearSelector from './YearSelector';
 import orionLogo from '../assets/orion_logo.png';
-import { listSchools, getSchoolsWithDirection, listLicenses, listDevices } from '../lib/superAdminApi';
+import { listSchools, listLicenses, listDevices } from '../lib/superAdminApi';
 
 // Remplacement des icônes pour coller exactement au style "piqowallet" 
 // tout en gardant vos routes.
@@ -104,7 +104,6 @@ export default function Sidebar() {
   useEffect(() => {
     if (isSuperAdmin) {
       listSchools().catch(() => {});
-      getSchoolsWithDirection().catch(() => {});
       listLicenses().catch(() => {});
       listDevices().catch(() => {});
     }
