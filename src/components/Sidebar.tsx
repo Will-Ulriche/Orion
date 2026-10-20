@@ -22,7 +22,7 @@ const manageItems = [
   { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/finances', icon: Coins, label: 'Finances & Paiements', roles: ['DIRECTION'] },
   { to: '/personnel', icon: UserCog, label: 'Personnel', roles: ['DIRECTION'] },
-  { to: '/vie-scolaire', icon: School, label: 'Vie scolaire', roles: ['DIRECTION', 'SECRETAIRE'] },
+  { to: '/vie-scolaire', icon: School, label: 'Bibliothèque', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Examens', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
   { to: '/prise-en-main', icon: Rocket, label: 'Prise en main', roles: ['DIRECTION'] },
   { to: '/archives', icon: Archive, label: 'Archives & Documents', roles: ['DIRECTION'] },
