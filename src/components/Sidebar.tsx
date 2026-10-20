@@ -213,7 +213,7 @@ export default function Sidebar() {
         {!isSuperAdmin && visibleSettingsItems.length > 0 && (
           <div>
             <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v-sm)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
-              PARAMÈTRES
+              ADMINISTRATION DU LOGICIEL
             </p>
             <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
               {visibleSettingsItems.map((item) => (
