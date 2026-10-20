@@ -4,7 +4,7 @@ import {
   PieChart,
   Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins, BookOpen, UserCog, Archive, Shield, ClipboardList,
   LayoutDashboard, Building2, KeyRound, MonitorSmartphone, WifiOff, ShieldCheck, BarChart2, FileSpreadsheet, Rocket,
-  Sparkles
+  Sparkles, School
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -19,6 +19,7 @@ import { listSchools, getSchoolsWithDirection, listLicenses, listDevices } from 
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord', roles: [] }, // Tous
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE'] },
+  { to: '/vie-scolaire', icon: School, label: 'Vie scolaire', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/prise-en-main', icon: Rocket, label: 'Prise en main', roles: ['DIRECTION'] },
   { to: '/archives', icon: Archive, label: 'Archives & Documents', roles: ['DIRECTION'] },
   { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },

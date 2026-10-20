@@ -18,6 +18,7 @@ import Pedagogie from './pages/Pedagogie';
 import RecapNotes from './pages/RecapNotes';
 import Personnel from './pages/Personnel';
 import Archives from './pages/Archives';
+import VieScolaire from './pages/VieScolaire';
 import PriseEnMain from './pages/PriseEnMain';
 import SuperAdminHome from './pages/superadmin/SuperAdminHome';
 import Ecoles from './pages/superadmin/Ecoles';
@@ -144,7 +145,8 @@ function AppRoutes() {
         <Route path="/personnel" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Personnel /></RoleProtectedRoute>} />
         <Route path="/security" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Security /></RoleProtectedRoute>} />
         <Route path="/settings" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Settings /></RoleProtectedRoute>} />
-        <Route path="/archives" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Archives /></RoleProtectedRoute>} />
+                    <Route path="/vie-scolaire" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><VieScolaire /></RoleProtectedRoute>} />
+                    <Route path="/archives" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Archives /></RoleProtectedRoute>} />
         <Route path="/sync" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><SyncCenter /></RoleProtectedRoute>} />
         
         {/* Accès commun à tous (avec restrictions internes gérées dans la page si besoin) */}
