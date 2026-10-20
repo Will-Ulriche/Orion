@@ -12,15 +12,16 @@ import { useNetwork } from '../hooks/useNetwork';
 import { useUpdater } from '../contexts/UpdateContext';
 import YearSelector from './YearSelector';
 import orionLogo from '../assets/orion_logo.png';
+import { listSchools, getSchoolsWithDirection, listLicenses, listDevices } from '../lib/superAdminApi';
 
 // Remplacement des icônes pour coller exactement au style "piqowallet" 
 // tout en gardant vos routes.
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord', roles: [] }, // Tous
+  { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/prise-en-main', icon: Rocket, label: 'Prise en main', roles: ['DIRECTION'] },
   { to: '/archives', icon: Archive, label: 'Archives', roles: ['DIRECTION'] },
   { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },
-  { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/finances', icon: Coins, label: 'Finances & Paiements', roles: ['DIRECTION'] },
   { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Notes', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
   { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ['PROFESSEUR'] },
@@ -48,8 +49,19 @@ export default function Sidebar() {
   const { user, roles, rolesLoaded, inSchoolMode, forcedSchoolName, exitSchoolMode, schoolId } = useAuth();
   const { status, currentVersion, openModal, checkForUpdates } = useUpdater();
   const navigate = useNavigate();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => typeof window !== 'undefined' && window.innerWidth < 1180);
   const [schoolName, setSchoolName] = useState('');
+
+  // Auto-collapse sur petits écrans lors du redimensionnement de la fenêtre
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 1080) {
+        setCollapsed(true);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     // En mode « direction » (visite d'un établissement depuis le SUPER_ADMIN),
@@ -87,6 +99,16 @@ export default function Sidebar() {
   // exactement comme la direction de cet établissement.
   const isSuperAdmin = rolesLoaded && roles.includes('SUPER_ADMIN') && !inSchoolMode;
 
+  // Préchargement passif du cache en tâche de fond pour une réactivité instantanée à chaque clic
+  useEffect(() => {
+    if (isSuperAdmin) {
+      listSchools().catch(() => {});
+      getSchoolsWithDirection().catch(() => {});
+      listLicenses().catch(() => {});
+      listDevices().catch(() => {});
+    }
+  }, [isSuperAdmin]);
+
   const visibleManageItems = manageItems.filter(item => hasAccess(item.roles));
   const visibleSettingsItems = settingsItems.filter(item => hasAccess(item.roles));
   const mainItems = isSuperAdmin ? superAdminItems : visibleManageItems;
@@ -94,38 +116,34 @@ export default function Sidebar() {
 
   return (
     <aside
-      className="flex flex-col transition-all duration-300 ease-in-out m-4 rounded-3xl relative overflow-hidden"
+      className="app-sidebar flex flex-col transition-all duration-300 ease-in-out m-1.5 sm:m-2.5 lg:m-4 mr-0 rounded-2xl sm:rounded-3xl relative overflow-hidden shrink-0"
       style={{
-        width: collapsed ? '90px' : '280px',
+        width: collapsed ? '80px' : '260px',
         backgroundColor: '#2b2a33',
         boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
       }}
     >
       {/* MacOS Window Controls & Collapse Button */}
-      <div className="flex items-center justify-between px-6 pt-4 pb-1">
-        <div className="flex gap-2">
-          <div className="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
-          <div className="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
-          <div className="w-3 h-3 rounded-full bg-[#27c93f]"></div>
-        </div>
+      <div className="flex items-center justify-end px-[var(--sb-gutter)] pt-[var(--sb-v)] pb-[var(--sb-v-sm)]">
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="w-6 h-6 border border-[#44434c] rounded-md flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-[#383742] transition-colors"
+          title={collapsed ? "Agrandir le menu" : "Réduire le menu"}
         >
           {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
         </button>
       </div>
 
       {/* Logo */}
-      <div className="px-4 pt-4 pb-3">
-        <div className={`flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 ${collapsed ? 'justify-center px-2' : ''}`}>
+      <div className="px-[var(--sb-gutter)] pt-[var(--sb-v)] pb-[var(--sb-v)]">
+        <div className={`flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-[var(--sb-v)] py-[var(--sb-v-sm)] ${collapsed ? 'justify-center px-2' : ''}`}>
           <img
             src={orionLogo}
             alt="Orion"
-            className="h-9 w-9 flex-shrink-0 object-contain"
+            className="h-[var(--sb-logo)] w-[var(--sb-logo)] flex-shrink-0 object-contain"
           />
           {!collapsed && (
-            <span className="text-2xl text-slate-200 font-medium tracking-wide">
+            <span className="text-[length:var(--sb-logo-text)] text-slate-200 font-medium tracking-wide">
               Orion <span className="font-light italic">Exp</span>
             </span>
           )}
@@ -134,18 +152,18 @@ export default function Sidebar() {
 
       {/* Nom de l'établissement — sous le logo (masqué pour le SUPER_ADMIN) */}
       {!isSuperAdmin && (
-        <div className={`px-6 pt-3 pb-3 ${collapsed ? 'flex justify-center px-0' : ''}`}>
+        <div className={`px-[var(--sb-gutter)] pt-[var(--sb-v)] pb-[var(--sb-v)] ${collapsed ? 'flex justify-center px-0' : ''}`}>
           {collapsed ? (
             <span
-              className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/5 text-[13px] font-bold text-slate-300"
+              className="flex h-[var(--sb-logo)] w-[var(--sb-logo)] items-center justify-center rounded-xl bg-white/5 text-[length:var(--sb-item-font)] font-bold text-slate-300"
               title={schoolName || "Nom de l'établissement"}
             >
               {(schoolName || 'E').charAt(0).toUpperCase()}
             </span>
           ) : (
             <div className="min-w-0">
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Établissement</p>
-              <p className="mt-0.5 truncate text-[13.5px] font-semibold text-slate-100" title={schoolName || "Nom de l'établissement"}>
+              <p className="text-[length:var(--sb-label-font)] font-bold uppercase tracking-[0.2em] text-slate-500">Établissement</p>
+              <p className="mt-0.5 truncate text-[length:var(--sb-item-font)] font-semibold text-slate-100" title={schoolName || "Nom de l'établissement"}>
                 {schoolName || "Nom de l'établissement"}
               </p>
             </div>
@@ -157,11 +175,11 @@ export default function Sidebar() {
 
       {/* Mode visite d'un établissement : retour possible à l'espace super admin */}
       {inSchoolMode && (
-        <div className={`pt-1 pb-2 ${collapsed ? 'px-2' : 'px-4'}`}>
+        <div className={`pt-[var(--sb-v-sm)] pb-[var(--sb-v-sm)] ${collapsed ? 'px-2' : 'px-[var(--sb-gutter)]'}`}>
           <button
             onClick={handleExitSchoolMode}
             title="Quitter l'espace de l'établissement et revenir à l'espace super administrateur"
-            className={`w-full flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 py-2 text-[11px] font-semibold text-amber-300 hover:bg-amber-400/20 transition-colors ${collapsed ? 'justify-center px-0' : 'px-3'}`}
+            className={`w-full flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 py-[var(--sb-v-sm)] text-[length:var(--sb-label-font)] font-semibold text-amber-300 hover:bg-amber-400/20 transition-colors ${collapsed ? 'justify-center px-0' : 'px-3'}`}
           >
             <ShieldCheck size={14} className="flex-shrink-0" />
             {!collapsed && <span className="truncate">Retour espace super admin</span>}
@@ -172,18 +190,18 @@ export default function Sidebar() {
       {/* Séparation entre le bloc logo et le menu (espace libéré par
           l'établissement/année masqués en mode SUPER_ADMIN) */}
       {isSuperAdmin && (
-        <div className="mx-6 mt-4 mb-3 border-t border-white/10" />
+        <div className="mx-[var(--sb-gutter)] mt-[var(--sb-v)] mb-[var(--sb-v-sm)] border-t border-white/10" />
       )}
 
       {/* Navigation */}
-      <nav className={`flex-1 py-1 overflow-y-auto overflow-x-hidden flex flex-col gap-1 ${isSuperAdmin ? 'mt-4' : ''}`}>
+      <nav className={`flex-1 min-h-0 py-[var(--sb-v-sm)] overflow-hidden flex flex-col gap-[var(--sb-v)] ${isSuperAdmin ? 'mt-[var(--sb-v)]' : ''}`}>
 
         {/* MANAGE Section */}
         <div>
-          <p className={`text-[10px] font-bold text-slate-500 tracking-[0.2em] mb-0.5 ${collapsed ? 'text-center' : 'px-8'}`}>
+          <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v-sm)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
             {sectionLabel}
           </p>
-          <div className="flex flex-col gap-1 relative">
+          <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
             {mainItems.map((item) => (
               <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
@@ -193,10 +211,10 @@ export default function Sidebar() {
         {/* SETTINGS Section — masquée pour le super administrateur */}
         {!isSuperAdmin && visibleSettingsItems.length > 0 && (
           <div>
-            <p className={`text-[10px] font-bold text-slate-500 tracking-[0.2em] mb-0.5 ${collapsed ? 'text-center' : 'px-8'}`}>
+            <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v-sm)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
               SETTINGS
             </p>
-            <div className="flex flex-col gap-1 relative">
+            <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
               {visibleSettingsItems.map((item) => (
                 <NavItem key={item.to} item={item} collapsed={collapsed} />
               ))}
@@ -207,7 +225,7 @@ export default function Sidebar() {
       </nav>
 
       {/* Tag de version au pied du menu — stable sans déformation de la sidebar */}
-      <div className={`py-1.5 ${collapsed ? 'flex justify-center px-0' : 'px-6'}`}>
+      <div className={`sb-version py-[var(--sb-v-sm)] ${collapsed ? 'flex justify-center px-0' : 'px-[var(--sb-gutter)]'}`}>
         <button
           onClick={() => {
             openModal();
@@ -215,7 +233,7 @@ export default function Sidebar() {
               checkForUpdates(false);
             }
           }}
-          className={`flex items-center gap-2 text-[11px] font-mono text-slate-400 hover:text-slate-200 transition-colors py-1 cursor-pointer ${
+          className={`flex items-center gap-2 text-[length:var(--sb-label-font)] font-mono text-slate-400 hover:text-slate-200 transition-colors py-[var(--sb-v-sm)] cursor-pointer ${
             collapsed ? 'justify-center' : ''
           }`}
           title="Vérifier les mises à jour logicielles"
@@ -409,7 +427,7 @@ function UserProfileMenu({
       <button
         id="sidebar-profile-btn"
         onClick={() => setOpen((v) => !v)}
-        className={`w-full flex items-center gap-4 px-6 py-4 transition-all duration-150 group ${collapsed ? 'justify-center px-0' : ''}`}
+        className={`w-full flex items-center gap-[var(--sb-icon-gap)] px-[var(--sb-gutter)] py-[var(--sb-profile-py)] transition-all duration-150 group ${collapsed ? 'justify-center px-0' : ''}`}
         style={{
           borderTop: '1px solid rgba(255,255,255,0.05)',
           backgroundColor: open ? 'rgba(255,255,255,0.05)' : 'transparent',
@@ -424,7 +442,7 @@ function UserProfileMenu({
       >
         {/* Avatar avec indicateur de statut */}
         <div className="relative flex-shrink-0">
-          <div className="w-10 h-10 rounded-full bg-slate-600 overflow-hidden border border-slate-500">
+          <div className="w-[var(--sb-avatar)] h-[var(--sb-avatar)] rounded-full bg-slate-600 overflow-hidden border border-slate-500">
             <img
               src={session?.user?.user_metadata?.avatar_url || `https://api.dicebear.com/7.x/notionists/svg?seed=${displayName}&backgroundColor=e2e8f0`}
               alt="avatar"
@@ -440,10 +458,10 @@ function UserProfileMenu({
         {!collapsed && (
           <>
             <div className="min-w-0 flex-1 text-left">
-              <p className="text-sm font-medium text-slate-200 truncate capitalize group-hover:text-slate-100 transition-colors">
+              <p className="text-[length:var(--sb-item-font)] font-medium text-slate-200 truncate capitalize group-hover:text-slate-100 transition-colors">
                 {displayName}
               </p>
-              <p className="text-[11px] text-slate-500 truncate">{email}</p>
+              <p className="text-[length:var(--sb-label-font)] text-slate-500 truncate">{email}</p>
             </div>
 
             {/* Chevron animé */}
@@ -479,7 +497,7 @@ function NavItem({ item, collapsed }: { item: any; collapsed: boolean }) {
       to={item.to}
       end={item.end ?? item.to === '/'}
       className={() =>
-        `relative flex items-center gap-4 py-0.5 ${collapsed ? 'justify-center px-0' : 'px-8'} transition-all duration-200 group`
+        `relative flex items-center gap-[var(--sb-icon-gap)] py-[var(--sb-item-py)] ${collapsed ? 'justify-center px-0' : 'px-[var(--sb-nav-px)]'} transition-all duration-200 group`
       }
     >
       {({ isActive }) => (
@@ -496,7 +514,7 @@ function NavItem({ item, collapsed }: { item: any; collapsed: boolean }) {
           />
 
           {!collapsed && (
-            <span className={`text-sm truncate flex-1 min-w-0 ${isActive ? 'text-slate-100 font-medium' : 'text-slate-500 group-hover:text-slate-300'}`}>
+            <span className={`text-[length:var(--sb-item-font)] truncate flex-1 min-w-0 ${isActive ? 'text-slate-100 font-medium' : 'text-slate-500 group-hover:text-slate-300'}`}>
               {item.label}
             </span>
           )}
