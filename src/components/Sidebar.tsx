@@ -198,8 +198,8 @@ export default function Sidebar() {
       <nav className={`flex-1 min-h-0 py-[var(--sb-v-sm)] overflow-hidden flex flex-col gap-[var(--sb-v)] ${isSuperAdmin ? 'mt-[var(--sb-v)]' : ''}`}>
 
         {/* MANAGE Section */}
-        <div>
-          <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v-sm)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
+        <div className="mb-[var(--sb-v)]">
+          <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
             {sectionLabel}
           </p>
           <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
@@ -211,8 +211,8 @@ export default function Sidebar() {
 
         {/* SETTINGS Section — masquée pour le super administrateur */}
         {!isSuperAdmin && visibleSettingsItems.length > 0 && (
-          <div>
-            <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v-sm)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
+          <div className="mt-[var(--sb-v)]">
+            <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
               ADMINISTRATION
             </p>
             <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
