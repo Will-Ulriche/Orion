@@ -11,7 +11,7 @@ export default function VieScolaire() {
                 <School size={22} />
               </span>
               <div>
-                <h1 className="text-xl font-bold tracking-tight text-slate-800">Bibliothèque</h1>
+                <h1 className="text-xl font-bold tracking-tight text-slate-800">Gestion Bibliothèque</h1>
                 <p className="text-[13px] text-slate-400">Ouvrages, emprunts, retours et gestion du catalogue.</p>
               </div>
             </div>
