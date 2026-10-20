@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { EmptyState, Loader } from '../components/ui';
 import StaffIdentityModal from '../components/StaffIdentityModal';
+import StaffListModal from '../components/StaffListModal';
 import StudentIdentityModal from '../components/StudentIdentityModal';
 import BulletinModal from '../components/BulletinModal';
 import NominalListModal from '../components/NominalListModal';
@@ -239,6 +240,7 @@ export default function Archives() {
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [identityOpen, setIdentityOpen] = useState(false);
+  const [staffListModalOpen, setStaffListModalOpen] = useState(false);
   const [studentIdentityOpen, setStudentIdentityOpen] = useState(false);
   const [bulletinOpen, setBulletinOpen] = useState(false);
   const [nominalListOpen, setNominalListOpen] = useState(false);
@@ -497,6 +499,38 @@ export default function Archives() {
         (a.nom ?? '').localeCompare(b.nom ?? '') ||
         (a.prenoms ?? '').localeCompare(b.prenoms ?? ''));
   }, [staff, staffSearch]);
+
+  const staffTeachingMap = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const c of classes) {
+      const tid = (c as any).homeroom_teacher_id as string | null | undefined;
+      if (!tid) continue;
+      const arr = m.get(tid) ?? [];
+      if (!arr.includes(c.name)) arr.push(c.name);
+      m.set(tid, arr);
+    }
+    return m;
+  }, [classes]);
+
+  const staffListForModal = useMemo(() => {
+    return staff.map((s) => {
+      const taught = staffTeachingMap.get(s.id) ?? [];
+      const classesStr = taught.length ? taught.sort((a, b) => a.localeCompare(b, 'fr-FR')).join(', ') : null;
+      return {
+        id: s.id,
+        matricule: s.matricule,
+        nom: s.nom,
+        prenoms: s.prenoms,
+        date_naissance: s.date_naissance,
+        fonction: s.fonction,
+        type_personnel: s.type_personnel,
+        statut_administratif: s.statut_administratif,
+        specialite: s.specialite,
+        classes_enseignees: classesStr,
+        matieres_enseignees: s.specialite ?? null,
+      };
+    });
+  }, [staff, staffTeachingMap]);
 
   const contentLoading =
     baseLoading ||
@@ -789,6 +823,11 @@ export default function Archives() {
                       else setIdentityOpen(true);
                       return;
                     }
+                    if (tab === 'personnel' && a.label === 'Liste du personnel') {
+                      if (staff.length === 0) showToast('error', 'Aucun membre du personnel à afficher.');
+                      else setStaffListModalOpen(true);
+                      return;
+                    }
                     if (a.label === "Fiche d'identité") {
                       // Onglets Collège / Lycée : fiche d'identité des élèves.
                       if (groupStudents.length === 0) {
@@ -895,6 +934,18 @@ export default function Archives() {
           yearName={selectedYear.name}
           onClose={() => setIdentityOpen(false)}
           onError={msg => showToast('error', msg)}
+        />
+      )}
+
+      {/* ═══ POPUP : LISTE DU PERSONNEL ═══ */}
+      {staffListModalOpen && (
+        <StaffListModal
+          staffList={staffListForModal}
+          schoolName={schoolInfo.name || 'Établissement'}
+          yearName={selectedYear.name}
+          onClose={() => setStaffListModalOpen(false)}
+          onError={msg => showToast('error', msg)}
+          onSuccess={msg => showToast('success', msg)}
         />
       )}
 
