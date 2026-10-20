@@ -199,7 +199,7 @@ export default function Sidebar() {
 
         {/* MANAGE Section */}
         <div className="mb-[var(--sb-v)]">
-          <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
+          <p className={`mt-[var(--sb-v)] text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
             {sectionLabel}
           </p>
           <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
