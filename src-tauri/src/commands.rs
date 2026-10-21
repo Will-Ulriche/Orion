@@ -4506,5 +4506,143 @@ pub fn write_download_file(app: tauri::AppHandle, file_name: String, base64_cont
     Ok(path.to_string_lossy().to_string())
 }
 
+// ── TABLEAU DE BORD : STATISTIQUES DE L'ÉTABLISSEMENT ─────────
+
+/// Profil de l'utilisateur connecté : identité, rôle(s) et fiche personnel
+/// éventuelle. Les données proviennent de la base locale, donc disponibles
+/// même en mode hors-ligne.
+#[tauri::command]
+pub fn get_current_user_profile(
+    user_id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<crate::models::CurrentUserProfile, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    // 1. Identité (table profiles + users)
+    let profile: Option<(Option<String>, Option<String>, Option<String>)> = conn.query_row(
+        "SELECT p.first_name, p.last_name, p.phone FROM profiles p
+         WHERE p.user_id=?1 AND p.school_id=?2 AND p.deleted_at IS NULL
+         LIMIT 1",
+        rusqlite::params![user_id, school_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).ok();
+
+    let email: Option<String> = conn.query_row(
+        "SELECT email FROM users WHERE id=?1",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).unwrap_or(None);
+
+    // 2. Rôles effectifs
+    let mut roles: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT r.name FROM user_roles ur
+             JOIN roles r ON ur.role_id = r.id
+             WHERE ur.user_id=?1 AND ur.school_id=?2
+             UNION
+             SELECT r.name FROM user_roles ur
+             JOIN roles r ON ur.role_id = r.id
+             WHERE ur.user_id=?1 AND r.name='SUPER_ADMIN'",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![user_id, school_id], |row| {
+            row.get::<_, String>(0)
+        }).map_err(|e| e.to_string())?;
+        for r in rows.filter_map(Result::ok) {
+            roles.push(r);
+        }
+    }
+
+    // 3. Fiche personnel liée (rapprochement par email)
+    let staff: Option<(String, Option<String>, Option<String>, Option<String>)> = match &email {
+        Some(mail) if !mail.trim().is_empty() => conn.query_row(
+            "SELECT id, fonction, matricule, photo_url FROM staff
+             WHERE school_id=?1 AND email IS NOT NULL AND lower(email)=lower(?2)
+             LIMIT 1",
+            rusqlite::params![school_id, mail],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).ok(),
+        _ => None,
+    };
+
+    // 4. Nom de l'établissement
+    let school_name: Option<String> = conn.query_row(
+        "SELECT name FROM schools WHERE id=?1",
+        rusqlite::params![school_id],
+        |row| row.get(0),
+    ).unwrap_or(None);
+
+    Ok(crate::models::CurrentUserProfile {
+        first_name: profile.as_ref().and_then(|p| p.0.clone()),
+        last_name: profile.as_ref().and_then(|p| p.1.clone()),
+        phone: profile.and_then(|p| p.2),
+        email,
+        roles,
+        staff_id: staff.as_ref().map(|s| s.0.clone()),
+        fonction: staff.as_ref().and_then(|s| s.1.clone()),
+        matricule: staff.as_ref().and_then(|s| s.2.clone()),
+        photo: staff.and_then(|s| s.3),
+        school_name,
+    })
+}
+
+/// Statistiques globales de l'établissement pour le tableau de bord :
+/// effectif (total / filles / garçons) et personnel (total / professeurs).
+#[tauri::command]
+pub fn get_school_dashboard_stats(
+    school_id: String,
+    academic_year_id: String,
+    state: State<'_, DbState>,
+) -> Result<crate::models::SchoolDashboardStats, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    // 1. Effectif des élèves inscrits (inscriptions actives de l'année)
+    let mut total_students: i64 = 0;
+    let mut girls: i64 = 0;
+    let mut boys: i64 = 0;
+    {
+        let mut stmt = conn.prepare(
+            "SELECT s.gender FROM enrollments e JOIN students s ON s.id = e.student_id
+             WHERE e.school_id=?1 AND e.academic_year_id=?2 AND e.status='ACTIVE'",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(
+            rusqlite::params![school_id, academic_year_id],
+            |row| row.get::<_, Option<String>>(0),
+        ).map_err(|e| e.to_string())?;
+        for g in rows.filter_map(Result::ok).flatten() {
+            total_students += 1;
+            match g.trim().to_uppercase().as_str() {
+                "F" | "FEMME" | "FEMININ" | "FÉMININ" => girls += 1,
+                "M" | "HOMME" | "MASCULIN" => boys += 1,
+                _ => {}
+            }
+        }
+    }
+
+    // 2. Personnel : total et professeurs (type « Enseignant » ou fonction contenant « prof »)
+    let total_staff: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM staff WHERE school_id=?1",
+        rusqlite::params![school_id],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
+    let teachers: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM staff WHERE school_id=?1 AND est_actif=1
+         AND (LOWER(COALESCE(type_personnel,''))='enseignant'
+              OR LOWER(COALESCE(fonction,'')) LIKE '%prof%')",
+        rusqlite::params![school_id],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
+    Ok(crate::models::SchoolDashboardStats {
+        total_students,
+        girls,
+        boys,
+        total_staff,
+        teachers,
+    })
+}
+
 
 

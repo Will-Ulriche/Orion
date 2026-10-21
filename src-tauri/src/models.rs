@@ -427,3 +427,30 @@ pub struct Staff {
     pub created_at: String,
     pub updated_at: String,
 }
+
+// ── TABLEAU DE BORD ───────────────────────────────────────────
+
+/// Profil de l'utilisateur connecté, lu depuis la base locale (fonctionne hors-ligne).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CurrentUserProfile {
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub roles: Vec<String>,
+    pub staff_id: Option<String>,
+    pub fonction: Option<String>,
+    pub matricule: Option<String>,
+    pub photo: Option<String>,
+    pub school_name: Option<String>,
+}
+
+/// Statistiques globales de l'établissement pour le tableau de bord.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SchoolDashboardStats {
+    pub total_students: i64,
+    pub girls: i64,
+    pub boys: i64,
+    pub total_staff: i64,
+    pub teachers: i64,
+}

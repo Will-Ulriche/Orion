@@ -147,7 +147,10 @@ pub fn run() {
             commands::check_local_school_exists,
             commands::purge_local_school,
             // ── Export Excel (super-admin) ──
-            commands::write_download_file
+            commands::write_download_file,
+            // ── Tableau de bord ──
+            commands::get_school_dashboard_stats,
+            commands::get_current_user_profile
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");
