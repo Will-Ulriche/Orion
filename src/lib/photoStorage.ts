@@ -2,8 +2,8 @@
  * photoStorage.ts
  * Service centralisé pour l'upload/suppression des photos vers Supabase Storage.
  *
- * Bucket : "staff-photos" (à créer dans le dashboard Supabase, public)
- * Chemin : staff-photos/{school_id}/{staff_id}.jpg
+ * Bucket "staff-photos"   : chemin staff-photos/{school_id}/{staff_id}.jpg
+ * Bucket "student-photos" : chemin student-photos/{school_id}/{student_id}.jpg
  *
  * Comportement offline-first :
  *  - Si l'upload échoue (pas de réseau), la fonction retourne null.
@@ -13,6 +13,7 @@
 import { supabase } from './supabaseClient';
 
 const BUCKET = 'staff-photos';
+const STUDENT_BUCKET = 'student-photos';
 
 /**
  * Compresse un File image en Blob JPEG (max 500×500, qualité 0.82).
@@ -49,18 +50,10 @@ export function compressToBlob(file: File, maxSize = 500, quality = 0.82): Promi
 }
 
 /**
- * Compresse un File puis l'upload vers Supabase Storage.
+ * Compresse un File puis l'upload vers un bucket Supabase Storage.
  * Retourne l'URL publique HTTPS de la photo, ou null en cas d'échec.
- *
- * @param file        Fichier image sélectionné par l'utilisateur
- * @param schoolId    ID de l'école (pour le chemin de stockage)
- * @param staffId     ID du membre du personnel (nom du fichier)
  */
-export async function uploadStaffPhoto(
-  file: File,
-  schoolId: string,
-  staffId: string
-): Promise<{ url: string; base64Fallback: string } | null> {
+async function uploadPhoto(file: File, bucket: string, path: string): Promise<{ url: string; base64Fallback: string } | null> {
   // 1. Comprimer l'image
   let blob: Blob;
   let base64Fallback: string;
@@ -79,9 +72,8 @@ export async function uploadStaffPhoto(
     return { url: base64Fallback, base64Fallback };
   }
 
-  const path = `${schoolId}/${staffId}.jpg`;
   const { error } = await supabase.storage
-    .from(BUCKET)
+    .from(bucket)
     .upload(path, blob, {
       contentType: 'image/jpeg',
       upsert: true, // Remplace si le fichier existe déjà
@@ -94,11 +86,43 @@ export async function uploadStaffPhoto(
   }
 
   // 3. Récupérer l'URL publique
-  const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
+  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
   // Ajouter un cache-buster pour forcer le rechargement de la photo si mise à jour
   const publicUrl = `${data.publicUrl}?t=${Date.now()}`;
 
   return { url: publicUrl, base64Fallback };
+}
+
+/**
+ * Compresse un File puis l'upload vers Supabase Storage.
+ * Retourne l'URL publique HTTPS de la photo, ou null en cas d'échec.
+ *
+ * @param file        Fichier image sélectionné par l'utilisateur
+ * @param schoolId    ID de l'école (pour le chemin de stockage)
+ * @param staffId     ID du membre du personnel (nom du fichier)
+ */
+export function uploadStaffPhoto(
+  file: File,
+  schoolId: string,
+  staffId: string
+): Promise<{ url: string; base64Fallback: string } | null> {
+  return uploadPhoto(file, BUCKET, `${schoolId}/${staffId}.jpg`);
+}
+
+/**
+ * Compresse un File puis l'upload vers Supabase Storage (bucket "student-photos").
+ * Retourne l'URL publique HTTPS de la photo, ou null en cas d'échec.
+ *
+ * @param file        Fichier image sélectionné par l'utilisateur
+ * @param schoolId    ID de l'école (pour le chemin de stockage)
+ * @param studentId   ID de l'élève (nom du fichier)
+ */
+export function uploadStudentPhoto(
+  file: File,
+  schoolId: string,
+  studentId: string
+): Promise<{ url: string; base64Fallback: string } | null> {
+  return uploadPhoto(file, STUDENT_BUCKET, `${schoolId}/${studentId}.jpg`);
 }
 
 /**
@@ -109,6 +133,19 @@ export async function deleteStaffPhoto(schoolId: string, staffId: string): Promi
   if (!navigator.onLine) return;
   const path = `${schoolId}/${staffId}.jpg`;
   const { error } = await supabase.storage.from(BUCKET).remove([path]);
+  if (error) {
+    console.warn('[photoStorage] Suppression Supabase échouée:', error.message);
+  }
+}
+
+/**
+ * Supprime la photo d'un élève depuis Supabase Storage.
+ * Silencieux en cas d'échec (la photo locale reste affichée).
+ */
+export async function deleteStudentPhoto(schoolId: string, studentId: string): Promise<void> {
+  if (!navigator.onLine) return;
+  const path = `${schoolId}/${studentId}.jpg`;
+  const { error } = await supabase.storage.from(STUDENT_BUCKET).remove([path]);
   if (error) {
     console.warn('[photoStorage] Suppression Supabase échouée:', error.message);
   }

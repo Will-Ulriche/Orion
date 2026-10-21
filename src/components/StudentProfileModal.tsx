@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check, ArrowRight } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check, ArrowRight, Camera, Trash2, Loader2 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { uploadStudentPhoto, deleteStudentPhoto, isLocalBase64 } from '../lib/photoStorage';
 
 export interface Student {
   id: string;
@@ -41,11 +43,17 @@ interface StudentProfileModalProps {
 }
 
 export default function StudentProfileModal({ studentId, className, onClose, onUpdated, onMigrateRequest, readOnly = false }: StudentProfileModalProps) {
+  const { schoolId } = useAuth();
+
   const [student, setStudent] = useState<Student | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  // Photo de l'élève
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
 
   useEffect(() => {
     loadStudent();
@@ -75,8 +83,37 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
       await invoke('update_student', { student });
       setSuccess(true); onUpdated();
       setTimeout(() => setSuccess(false), 3000);
-    } catch (err: any) { setError(err.toString()); } 
+    } catch (err: any) { setError(err.toString()); }
     finally { setSaving(false); }
+  };
+
+  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !student) return;
+    // Réinitialiser l'input pour permettre de re-sélectionner le même fichier
+    e.target.value = '';
+
+    setUploadingPhoto(true);
+    setPhotoError(null);
+    try {
+      const result = await uploadStudentPhoto(file, schoolId, student.id);
+      if (!result) {
+        setPhotoError('Envoi de la photo échoué.');
+        return;
+      }
+      setStudent(s => (s ? { ...s, photo_url: result.url } : s));
+    } catch (err: any) {
+      setPhotoError(err?.message ?? "Erreur inconnue");
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const handleRemovePhoto = () => {
+    if (!student) return;
+    deleteStudentPhoto(schoolId, student.id);
+    setStudent(s => (s ? { ...s, photo_url: null } : s));
+    setPhotoError(null);
   };
 
   if (loading) {
@@ -88,6 +125,8 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
   }
   if (!student) return null;
 
+  const initials = `${student.first_name?.charAt(0) ?? ''}${student.last_name?.charAt(0) ?? ''}`.toUpperCase();
+
   return (
     <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
       <div className="bg-white rounded-[24px] max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -95,11 +134,11 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-[#f8f9fc]">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-slate-200 overflow-hidden flex items-center justify-center border-2 border-white shadow-sm">
+            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] overflow-hidden flex items-center justify-center border-2 border-white shadow-sm">
               {student.photo_url ? (
                 <img src={student.photo_url} alt="Photo" loading="lazy" decoding="async" className="w-full h-full object-cover" />
               ) : (
-                <User size={24} className="text-slate-400" />
+                <span className="text-white text-[13px] font-bold">{initials}</span>
               )}
             </div>
             <div>
@@ -117,6 +156,80 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Colonne 1: Identité */}
               <div className="lg:col-span-1 space-y-5">
+                {/* Photo de l'élève */}
+                <div className="bg-[#f8f9fc] p-4 rounded-2xl border border-slate-100">
+                  <h3 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <Camera size={14} /> Photo de l'élève
+                  </h3>
+                  <div className="flex items-center gap-4">
+                    <label
+                      htmlFor="student-photo-input"
+                      className={`relative w-20 h-20 rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] flex items-center justify-center text-white text-xl font-bold ring-4 ring-white shadow-md overflow-hidden flex-shrink-0 ${readOnly ? 'cursor-default' : 'cursor-pointer hover:opacity-90 transition-opacity'}`}
+                      title={readOnly ? undefined : 'Cliquez pour choisir une photo'}
+                    >
+                      {student.photo_url ? (
+                        <img src={student.photo_url} alt="Photo de l'élève" loading="lazy" decoding="async" className="w-full h-full object-cover" />
+                      ) : (
+                        initials
+                      )}
+                      {uploadingPhoto && (
+                        <span className="absolute inset-0 bg-black/45 flex items-center justify-center">
+                          <Loader2 size={20} className="animate-spin" />
+                        </span>
+                      )}
+                    </label>
+
+                    <div className="flex-1 min-w-0">
+                      <input
+                        id="student-photo-input"
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={readOnly || uploadingPhoto}
+                        onChange={handlePhotoChange}
+                      />
+                      <div className="flex flex-wrap items-center gap-2">
+                        {!readOnly && (
+                          <label
+                            htmlFor="student-photo-input"
+                            className={`flex items-center gap-2 px-3 py-1.5 bg-white border rounded-lg text-[12px] font-medium transition-all w-fit ${
+                              uploadingPhoto
+                                ? 'border-slate-200 text-slate-400 cursor-not-allowed'
+                                : 'border-slate-200 text-slate-600 hover:bg-[#ede9fe] hover:text-[#6d28d9] hover:border-[#c4b5fd] cursor-pointer'
+                            }`}
+                          >
+                            {uploadingPhoto ? (
+                              <><Loader2 size={13} className="animate-spin" /> Envoi en cours…</>
+                            ) : (
+                              <><Camera size={13} /> {student.photo_url ? 'Changer la photo' : 'Ajouter une photo'}</>
+                            )}
+                          </label>
+                        )}
+                        {!readOnly && student.photo_url && !uploadingPhoto && (
+                          <button
+                            type="button"
+                            onClick={handleRemovePhoto}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-white border border-red-200 rounded-lg text-[12px] text-red-600 hover:bg-red-50 hover:border-red-300 transition-all font-medium"
+                          >
+                            <Trash2 size={13} /> Supprimer
+                          </button>
+                        )}
+                        {isLocalBase64(student.photo_url) && (
+                          <span className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                            Stockée localement
+                          </span>
+                        )}
+                      </div>
+                      {photoError && <p className="mt-2 text-[11px] text-red-600">{photoError}</p>}
+                      {!readOnly && (
+                        <p className="mt-2 text-[11px] text-slate-400">
+                          La photo est enregistrée avec la fiche (format JPG, 500 px max).
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 <div className="bg-[#f8f9fc] p-4 rounded-2xl border border-slate-100">
                   <h3 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
                     <User size={14} /> Identité
