@@ -19,17 +19,17 @@ import { listSchools, listLicenses, listDevices } from '../lib/superAdminApi';
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord', roles: [] }, // Tous
   { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE'] },
-  { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },
-  { to: '/finances', icon: Coins, label: 'Finances & Paiements', roles: ['DIRECTION'] },
-  { to: '/personnel', icon: UserCog, label: 'Personnel', roles: ['DIRECTION'] },
-  { to: '/vie-scolaire', icon: School, label: 'Gestion Bibliothèque', roles: ['DIRECTION', 'SECRETAIRE'] },
-  { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Examens', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
-  { to: '/prise-en-main', icon: Rocket, label: 'Prise en main', roles: ['DIRECTION'] },
   { to: '/archives', icon: Archive, label: 'Gestion Archives', roles: ['DIRECTION'] },
+  { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },
+  { to: '/finances', icon: Coins, label: 'Gestion des finances', roles: ['DIRECTION'] },
+  { to: '/personnel', icon: UserCog, label: 'Gestion du personnel', roles: ['DIRECTION'] },
+  { to: '/vie-scolaire', icon: School, label: 'Bibliothèque', roles: ['DIRECTION', 'SECRETAIRE'] },
+  { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Examens', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
   { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ['PROFESSEUR'] },
 ];
 
 const settingsItems = [
+  { to: '/prise-en-main', icon: Rocket, label: 'Prise en main', roles: ['DIRECTION'] },
   { to: '/sync', icon: RefreshCw, label: 'Synchronisation', roles: ['DIRECTION'] },
   { to: '/security', icon: Shield, label: 'Sécurité', roles: ['DIRECTION'] },
   { to: '/settings', icon: Settings, label: "Paramètres", roles: ['DIRECTION'] },
