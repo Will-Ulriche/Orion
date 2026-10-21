@@ -298,7 +298,7 @@ function licenseKey() {
 // ═════════════════════════════════════════════════════════════
 // Génération principale
 // ═════════════════════════════════════════════════════════════
-export function generateDataset() {
+export function generateDataset(options = {}) {
   const out = {
     schools: [],
     academicYears: [],
@@ -964,18 +964,34 @@ export function generateDataset() {
   );
 
   // ── Comptes (Cloud uniquement) ──────────────────────────────
+  // Les mots de passe ne sont JAMAIS stockés dans le dépôt : ils sont lus
+  // dans l'environnement (fichier .env, ignoré par git). Chaque compte pointe
+  // sur sa variable ; voir .env.example pour la liste complète.
   const accountDefs = [
-    { school: 'saint-louis', role: 'SECRETAIRE', first: 'Ahoefa', last: 'SODJI', email: 'secretaire.saintlouis@saintlouis-tg.com', password: 'SaintLouis2026!', phone: '228 90123456' },
-    { school: 'saint-louis', role: 'COMPTABLE', first: 'Kodjo', last: 'TCHALLA', email: 'comptable.saintlouis@saintlouis-tg.com', password: 'Compta2026!', phone: '228 90345678' },
-    { school: 'saint-louis', role: 'PROFESSEUR', first: 'Kossi', last: 'AGBO', email: 'kossi.agbo@saintlouis-tg.com', password: 'Kossi2026!', phone: '228 90567890' },
-    { school: 'saint-louis', role: 'PROFESSEUR', first: 'Afi', last: 'DOSSOU', email: 'afi.dossou@saintlouis-tg.com', password: 'Afi2026!', phone: '228 90789012' },
-    { school: 'agora', role: 'DIRECTION', first: 'Yao', last: 'AMEGAN', email: 'direction@agora-lome.tg', password: 'Agora2026!', phone: '228 90112233' },
-    { school: 'agora', role: 'SECRETAIRE', first: 'Enyonam', last: 'GBENYO', email: 'secretaire@agora-lome.tg', password: 'AgoraSec2026!', phone: '228 90445588' },
-    { school: 'notre-dame', role: 'DIRECTION', first: 'Bernadette', last: 'GNAMI', email: 'direction@ndl-lome.tg', password: 'NotreDame2026!', phone: '228 90445566' },
-    { school: 'notre-dame', role: 'SECRETAIRE', first: 'Akouvi', last: 'ANOMA', email: 'secretaire@ndl-lome.tg', password: 'NdlSec2026!', phone: '228 90887766' },
+    { school: 'saint-louis', role: 'SECRETAIRE', first: 'Ahoefa', last: 'SODJI', email: 'secretaire.saintlouis@saintlouis-tg.com', pwEnv: 'SEED_PW_SAINT_LOUIS_SECRETARY', phone: '228 90123456' },
+    { school: 'saint-louis', role: 'COMPTABLE', first: 'Kodjo', last: 'TCHALLA', email: 'comptable.saintlouis@saintlouis-tg.com', pwEnv: 'SEED_PW_SAINT_LOUIS_COMPTABLE', phone: '228 90345678' },
+    { school: 'saint-louis', role: 'PROFESSEUR', first: 'Kossi', last: 'AGBO', email: 'kossi.agbo@saintlouis-tg.com', pwEnv: 'SEED_PW_SAINT_LOUIS_PROF_KOSSI', phone: '228 90567890' },
+    { school: 'saint-louis', role: 'PROFESSEUR', first: 'Afi', last: 'DOSSOU', email: 'afi.dossou@saintlouis-tg.com', pwEnv: 'SEED_PW_SAINT_LOUIS_PROF_AFI', phone: '228 90789012' },
+    { school: 'agora', role: 'DIRECTION', first: 'Yao', last: 'AMEGAN', email: 'direction@agora-lome.tg', pwEnv: 'SEED_PW_AGORA_DIRECTION', phone: '228 90112233' },
+    { school: 'agora', role: 'SECRETAIRE', first: 'Enyonam', last: 'GBENYO', email: 'secretaire@agora-lome.tg', pwEnv: 'SEED_PW_AGORA_SECRETARY', phone: '228 90445588' },
+    { school: 'notre-dame', role: 'DIRECTION', first: 'Bernadette', last: 'GNAMI', email: 'direction@ndl-lome.tg', pwEnv: 'SEED_PW_NDL_DIRECTION', phone: '228 90445566' },
+    { school: 'notre-dame', role: 'SECRETAIRE', first: 'Akouvi', last: 'ANOMA', email: 'secretaire@ndl-lome.tg', pwEnv: 'SEED_PW_NDL_SECRETARY', phone: '228 90887766' },
   ];
+
+  // Résolution des mots de passe : exigée uniquement quand les comptes sont
+  // réellement créés (seed cloud). Le seed local n'a pas besoin des comptes.
+  const missingPwEnv = accountDefs
+    .filter((ad) => !(process.env[ad.pwEnv] || '').trim())
+    .map((ad) => ad.pwEnv);
+  if (missingPwEnv.length && options.requireAccountPasswords) {
+    console.error('Variables de mot de passe manquantes : ' + missingPwEnv.join(', '));
+    console.error('Renseignez-les dans le fichier .env (voir .env.example).');
+    process.exit(1);
+  }
+
   for (const ad of accountDefs) {
     const school = SCHOOL_DEFS.find((s) => s.key === ad.school);
+    const password = (process.env[ad.pwEnv] || '').trim();
     out.accounts.push({
       schoolId: school.id,
       schoolKey: ad.school,
@@ -983,9 +999,9 @@ export function generateDataset() {
       first_name: ad.first,
       last_name: ad.last,
       email: ad.email,
-      password: ad.password,
+      password,
       phone: ad.phone,
-      metadata: { school_id: school.id, first_name: ad.first, last_name: ad.last, role: ad.role, initial_password: ad.password },
+      metadata: { school_id: school.id, first_name: ad.first, last_name: ad.last, role: ad.role, initial_password: password },
     });
   }
 

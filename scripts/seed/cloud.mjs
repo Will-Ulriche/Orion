@@ -21,7 +21,7 @@ const client = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-const data = generateDataset();
+const data = generateDataset({ requireAccountPasswords: true });
 const errors = [];
 const report = [];
 
@@ -162,7 +162,7 @@ if (dryRun) {
     total += n;
   }
   console.log(`  total : ${total} ligne(s)`);
-  for (const a of data.accounts) console.log(`  ${a.role.padEnd(11)} ${a.email}  ${a.password}`);
+  for (const a of data.accounts) console.log(`  ${a.role.padEnd(11)} ${a.email}`);
   process.exit(0);
 }
 
@@ -208,7 +208,7 @@ for (const account of data.accounts) {
   if (!schoolDirection[account.schoolId] && account.role === 'DIRECTION') {
     schoolDirection[account.schoolId] = uid;
   }
-  report.push(`  ${account.role.padEnd(11)} ${account.email}  ${account.password}`);
+  report.push(`  ${account.role.padEnd(11)} ${account.email}`);
 }
 for (const account of newAccounts) {
   const profileExists = existingProfiles.data.some((p) => p.user_id === account.uid);
