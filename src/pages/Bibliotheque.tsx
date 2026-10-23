@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useYear } from '../contexts/YearContext';
 import {
   AlertTriangle, BookMarked, Bookmark, CalendarClock, CheckCircle2,
-  ClipboardCheck, Coins, Database, FolderTree, HandCoins,
+  ClipboardCheck, Coins, FolderTree, HandCoins,
   History, Library, Package, Pencil, Plus, RotateCcw, Settings2,
   ShieldCheck, Trash2, UserPlus, Users, XCircle,
 } from 'lucide-react';
@@ -170,8 +170,7 @@ export default function Bibliotheque() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [confirmSeed, setConfirmSeed] = useState(false);
-  const [seeding, setSeeding] = useState(false);
+
   const [refreshKey, setRefreshKey] = useState(0);
 
   const reload = useCallback(async () => {
@@ -193,19 +192,6 @@ export default function Bibliotheque() {
 
   useEffect(() => { reload(); }, [reload, refreshKey]);
 
-  const handleSeed = async () => {
-    setSeeding(true);
-    try {
-      await invoke<LibraryDashboard>('seed_library_demo_data', { schoolId });
-      setConfirmSeed(false);
-      setNotice('Jeu de démonstration inséré : catalogue, exemplaires, lecteurs, emprunts, pénalités et réservations.');
-      setRefreshKey(k => k + 1);
-    } catch (e: any) {
-      setError(String(e));
-    } finally {
-      setSeeding(false);
-    }
-  };
 
   const TABS: { value: Tab; label: string; icon: any; count?: number }[] = [
     { value: 'catalogue', label: 'Catalogue', icon: BookMarked, count: dash?.total_books },
@@ -240,9 +226,7 @@ export default function Bibliotheque() {
             <Btn variant="secondary" size="sm" onClick={() => setRefreshKey(k => k + 1)}>
               <RotateCcw size={15} /> Actualiser
             </Btn>
-            <Btn variant="primary" size="sm" onClick={() => setConfirmSeed(true)}>
-              <Database size={15} /> Insérer des données
-            </Btn>
+
           </div>
         </div>
 
@@ -348,20 +332,7 @@ export default function Bibliotheque() {
         />
       )}
 
-      {confirmSeed && (
-        <ConfirmDialog
-          title="Insérer le jeu de démonstration"
-          message="Cette action remplace toutes les données de la bibliothèque de cet établissement (catalogue, exemplaires, lecteurs, emprunts, retours, pénalités et réservations) par un jeu cohérent de démonstration. Continuer ?"
-          confirmLabel="Insérer les données"
-          onConfirm={handleSeed}
-          onCancel={() => setConfirmSeed(false)}
-        />
-      )}
-      {seeding && (
-        <div className="absolute inset-0 z-[70] flex items-center justify-center bg-slate-900/30 backdrop-blur-sm">
-          <Loader label="Insertion des données de démonstration…" />
-        </div>
-      )}
+
     </div>
   );
 }
@@ -544,7 +515,7 @@ function TabCatalogue({
         <EmptyState
           icon={BookMarked}
           title="Aucun ouvrage au catalogue"
-          description="Ajoutez un premier ouvrage ou insérez le jeu de démonstration pour explorer le module."
+          description="Ajoutez un premier ouvrage pour commencer à construire votre catalogue."
           action={<Btn variant="primary" onClick={openCreate}><Plus size={15} /> Nouvel ouvrage</Btn>}
         />
       ) : (
