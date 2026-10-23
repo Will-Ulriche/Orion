@@ -522,7 +522,228 @@ export function buildReceiptFileName(opts: BuildReceiptOptions): string {
   return `${parts.join('_')}.pdf`;
 }
 
+function escapeHtml(s: string): string {
+  return (s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Génère le reçu au format HTML A5 Paysage avec double volet :
+ * - Volet gauche : Copie bureau (Office copy)
+ * - Volet droite : Reçu de paiement (Client copy)
+ * Avec ligne de découpe et ciseaux ✂, cases à cocher, montant en chiffres et en lettres.
+ */
+export function buildReceiptHtml(opts: BuildReceiptOptions): string {
+  const { school, student, payment, academicYearName } = opts;
+  const currency = school.currency || 'GNF';
+  const amountFormatted = formatMoney(payment.amount, currency);
+  const amountWords = amountToFrenchWords(payment.amount, currency);
+  const dateFormatted = formatDate(payment.payment_date);
+
+  const studentFullName = `${student.last_name || ''} ${student.first_name || ''}`.trim() +
+    (student.matricule ? ` · ${student.matricule}` : '');
+  const studentAddress = (student as any).address || school.address || school.city || school.country || '—';
+  const className = student.class_name || 'Sans classe';
+
+  let feeTitle = payment.fee_name || payment.fee_type_label || 'Frais de scolarité';
+  if (payment.reference) {
+    feeTitle += ` · Réf: ${payment.reference}`;
+  }
+  if (academicYearName && academicYearName !== '—') {
+    feeTitle += ` (${academicYearName})`;
+  }
+
+  const receiptNumber = payment.receipt_number || 'N/A';
+
+  const method = (payment.payment_method || '').toUpperCase();
+  const isEspeces = method.includes('ESPECE');
+  const isCheque = method.includes('CHEQUE');
+  const isMobile = method.includes('MOBILE');
+  const isVirement = method.includes('VIREMENT') || method.includes('CARTE') || (!isEspeces && !isCheque && !isMobile);
+
+  const schoolName = escapeHtml(school.name || 'ÉTABLISSEMENT SCOLAIRE');
+  const schoolAddress = escapeHtml(school.address || school.city || '');
+  const schoolPhone = escapeHtml(school.phone || '');
+  const schoolEmail = escapeHtml(school.email || '');
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reçu ${escapeHtml(receiptNumber)} - ${escapeHtml(studentFullName)}</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --green:#2bb673;
+    --green-light:#e6f8ee;
+    --text:#333;
+    --line:#aaa;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:#e9ecee;padding:24px;
+    font-family:'Poppins','Segoe UI',Arial,sans-serif;color:var(--text);
+  }
+  .receipt{
+    position:relative;width:1200px;height:456px;background:#fff;flex:none;
+    box-shadow:0 24px 30px -14px rgba(0,0,0,.25);
+  }
+  .divider{position:absolute;left:446px;top:0;bottom:0;border-left:1px dashed #999}
+  .scissors{position:absolute;left:439px;bottom:6px;font-size:16px;background:#fff;line-height:1}
+
+  .logo{display:flex;align-items:center;gap:6px;font-weight:700;color:#111}
+  .logo svg{width:20px;height:20px}
+  .pill{background:var(--green);color:#fff;border-radius:20px;padding:3px 16px;font-size:12.5px;font-weight:500;white-space:nowrap}
+  .field{background:var(--green-light);border-radius:20px;height:26px;display:flex;align-items:center;padding:0 12px;font-size:12px;font-weight:600;color:#111}
+  .receipt-title{font-weight:700;color:var(--green);letter-spacing:.3px}
+
+  /* ---------- Office copy (gauche) ---------- */
+  .office{position:absolute;left:0;top:0;width:446px;height:100%}
+  .office .logo{position:absolute;left:34px;top:18px;font-size:15px;font-weight:700;color:#1e293b;max-width:220px;line-height:1.2}
+  .office .info{position:absolute;left:34px;top:40px;font-size:9.5px;line-height:1.35;max-width:220px;color:#555}
+  .office .receipt-title{position:absolute;right:20px;top:18px;font-size:22px}
+  .office .rn{position:absolute;left:274px;top:62px;display:flex;align-items:center;width:150px}
+  .office .dt{position:absolute;left:274px;top:90px;display:flex;align-items:center;width:150px}
+  .office .rn .pill,.office .dt .pill{font-size:11px;padding:2px 12px;position:relative;z-index:1}
+  .office .rn .field,.office .dt .field{flex:1;margin-left:-14px;height:22px;padding-left:18px;font-size:10.5px;font-weight:700;color:#111}
+  .office .box{position:absolute;left:30px;top:130px;width:392px;height:288px}
+
+  /* ---------- Client copy (droite) ---------- */
+  .client{position:absolute;left:446px;top:0;right:0;height:100%}
+  .client .receipt-title{position:absolute;left:34px;top:34px;font-size:22px}
+  .client .rn{position:absolute;left:170px;top:38px;display:flex;align-items:center}
+  .client .dt{position:absolute;left:455px;top:38px;display:flex;align-items:center}
+  .client .rn .field{width:170px;margin-left:-14px;height:24px;padding-left:20px;font-size:11px;font-weight:700;color:#111}
+  .client .dt .field{width:190px;margin-left:-14px;height:24px;padding-left:20px;font-size:11px;font-weight:700;color:#111}
+  .client .rn .pill,.client .dt .pill{position:relative;z-index:1;font-size:11px;padding:3px 12px}
+  .client .logo{position:absolute;left:0;right:0;top:108px;justify-content:center;font-size:19px;font-weight:700;letter-spacing:.3px;color:#1e293b;text-align:center}
+  .client .logo svg{width:24px;height:24px}
+  .client .box{position:absolute;left:30px;top:152px;width:704px;height:222px}
+  .client .amount{position:absolute;left:500px;top:76px;width:176px;height:54px;border:2px solid var(--green);border-radius:8px;padding:3px 8px;display:flex;flex-direction:column;justify-content:center}
+  .client .amount .lbl{display:block;font-size:10px;color:var(--green);font-weight:500;line-height:1.2}
+  .client .amount .val{font-size:15px;font-weight:700;color:#222;height:26px;line-height:26px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .client .footer{position:absolute;left:34px;right:34px;top:412px;display:flex;justify-content:space-between;font-size:10px;color:#555}
+
+  /* ---------- Cadres communs ---------- */
+  .box{border:2px solid var(--green);border-radius:14px;padding:0 16px}
+  .box .tag{position:absolute;top:-18px;left:50%;transform:translateX(-50%);background:var(--green);color:#fff;border-radius:20px;text-align:center;font-weight:500}
+  .office .box .tag{font-size:16px;padding:3px 22px;top:-14px}
+  .client .box .tag{font-size:17px;padding:4px 38px;top:-17px}
+  .row{display:flex;align-items:flex-end;font-size:13px;color:#444}
+  .row .lbl{font-weight:500;color:#333;white-space:nowrap;margin-right:6px}
+  .row .dots{flex:1;border-bottom:1px dotted var(--line);margin-left:4px;min-height:16px;min-width:20px;padding:0 6px 1px 6px;font-weight:600;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .office .row{position:absolute;left:16px;right:16px;font-size:12.5px}
+  .office .r1{top:44px}.office .r2{top:78px}.office .r3{top:112px}.office .r4{top:146px}.office .r5{top:180px}
+  .client .row{position:absolute;left:14px;right:14px}
+  .client .r1{top:46px}.client .r2{top:74px}.client .r3{top:102px}.client .r4{top:130px}
+  .client .r3 .half{display:flex;align-items:flex-end;flex:1;min-width:0}
+  .checks{display:flex;gap:10px;align-items:center;position:absolute}
+  .checks label{display:flex;align-items:center;gap:4px;font-size:10px;color:#333}
+  .checks i{display:inline-block;width:10px;height:10px;border:1px solid #666;border-radius:1px;cursor:pointer}
+  .checks i.on::after{content:"✓";display:block;font-size:10px;line-height:9px;text-align:center;color:var(--green);font-style:normal;font-weight:700}
+  .office .checks{left:14px;bottom:8px}
+  .office .checks label{font-size:8px}
+  .office .checks i{width:8px;height:8px}
+  .client .checks{left:14px;top:158px}
+  .sign{position:absolute;text-align:center;font-size:10.5px;border-top:1px solid #888;padding-top:2px;color:#333}
+  .office .sign{right:16px;bottom:6px;width:98px;font-size:9px}
+  .client .sign{right:30px;top:178px;width:132px}
+
+  [contenteditable]:hover{outline:1px dashed rgba(43,182,115,.7);outline-offset:2px;cursor:text}
+  [contenteditable]:focus{outline:2px solid var(--green);outline-offset:2px}
+  @media print{
+    body{display:block;min-height:0;background:none;padding:0;margin:0}
+    .receipt{box-shadow:none;transform:scale(.65);transform-origin:0 0;margin-left:2mm}
+    [contenteditable]:hover,[contenteditable]:focus{outline:none}
+    @page{size:A5 landscape;margin:0}
+  }
+</style>
+</head>
+<body>
+
+<div class="receipt">
+  <div class="divider"></div>
+  <div class="scissors">✂</div>
+
+  <!-- ================= OFFICE COPY ================= -->
+  <div class="office">
+    <div class="logo">${schoolName}</div>
+    <div class="info" contenteditable="true">Adresse : ${schoolAddress || '—'}<br>E-mail : ${schoolEmail || '—'}<br>Téléphone : ${schoolPhone || '—'}</div>
+    <div class="receipt-title" contenteditable="true">REÇU</div>
+    <div class="rn"><span class="pill" contenteditable="true">N° de reçu</span><div class="field" contenteditable="true">${escapeHtml(receiptNumber)}</div></div>
+    <div class="dt"><span class="pill" contenteditable="true">Date</span><div class="field" contenteditable="true">${escapeHtml(dateFormatted)}</div></div>
+
+    <div class="box">
+      <span class="tag" contenteditable="true">Copie bureau</span>
+      <div class="row r1"><span class="lbl" contenteditable="true">Nom</span><span class="dots" contenteditable="true">${escapeHtml(studentFullName)}</span></div>
+      <div class="row r2"><span class="lbl" contenteditable="true">Adresse</span><span class="dots" contenteditable="true">${escapeHtml(studentAddress)}</span></div>
+      <div class="row r3"><span class="lbl" contenteditable="true">Montant</span><span class="dots" contenteditable="true">${escapeHtml(amountFormatted)}</span></div>
+      <div class="row r4"><span class="lbl" contenteditable="true">En lettres</span><span class="dots" contenteditable="true">${escapeHtml(amountWords)}</span></div>
+      <div class="row r5"><span class="lbl" contenteditable="true">Au titre de</span><span class="dots" contenteditable="true">${escapeHtml(feeTitle)}</span></div>
+      <div class="checks">
+        <label><i class="${isEspeces ? 'on' : ''}"></i><span contenteditable="true">ESPÈCES</span></label>
+        <label><i class="${isCheque ? 'on' : ''}"></i><span contenteditable="true">CHÈQUE</span></label>
+        <label><i class="${isMobile ? 'on' : ''}"></i><span contenteditable="true">MOBILE MONEY</span></label>
+        <label><i class="${isVirement ? 'on' : ''}"></i><span contenteditable="true">VIREMENT / CARTE</span></label>
+      </div>
+      <div class="sign" contenteditable="true">Signature autorisée</div>
+    </div>
+  </div>
+
+  <!-- ================= CLIENT COPY ================= -->
+  <div class="client">
+    <div class="receipt-title" contenteditable="true">REÇU</div>
+    <div class="rn"><span class="pill" contenteditable="true">N° de reçu</span><div class="field" contenteditable="true">${escapeHtml(receiptNumber)}</div></div>
+    <div class="dt"><span class="pill" contenteditable="true">Date</span><div class="field" contenteditable="true">${escapeHtml(dateFormatted)}</div></div>
+
+    <div class="logo"><span>${schoolName}</span></div>
+    <div class="amount"><span class="lbl" contenteditable="true">Montant en chiffres</span><div class="val" contenteditable="true">${escapeHtml(amountFormatted)}</div></div>
+
+    <div class="box">
+      <span class="tag" contenteditable="true">Reçu de paiement</span>
+      <div class="row r1"><span class="lbl" contenteditable="true">Nom</span><span class="dots" contenteditable="true">${escapeHtml(studentFullName)}</span></div>
+      <div class="row r2"><span class="lbl" contenteditable="true">Adresse</span><span class="dots" contenteditable="true">${escapeHtml(studentAddress)}</span></div>
+      <div class="row r3">
+        <div class="half" style="flex:1.05"><span class="lbl" contenteditable="true">Classe</span><span class="dots" contenteditable="true">${escapeHtml(className)}</span></div>
+        <div class="half" style="flex:.95;margin-left:8px"><span class="lbl" contenteditable="true">Au titre de</span><span class="dots" contenteditable="true">${escapeHtml(feeTitle)}</span></div>
+      </div>
+      <div class="row r4"><span class="lbl" contenteditable="true">En lettres</span><span class="dots" contenteditable="true">${escapeHtml(amountWords)}</span></div>
+      <div class="checks">
+        <label><i class="${isEspeces ? 'on' : ''}"></i><span contenteditable="true">ESPÈCES</span></label>
+        <label><i class="${isCheque ? 'on' : ''}"></i><span contenteditable="true">CHÈQUE</span></label>
+        <label><i class="${isMobile ? 'on' : ''}"></i><span contenteditable="true">MOBILE MONEY</span></label>
+        <label><i class="${isVirement ? 'on' : ''}"></i><span contenteditable="true">VIREMENT / CARTE</span></label>
+      </div>
+      <div class="sign" contenteditable="true">Signature autorisée</div>
+    </div>
+
+    <div class="footer">
+      <span contenteditable="true">Adresse : ${schoolAddress || '—'}</span>
+      <span contenteditable="true">${schoolName}</span>
+      <span contenteditable="true">Téléphone : ${schoolPhone || '—'}</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // Cases à cocher : un clic coche / décoche
+  document.querySelectorAll('.checks i').forEach(function(b){
+    b.addEventListener('click',function(){b.classList.toggle('on')});
+  });
+</script>
+</body>
+</html>`;
+}
+
 export function saveReceiptPdf(opts: BuildReceiptOptions): void {
   const doc = buildReceiptPdf(opts);
   doc.save(buildReceiptFileName(opts));
 }
+

@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { useYear } from '../contexts/YearContext';
-import { saveReceiptPdf, type ReceiptSchoolInfo } from '../lib/receiptPdf';
+import { buildReceiptHtml, buildReceiptFileName, type ReceiptSchoolInfo, type BuildReceiptOptions } from '../lib/receiptPdf';
 import { saveFinanceReportPdf } from '../lib/financeReportPdf';
 import { nextPaint } from '../utils/ui';
 import {
   AlertCircle, Banknote, CalendarClock, Check, CheckCircle2, ChevronDown, Coins,
-  FileDown, List, Loader2, Lock, Pencil, Plus, Receipt, RefreshCw, Search, Trash2,
+  FileDown, List, Loader2, Lock, Pencil, Plus, Printer, Receipt, RefreshCw, Search, Trash2,
   TrendingUp, UserX, Users, Wallet, X,
 } from 'lucide-react';
 
@@ -144,6 +144,12 @@ export default function Finances() {
   const [schoolInfo, setSchoolInfo] = useState<ReceiptSchoolInfo | null>(null);
   const [printingId, setPrintingId] = useState<string | null>(null);
   const [exportingReport, setExportingReport] = useState(false);
+  const [receiptPreview, setReceiptPreview] = useState<{
+    html: string;
+    receiptNumber: string;
+    studentName: string;
+    fileName: string;
+  } | null>(null);
 
   const formatMoney = useCallback(
     (cents: number) => `${new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(cents / 100)} ${currency}`,
@@ -402,7 +408,7 @@ export default function Finances() {
     await nextPaint();
     try {
       const fee = p.fee_structure_id ? fees.find(f => f.id === p.fee_structure_id) : null;
-      saveReceiptPdf({
+      const opts: BuildReceiptOptions = {
         school: schoolInfo ?? {
           name: '', short_name: '', ministry_name: '', address: '', city: '',
           country: '', phone: '', email: '', website: '', registration_number: '',
@@ -437,6 +443,17 @@ export default function Finances() {
         },
         academicYearName: selectedYear?.name ?? '—',
         printedBy: user?.email ?? 'Orion ERP',
+      };
+
+      const html = buildReceiptHtml(opts);
+      const studentName = `${opts.student.last_name} ${opts.student.first_name}`.trim();
+      const baseName = buildReceiptFileName(opts).replace(/\.pdf$/i, '');
+
+      setReceiptPreview({
+        html,
+        receiptNumber: p.receipt_number,
+        studentName,
+        fileName: `${baseName}.html`,
       });
     } catch (e) {
       setError(`Impossible de générer le reçu : ${String(e)}`);
@@ -1483,6 +1500,124 @@ export default function Finances() {
           </div>
         </div>
       )}
+
+      {/* ═══════════ MODAL : APERÇU DU REÇU (FORMAT A5 PAYSAGE) ═══════════ */}
+      {receiptPreview && (
+        <ReceiptPreviewModal
+          html={receiptPreview.html}
+          receiptNumber={receiptPreview.receiptNumber}
+          studentName={receiptPreview.studentName}
+          fileName={receiptPreview.fileName}
+          onClose={() => setReceiptPreview(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReceiptPreviewModal({
+  html,
+  receiptNumber,
+  studentName,
+  fileName,
+  onClose,
+}: {
+  html: string;
+  receiptNumber: string;
+  studentName: string;
+  fileName: string;
+  onClose: () => void;
+}) {
+  const blobUrl = useMemo(() => {
+    const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
+    return URL.createObjectURL(blob);
+  }, [html]);
+
+  useEffect(() => {
+    return () => URL.revokeObjectURL(blobUrl);
+  }, [blobUrl]);
+
+  const handlePrint = () => {
+    const iframe = document.getElementById('receipt-print-frame') as HTMLIFrameElement;
+    if (iframe?.contentWindow) {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    }
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-5xl h-[88vh] flex flex-col shadow-2xl overflow-hidden animate-scale-in" onClick={e => e.stopPropagation()}>
+        {/* En-tête */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 flex-shrink-0 bg-white">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <Receipt size={20} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-slate-800">Reçu N° {receiptNumber}</h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700 uppercase">
+                  Format A5 Paysage
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">{studentName} · Double volet (Copie bureau &amp; Reçu client)</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handlePrint}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-sm transition-all"
+              title="Imprimer ou enregistrer en PDF (format A5 Paysage)"
+            >
+              <Printer size={15} /> Imprimer / PDF (A5 Paysage)
+            </button>
+            <button
+              onClick={handleDownload}
+              className="flex items-center gap-2 px-3.5 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold transition-all"
+              title="Télécharger le fichier HTML autonome"
+            >
+              <FileDown size={15} /> Télécharger (HTML)
+            </button>
+            <button
+              onClick={onClose}
+              className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center transition-colors ml-1"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Zone d'aperçu */}
+        <div className="flex-1 bg-slate-200 p-4 overflow-hidden flex items-center justify-center">
+          <div className="w-full h-full rounded-xl overflow-hidden shadow-inner bg-white">
+            <iframe
+              id="receipt-print-frame"
+              src={blobUrl}
+              className="w-full h-full border-0"
+              title={`Reçu ${receiptNumber}`}
+            />
+          </div>
+        </div>
+
+        {/* Pied */}
+        <div className="px-6 py-2.5 border-t border-slate-100 bg-slate-50 flex items-center justify-between text-[11px] text-slate-500 flex-shrink-0">
+          <span>Format A5 Paysage avec ligne de découpe ✂ · Les cases et textes sont éditables</span>
+          <span>Cliquez sur <strong>Imprimer / PDF</strong> pour imprimer directement ou enregistrer en PDF</span>
+        </div>
+      </div>
     </div>
   );
 }
