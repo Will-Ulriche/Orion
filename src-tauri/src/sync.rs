@@ -521,17 +521,28 @@ fn apply_inbox_items(db_path: &PathBuf) {
             }
         };
 
-        // Vérifier si un conflit existe (modification locale plus récente)
-        let has_local_change = check_local_conflict(&db, &entity_type, &entity_id);
+        // Résolution de conflit basée sur l'horodatage :
+        // Si une mutation locale PENDING/SYNCING existe pour la même entité,
+        // on compare les `updated_at` pour décider qui gagne.
+        //   - Distant ≥ Local  → appliquer le distant (remote wins)
+        //   - Local > Distant  → garder le local (local wins, APPLIED sans écriture)
+        // Cela élimine les faux conflits qui bloquaient l'inbox.
+        let conflict_winner = check_and_resolve_conflict(&db, &entity_type, &entity_id, &payload);
 
-        if has_local_change {
-            // Conflit détecté — on ne l'applique pas automatiquement
-            let _ = db.execute(
-                "UPDATE sync_inbox SET status = 'CONFLICT' WHERE id = ?1",
-                rusqlite::params![inbox_id],
-            );
-            eprintln!("[Inbox] ⚠ Conflit détecté pour {}/{}", entity_type, entity_id);
-            continue;
+        match conflict_winner {
+            ConflictResolution::LocalWins => {
+                // Le local est plus récent — on ignore le distant et on marque APPLIED
+                // (la donnée locale est déjà correcte dans SQLite)
+                let _ = db.execute(
+                    "UPDATE sync_inbox SET status = 'APPLIED', applied_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                    rusqlite::params![inbox_id],
+                );
+                println!("[Inbox] LOCAL wins pour {}/{} — distant ignoré", entity_type, entity_id);
+                continue;
+            }
+            ConflictResolution::RemoteWins | ConflictResolution::NoConflict => {
+                // Pas de conflit ou le distant est plus récent → on applique normalement
+            }
         }
 
         // Appliquer l'upsert/delete dans SQLite
@@ -559,17 +570,55 @@ fn apply_inbox_items(db_path: &PathBuf) {
 }
 
 // ──────────────────────────────────────────────
-// Détection d'un conflit local
-// Si une mutation PENDING existe pour la même entité → conflit
+// Résolution intelligente de conflit par horodatage
 // ──────────────────────────────────────────────
 
-fn check_local_conflict(db: &Connection, entity_type: &str, entity_id: &str) -> bool {
-    db.query_row(
-        "SELECT COUNT(*) FROM pending_mutations
+#[derive(Debug)]
+enum ConflictResolution {
+    NoConflict,  // Pas de mutation locale en cours
+    LocalWins,   // Local plus récent → on garde le local
+    RemoteWins,  // Distant plus récent ou égal → on applique le distant
+}
+
+/// Compare l'horodatage de la mutation locale avec celui du payload distant.
+/// Retourne la résolution appropriée sans intervention manuelle.
+fn check_and_resolve_conflict(
+    db: &Connection,
+    entity_type: &str,
+    entity_id: &str,
+    remote_payload: &Value,
+) -> ConflictResolution {
+    // Récupérer la mutation locale la plus récente pour cette entité
+    let local_ts: Option<String> = db.query_row(
+        "SELECT MAX(created_at) FROM pending_mutations
          WHERE entity_type = ?1 AND entity_id = ?2 AND status IN ('PENDING', 'SYNCING')",
         rusqlite::params![entity_type, entity_id],
-        |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) > 0
+        |row| row.get::<_, Option<String>>(0),
+    ).unwrap_or(None);
+
+    let local_ts = match local_ts {
+        Some(ts) if !ts.is_empty() => ts,
+        _ => return ConflictResolution::NoConflict, // Aucune mutation locale
+    };
+
+    // Extraire l'horodatage distant (updated_at ou created_at)
+    let remote_ts = remote_payload
+        .get("updated_at")
+        .or_else(|| remote_payload.get("created_at"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if remote_ts.is_empty() {
+        // Pas d'horodatage distant → prudence, on garde le local
+        return ConflictResolution::LocalWins;
+    }
+
+    // Comparaison lexicographique ISO-8601 (fonctionnel car format fixe)
+    if local_ts.as_str() > remote_ts {
+        ConflictResolution::LocalWins
+    } else {
+        ConflictResolution::RemoteWins
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -1562,11 +1611,16 @@ pub fn resolve_conflict_internal(
     Ok(())
 }
 
-/// Supprimer tous les conflits en attente dans l'inbox
+/// Remettre tous les conflits en PENDING pour retraitement
+/// (la nouvelle logique basée sur l'horodatage les résoudra automatiquement)
 pub fn purge_all_conflicts_internal(db_path: &PathBuf) -> Result<usize, String> {
     let db = Connection::open(db_path).map_err(|e| e.to_string())?;
-    let deleted = db
-        .execute("DELETE FROM sync_inbox WHERE status = 'CONFLICT'", [])
+    // On remet en PENDING plutôt que de supprimer : la nouvelle logique
+    // check_and_resolve_conflict comparera les horodatages et appliquera
+    // automatiquement la bonne version (LOCAL ou REMOTE) sans intervention.
+    let reset = db
+        .execute("UPDATE sync_inbox SET status = 'PENDING' WHERE status = 'CONFLICT'", [])
         .map_err(|e| e.to_string())?;
-    Ok(deleted)
+    println!("[Sync] {} conflit(s) remis en PENDING pour retraitement automatique", reset);
+    Ok(reset)
 }
