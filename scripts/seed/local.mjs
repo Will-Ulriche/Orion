@@ -137,6 +137,62 @@ function updateRow(table, patch, whereSql, whereParams) {
   return r.changes;
 }
 
+/**
+ * Rattache les profils utilisateurs (comptes) aux fiches du personnel.
+ * Priorité : rôle DIRECTION -> responsable de l'établissement, puis email
+ * identique, puis nom + prénom identiques.
+ */
+function linkProfilesToStaff() {
+  if (!columnsOf('profiles').includes('staff_id')) {
+    db.exec('ALTER TABLE profiles ADD COLUMN staff_id TEXT');
+    tableColumns.delete('profiles');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_profiles_staff ON profiles(staff_id)');
+    console.log('  link profils/personnel: colonne staff_id ajoutée');
+  }
+
+  const headStaffId = data.headStaffBySchool[SLOUIS] ?? null;
+  const profiles = db
+    .prepare('SELECT id, user_id, first_name, last_name, staff_id FROM profiles WHERE school_id = ?')
+    .all(SLOUIS);
+  const roleOf = db.prepare(`
+    SELECT r.name FROM user_roles ur
+    JOIN roles r ON r.id = ur.role_id
+    WHERE ur.user_id = ? AND ur.school_id = ?
+    LIMIT 1
+  `);
+  const byEmail = db.prepare(`
+    SELECT s.id FROM staff s
+    JOIN users u ON u.id = ?
+    WHERE s.school_id = ? AND s.email IS NOT NULL AND lower(s.email) = lower(u.email)
+    LIMIT 1
+  `);
+  const byName = db.prepare(`
+    SELECT id FROM staff
+    WHERE school_id = ? AND lower(nom) = lower(?) AND lower(prenoms) = lower(?)
+    LIMIT 1
+  `);
+  const setLink = db.prepare('UPDATE profiles SET staff_id = ?, updated_at = ? WHERE id = ?');
+
+  let linked = 0;
+  for (const p of profiles) {
+    const role = roleOf.get(p.user_id, SLOUIS)?.name;
+    let staffId = null;
+    if (role === 'DIRECTION' && headStaffId) {
+      staffId = headStaffId;
+    }
+    if (!staffId) {
+      staffId = byEmail.get(p.user_id, SLOUIS)?.id ?? null;
+    }
+    if (!staffId && p.first_name && p.last_name) {
+      staffId = byName.get(SLOUIS, p.last_name, p.first_name)?.id ?? null;
+    }
+    if (staffId && staffId !== p.staff_id) {
+      linked += setLink.run(staffId, SEED_STAMP_LOCAL, p.id).changes;
+    }
+  }
+  return linked;
+}
+
 const schoolRow = project('schools', data.schools.find((s) => s.id === SLOUIS));
 delete schoolRow.created_at;
 delete schoolRow.id;
@@ -188,6 +244,13 @@ try {
     `  update academic_years -> ACTIVE: ${updateRow('academic_years', yearRow, 'id = ?', [SLOUIS_YEAR])} ligne(s)`
   );
 
+  // Remplace uniquement les fiches issues d'un précédent seed (matricules SL-P-*)
+  // afin d'éviter les doublons sans supprimer le personnel saisi manuellement.
+  const staffRemoved = db
+    .prepare("DELETE FROM staff WHERE school_id = ? AND matricule LIKE 'SL-P-%'")
+    .run(SLOUIS);
+  if (staffRemoved.changes) console.log(`  purge staff (fiches seed): ${staffRemoved.changes}`);
+
   for (const [table, rows] of INSERT_PLAN) {
     const { inserted, expected } = insertRows(table, rows);
     console.log(`  insert ${table}: ${inserted}/${expected}`);
@@ -209,6 +272,9 @@ try {
   );
   console.log(`  update licenses (max_devices=5, expire 2027-08-31): ${licenseChanges} ligne(s)`);
   if (!licenseChanges) problems.push('licence SAINT LOUIS introuvable');
+
+  const linkedProfiles = linkProfilesToStaff();
+  console.log(`  rattachement comptes -> personnel: ${linkedProfiles} profil(s)`);
 
   db.exec('COMMIT');
 } catch (e) {

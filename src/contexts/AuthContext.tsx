@@ -130,6 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       let schoolName = 'Établissement';
       let firstName: string = userMeta.first_name || 'Direction';
       let lastName: string = userMeta.last_name || '';
+      let staffId: string | null = null;
       const metaRole: string = userMeta.role || 'DIRECTION';
       // Fiche complète de l'établissement (renseignée par le super-administrateur
       // dans le cloud). Elle est rapatriée localement pour que la direction
@@ -142,7 +143,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const { data: prof } = await supabase
               .from('profiles')
-              .select('school_id, first_name, last_name')
+              .select('school_id, first_name, last_name, staff_id')
               .eq('user_id', userSession.user.id)
               .limit(1)
               .maybeSingle();
@@ -150,6 +151,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if ((prof as any)?.first_name) firstName = (prof as any).first_name;
               if ((prof as any)?.last_name) lastName = (prof as any).last_name;
               if ((prof as any)?.school_id) schoolId = (prof as any).school_id;
+              if ((prof as any)?.staff_id) staffId = (prof as any).staff_id;
             }
           } catch (profileErr) {
             console.warn('Erreur profil cloud (utilisation métadonnées):', profileErr);
@@ -188,6 +190,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           schoolName,
           firstName,
           lastName,
+          staffId,
+          roleName: metaRole,
           shortName: school?.short_name ?? null,
           address: school?.address ?? null,
           city: school?.city ?? null,

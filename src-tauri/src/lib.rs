@@ -1,5 +1,6 @@
 pub mod db;
 pub mod commands;
+pub mod library;
 pub mod models;
 pub mod sync;
 
@@ -74,6 +75,7 @@ pub fn run() {
             commands::get_pending_mutations,
             commands::get_sync_conflicts,
             commands::resolve_sync_conflict,
+            commands::purge_all_sync_conflicts,
             commands::purge_invalid_mutations,
             // ── Session 4 : Finance ──
             commands::get_fee_structures,
@@ -150,7 +152,42 @@ pub fn run() {
             commands::write_download_file,
             // ── Tableau de bord ──
             commands::get_school_dashboard_stats,
-            commands::get_current_user_profile
+            commands::get_current_user_profile,
+            // ── Session 6 : Bibliothèque ──
+            library::get_library_settings,
+            library::save_library_settings,
+            library::get_library_categories,
+            library::create_library_category,
+            library::update_library_category,
+            library::delete_library_category,
+            library::get_library_books,
+            library::create_library_book,
+            library::update_library_book,
+            library::delete_library_book,
+            library::get_library_copies,
+            library::create_library_copies,
+            library::update_library_copy,
+            library::delete_library_copy,
+            library::get_library_readers,
+            library::create_library_reader,
+            library::update_library_reader,
+            library::delete_library_reader,
+            library::register_student_as_reader,
+            library::get_library_loans,
+            library::create_library_loan,
+            library::return_library_loan,
+            library::extend_library_loan,
+            library::get_library_penalties,
+            library::create_library_penalty,
+            library::pay_library_penalty,
+            library::waive_library_penalty,
+            library::get_library_reservations,
+            library::create_library_reservation,
+            library::cancel_library_reservation,
+            library::fulfill_library_reservation,
+            library::get_library_dashboard,
+            library::seed_library_demo_data,
+            library::clear_library_data
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

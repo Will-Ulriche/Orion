@@ -132,6 +132,7 @@ function CreateAccessModal({
       last_name: staff.nom,
       phone: staff.telephone_principal ?? '',
       role: selectedRole!,
+      staff_id: staff.id,
     });
     setStep('credentials');
   };
@@ -524,7 +525,6 @@ export default function ComptesSuperAdmin() {
       `👤 RESPONSABLE   : ${c.firstName} ${c.lastName}`.trim(),
       `📧 EMAIL (LOGIN) : ${c.email}`,
       `🏷️ RÔLE          : ${c.role}`,
-      c.licenseKey ? `🎟️ LICENCE ORION : ${c.licenseKey}` : '',
     ].filter(Boolean).join('\n');
     navigator.clipboard.writeText(text);
     setCopiedId(c.userId);
@@ -682,21 +682,21 @@ export default function ComptesSuperAdmin() {
         />
       ) : (
         <TableShell>
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr>
-                <Th>Établissement</Th>
-                <Th>Utilisateur</Th>
-                <Th className="text-center">Rôle</Th>
-                <Th>Identifiant (Email)</Th>
-                <Th>Mot de passe</Th>
-                <Th className="text-center">Statut</Th>
-                <Th>Licence</Th>
-                <Th className="text-right">Actions</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(c => {
+          <div className="overflow-auto max-h-[75vh] min-h-[440px]">
+            <table className="w-full min-w-[900px] border-collapse text-sm">
+              <thead>
+                <tr>
+                  <Th>Établissement</Th>
+                  <Th>Utilisateur</Th>
+                  <Th className="text-center">Rôle</Th>
+                  <Th>Identifiant (Email)</Th>
+                  <Th>Mot de passe</Th>
+                  <Th className="text-center">Statut</Th>
+                  <Th className="text-right">Actions</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(c => {
                 const isActive = c.status === 'ACTIVE';
                 const cachedPass = passwordsMap[c.email] || passwordsMap[c.userId];
                 const isRevealed = revealedPasswords[c.userId] ?? false;
@@ -729,11 +729,11 @@ export default function ComptesSuperAdmin() {
                     </Td>
 
                     <Td>
-                      <div>
-                        <p className="text-[13px] font-medium text-slate-700">
+                      <div className="min-w-0">
+                        <p className="truncate text-[13px] font-medium text-slate-700" title={`${c.firstName || ''} ${c.lastName || ''}`.trim() || '—'}>
                           {c.firstName || c.lastName ? `${c.firstName} ${c.lastName}`.trim() : '—'}
                         </p>
-                        {c.phone && <p className="text-[11px] text-slate-400">{c.phone}</p>}
+                        {c.phone && <p className="text-[11px] text-slate-400 truncate">{c.phone}</p>}
                       </div>
                     </Td>
 
@@ -742,8 +742,8 @@ export default function ComptesSuperAdmin() {
                     </Td>
 
                     <Td>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-[12px] font-semibold text-slate-800 select-all">{c.email}</span>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="truncate max-w-[170px] font-mono text-[12px] font-semibold text-slate-800 select-all" title={c.email}>{c.email}</span>
                         <button
                           onClick={() => copyText(c.email, `email-${c.userId}`)}
                           className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded cursor-pointer"
@@ -797,19 +797,6 @@ export default function ComptesSuperAdmin() {
                       </Badge>
                     </Td>
 
-                    <Td>
-                      {c.licenseKey ? (
-                        <div className="flex items-center gap-1 text-[11.5px] font-mono text-slate-600">
-                          <span className="truncate max-w-[110px]">{c.licenseKey}</span>
-                          <button onClick={() => copyText(c.licenseKey!, `lic-${c.userId}`)} className="p-1 text-slate-400 hover:text-slate-600 rounded cursor-pointer">
-                            {copiedId === `lic-${c.userId}` ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="text-slate-400 text-xs italic">Aucune</span>
-                      )}
-                    </Td>
-
                     <Td className="text-right">
                       <div className="flex justify-end items-center gap-1">
                         <Btn
@@ -851,6 +838,7 @@ export default function ComptesSuperAdmin() {
               })}
             </tbody>
           </table>
+          </div>
         </TableShell>
       )}
 

@@ -45,7 +45,7 @@ const STATUS_CFG: Record<CheckStatus, { icon: typeof ShieldOff; title: string; d
 
 // ─── Composant ────────────────────────────────────────────────
 export default function LicenseGuard({ children }: { children: React.ReactNode }) {
-  const { roles, rolesLoaded, user, schoolId, signOut } = useAuth();
+  const { roles, rolesLoaded, user, schoolId, signOut, activated } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -182,11 +182,14 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
     // Le SUPER_ADMIN passe toujours
     if (!rolesLoaded) return;
     if (roles.includes('SUPER_ADMIN')) return;
+    // Installation déjà activée : plus de re-vérification de licence à chaque ouverture.
+    // L'application fonctionne désormais en local (connexion par PIN).
+    if (activated) return;
 
     checkLicense();
     const timer = setInterval(checkLicense, RECHECK_MS);
     return () => clearInterval(timer);
-  }, [rolesLoaded, roles, checkLicense]);
+  }, [rolesLoaded, roles, checkLicense, activated]);
 
   // Re-vérifier dès qu'une licence est activée/renouvelée depuis la page Licence
   useEffect(() => {
@@ -206,6 +209,13 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
 
   // ── Bypass Super Admin ───────────────────────────────────────
   if (!rolesLoaded || roles.includes('SUPER_ADMIN')) {
+    return <>{children}</>;
+  }
+
+  // ── Installation déjà activée ────────────────────────────────
+  // Une fois l'installation activée (1ère connexion en ligne réussie), l'application
+  // bascule sur le login local par PIN : on ne revient plus sur l'écran de licence.
+  if (activated) {
     return <>{children}</>;
   }
 

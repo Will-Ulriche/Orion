@@ -30,6 +30,7 @@ export interface SchoolAdminInput {
   last_name: string;
   phone?: string | null;
   role?: 'DIRECTION' | 'ADMIN' | 'SECRETAIRE' | 'PROFESSEUR';
+  staff_id?: string | null;
 }
 
 export interface CreateSchoolWithAdminInput {
@@ -154,6 +155,35 @@ async function resolveRoleId(roleName: string): Promise<string> {
   return created.id;
 }
 
+/**
+ * Résout la fiche du personnel à rattacher au compte.
+ * Priorité à l'identifiant fourni par l'interface, puis rapprochement par email.
+ */
+async function resolveStaffId(
+  schoolId: string,
+  explicitStaffId: string | null | undefined,
+  email: string
+): Promise<string | null> {
+  if (explicitStaffId) {
+    const { data } = await supabaseAdmin
+      .from('staff')
+      .select('id')
+      .eq('id', explicitStaffId)
+      .eq('school_id', schoolId)
+      .maybeSingle();
+    if (data?.id) return data.id;
+  }
+
+  if (!email) return null;
+  const { data } = await supabaseAdmin
+    .from('staff')
+    .select('id')
+    .eq('school_id', schoolId)
+    .ilike('email', email)
+    .maybeSingle();
+  return data?.id ?? null;
+}
+
 // ─── Établissements ─────────────────────────────────────────
 
 export async function listSchools(): Promise<School[]> {
@@ -241,6 +271,7 @@ export async function createSchoolWithAdmin(input: CreateSchoolWithAdminInput): 
   }
 
   // 4. Insérer dans la table profiles
+  const staffId = await resolveStaffId(schoolId, input.admin.staff_id, adminEmail);
   const { error: profErr } = await supabaseAdmin.from('profiles').insert({
     id: crypto.randomUUID(),
     user_id: userId,
@@ -248,6 +279,7 @@ export async function createSchoolWithAdmin(input: CreateSchoolWithAdminInput): 
     first_name: firstName,
     last_name: lastName,
     phone: input.admin.phone?.trim() || null,
+    staff_id: staffId,
   });
   if (profErr) {
     await supabaseAdmin.from('users').delete().eq('id', userId);
@@ -377,6 +409,7 @@ export async function createAdminForSchool(
     first_name: firstName,
     last_name: lastName,
     phone: admin.phone?.trim() || null,
+    staff_id: await resolveStaffId(schoolId, admin.staff_id, adminEmail),
   });
   if (profErr) {
     await supabaseAdmin.from('users').delete().eq('id', userId);

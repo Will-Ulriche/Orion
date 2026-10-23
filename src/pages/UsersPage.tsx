@@ -17,7 +17,21 @@ interface LocalUserInfo {
   role_name: string | null;
   role_id: string | null;
   profile_id: string | null;
+  staff_id: string | null;
+  staff_name: string | null;
   created_at: string;
+}
+
+interface StaffMember {
+  id: string;
+  matricule: string | null;
+  nom: string;
+  prenoms: string;
+  email: string | null;
+  telephone_principal: string | null;
+  type_personnel: string | null;
+  fonction: string | null;
+  est_actif: boolean;
 }
 
 interface RoleRec {
@@ -68,10 +82,31 @@ function CreateUserModal({
   onCreated: (u: LocalUserInfo) => void;
 }) {
   const [form, setForm] = useState({
-    username: '', email: '', password: '', confirm: '', first_name: '', last_name: '', phone: '', role_id: roles[0]?.id || ''
+    username: '', email: '', password: '', confirm: '', first_name: '', last_name: '', phone: '', role_id: roles[0]?.id || '', staff_id: ''
   });
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    invoke<StaffMember[]>('get_staff', { schoolId, includePhotos: false })
+      .then(list => { if (active) setStaffList(list.filter(s => s.est_actif)); })
+      .catch(() => { /* le rattachement reste optionnel */ });
+    return () => { active = false; };
+  }, [schoolId]);
+
+  const handleStaffPick = (staffId: string) => {
+    const staff = staffList.find(s => s.id === staffId);
+    setForm(f => ({
+      ...f,
+      staff_id: staffId,
+      first_name: staff ? staff.prenoms : f.first_name,
+      last_name: staff ? staff.nom : f.last_name,
+      email: staff?.email || f.email,
+      phone: staff?.telephone_principal || f.phone,
+    }));
+  };
 
   const field = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [key]: e.target.value }));
@@ -103,6 +138,7 @@ function CreateUserModal({
         phone: form.phone || null,
         roleId: form.role_id,
         actorId,
+        staffId: form.staff_id || null,
       });
       onCreated(user);
       onClose();
@@ -186,6 +222,24 @@ function CreateUserModal({
               <Phone size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input className={`${inp} pl-9`} value={form.phone} onChange={field('phone')} placeholder="+221 70 000 00 00" />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-[11.5px] font-semibold text-slate-600 mb-1.5">Personnel rattaché</label>
+            <div className="relative">
+              <select className={`${inp} pr-8 appearance-none`} value={form.staff_id} onChange={e => handleStaffPick(e.target.value)}>
+                <option value="">— Aucun (compte non lié au personnel) —</option>
+                {staffList.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.nom} {s.prenoms}{s.matricule ? ` · ${s.matricule}` : ''}{s.fonction ? ` · ${s.fonction}` : ''}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            </div>
+            <p className="text-[10.5px] text-slate-400 mt-1.5 leading-snug">
+              Rapprochement automatique par email si un membre du personnel partage le même email.
+            </p>
           </div>
 
           <div>

@@ -317,26 +317,28 @@ export function Kpi({
   value,
   tone = 'slate',
   progress,
+  compact = false,
 }: {
   icon?: any;
   label: string;
   value: ReactNode;
   tone?: Tone;
   progress?: number;
+  compact?: boolean;
 }) {
   const iconTone = TONES[tone];
   return (
     <Card className="overflow-hidden">
-      <div className="flex items-start justify-between gap-3 px-4 py-3.5">
+      <div className={cx('flex items-start justify-between gap-3', compact ? 'px-3 py-2.5' : 'px-4 py-3.5')}>
         <div className="min-w-0">
-          <p className="truncate text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          <p className={cx('truncate font-semibold uppercase tracking-wide text-slate-400', compact ? 'text-[10px]' : 'text-[11px]')}>
             {label}
           </p>
-          <p className="mt-1 text-2xl font-bold tabular-nums tracking-tight text-slate-800">{value}</p>
+          <p className={cx('mt-1 font-bold tabular-nums tracking-tight text-slate-800', compact ? 'text-lg' : 'text-2xl')}>{value}</p>
         </div>
         {Icon && (
-          <div className={cx('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset', iconTone)}>
-            <Icon size={16} />
+          <div className={cx('flex shrink-0 items-center justify-center rounded-xl ring-1 ring-inset', compact ? 'h-8 w-8' : 'h-9 w-9', iconTone)}>
+            <Icon size={compact ? 14 : 16} />
           </div>
         )}
       </div>

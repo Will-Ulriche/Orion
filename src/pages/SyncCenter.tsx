@@ -114,6 +114,7 @@ export default function SyncCenter() {
   const [showMutations, setShowMutations]   = useState(false);
   const [showConflicts, setShowConflicts]   = useState(false);
   const [resolvingId, setResolvingId]       = useState<string | null>(null);
+  const [purgingConflicts, setPurgingConflicts] = useState(false);
   const [notice, setNotice]                 = useState<string | null>(null);
 
   // ── Chargement initial et refresh périodique ──
@@ -242,6 +243,29 @@ export default function SyncCenter() {
       setError(msg);
     } finally {
       setResolvingId(null);
+    }
+  };
+
+  // ── Supprimer tous les conflits d'un coup ──
+  const handlePurgeAllConflicts = async () => {
+    if (!window.confirm('Supprimer tous les conflits en attente ? Cette action est irréversible.')) {
+      return;
+    }
+    setPurgingConflicts(true);
+    setError(null);
+    try {
+      const deleted: number = await invoke('purge_all_sync_conflicts');
+      setConflicts([]);
+      await loadStatus();
+      if (deleted > 0) {
+        setNotice(`${deleted} conflit(s) supprimé(s).`);
+        setTimeout(() => setNotice(null), 4000);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+    } finally {
+      setPurgingConflicts(false);
     }
   };
 
@@ -418,6 +442,19 @@ export default function SyncCenter() {
             </div>
             {showConflicts ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
           </button>
+
+          {conflicts.length > 0 && (
+            <>
+              <button
+                onClick={handlePurgeAllConflicts}
+                disabled={purgingConflicts}
+                className="mt-3 flex items-center gap-2 px-4 py-2 rounded-xl bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 text-sm font-semibold transition-colors disabled:opacity-50"
+              >
+                <XCircle size={16} />
+                {purgingConflicts ? 'Suppression…' : 'Supprimer tous les conflits'}
+              </button>
+            </>
+          )}
 
           {showConflicts && (
             <div className="border-t border-amber-100 divide-y divide-amber-50">

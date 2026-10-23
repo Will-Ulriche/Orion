@@ -64,6 +64,7 @@ export default function RecapNotes() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  const [sortMode, setSortMode] = useState<'best' | 'worst' | 'name' | 'rank'>('best');
 
   const [selClass, setSelClass] = useState('');
   const [selPeriod, setSelPeriod] = useState('');
@@ -126,11 +127,38 @@ export default function RecapNotes() {
   const filteredStudents = useMemo(() => {
     if (!recap) return [];
     const q = search.trim().toLowerCase();
-    if (!q) return recap.students;
-    return recap.students.filter(s =>
-      `${s.last_name} ${s.first_name} ${s.matricule ?? ''}`.toLowerCase().includes(q)
-    );
-  }, [recap, search]);
+    const rows = q
+      ? recap.students.filter(s =>
+          `${s.last_name} ${s.first_name} ${s.matricule ?? ''}`.toLowerCase().includes(q)
+        )
+      : [...recap.students];
+
+    const nameOf = (s: RecapStudentRow) =>
+      `${s.last_name} ${s.first_name}`.trim().toLocaleLowerCase('fr');
+
+    return rows.sort((a, b) => {
+      if (sortMode === 'name') return nameOf(a).localeCompare(nameOf(b), 'fr');
+      if (sortMode === 'rank') {
+        const ra = a.rank === 0 ? Number.MAX_SAFE_INTEGER : a.rank;
+        const rb = b.rank === 0 ? Number.MAX_SAFE_INTEGER : b.rank;
+        return ra - rb || nameOf(a).localeCompare(nameOf(b), 'fr');
+      }
+      const av = a.general_average;
+      const bv = b.general_average;
+      if (av === null && bv === null) return nameOf(a).localeCompare(nameOf(b), 'fr');
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      const diff = sortMode === 'best' ? bv - av : av - bv;
+      return diff || nameOf(a).localeCompare(nameOf(b), 'fr');
+    });
+  }, [recap, search, sortMode]);
+
+  const bestAverage = useMemo(() => {
+    const values = (recap?.students ?? [])
+      .map(s => s.general_average)
+      .filter((v): v is number => v !== null && v !== undefined);
+    return values.length ? Math.max(...values) : null;
+  }, [recap]);
 
   const classAverage = useMemo(() => {
     const values = (recap?.students ?? [])
@@ -194,6 +222,17 @@ export default function RecapNotes() {
             placeholder="Rechercher un élève…"
             className="w-full sm:w-64 sm:ml-auto"
           />
+          <Field label="Trier par" className="w-full sm:w-56">
+            <Select
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
+            >
+              <option value="best">Moyenne (forte → faible)</option>
+              <option value="worst">Moyenne (faible → forte)</option>
+              <option value="rank">Rang</option>
+              <option value="name">Nom (A → Z)</option>
+            </Select>
+          </Field>
         </div>
       </div>
 
@@ -244,7 +283,7 @@ export default function RecapNotes() {
               <Kpi
                 icon={GraduationCap}
                 label="Meilleure moyenne"
-                value={recap.students[0]?.general_average?.toFixed(2) ?? '—'}
+                value={bestAverage !== null ? `${bestAverage.toFixed(2)}/20` : '—'}
                 tone="brand"
               />
             </div>

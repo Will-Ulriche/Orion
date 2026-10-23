@@ -18,12 +18,12 @@ import { listSchools, listLicenses, listDevices } from '../lib/superAdminApi';
 // tout en gardant vos routes.
 const manageItems = [
   { to: '/', icon: PieChart, label: 'Tableau de bord', roles: [] }, // Tous
-  { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE'] },
+  { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE', 'COMPTABLE'] },
   { to: '/archives', icon: Archive, label: 'Gestion Archives', roles: ['DIRECTION'] },
   { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },
-  { to: '/finances', icon: Coins, label: 'Gestion des finances', roles: ['DIRECTION'] },
+  { to: '/finances', icon: Coins, label: 'Gestion des finances', roles: ['DIRECTION', 'COMPTABLE'] },
   { to: '/personnel', icon: UserCog, label: 'Gestion du personnel', roles: ['DIRECTION'] },
-  { to: '/vie-scolaire', icon: School, label: 'Bibliothèque', roles: ['DIRECTION', 'SECRETAIRE'] },
+  { to: '/bibliotheque', icon: School, label: 'Bibliothèque', roles: ['DIRECTION', 'SECRETAIRE'] },
   { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Examens', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
   { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ['PROFESSEUR'] },
 ];
@@ -116,7 +116,7 @@ export default function Sidebar() {
 
   return (
     <aside
-      className="app-sidebar flex flex-col transition-all duration-300 ease-in-out m-1.5 sm:m-2.5 lg:m-4 mr-0 rounded-2xl sm:rounded-3xl relative overflow-hidden shrink-0"
+      className={`app-sidebar flex flex-col transition-all duration-300 ease-in-out m-1.5 sm:m-2.5 lg:m-4 mr-0 rounded-2xl sm:rounded-3xl relative overflow-hidden shrink-0 ${collapsed ? 'app-sidebar--collapsed' : ''}`}
       style={{
         width: collapsed ? '80px' : '260px',
         backgroundColor: '#2b2a33',

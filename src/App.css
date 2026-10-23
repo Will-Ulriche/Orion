@@ -168,6 +168,13 @@ button {
   --sb-profile-py: 1rem;
 }
 
+/* Mode replié : les icônes seules doivent rester aérées, même sur les
+   écrans peu hauts où les variables globales deviennent très compactes. */
+.app-sidebar.app-sidebar--collapsed {
+  --sb-item-py: 0.25rem;
+  --sb-nav-gap: 0.5rem;
+}
+
 .app-sidebar nav a > svg {
   width: var(--sb-icon);
   height: var(--sb-icon);

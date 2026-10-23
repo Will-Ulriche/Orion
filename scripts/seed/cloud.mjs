@@ -345,6 +345,40 @@ await upsertTable('payments', data.payments, { nullableUserRefs: ['recorded_by']
 await upsertTable('devices', data.devices);
 await upsertTable('licenses', data.licenses);
 
+console.log('== Rattachement comptes <-> personnel ==');
+const staffIdProbe = await client.from('profiles').select('staff_id').limit(1);
+if (staffIdProbe.error) {
+  console.warn(
+    '  colonne profiles.staff_id absente : rattachement cloud ignoré.' +
+      ' Appliquez supabase/migrations/20261023000000_link_profiles_staff.sql puis relancez.'
+  );
+} else {
+  for (const account of newAccounts) {
+    if (!account.staff_id) continue;
+    const { error } = await client
+      .from('profiles')
+      .update({ staff_id: account.staff_id, updated_at: new Date().toISOString() })
+      .eq('user_id', account.uid)
+      .eq('school_id', account.schoolId);
+    if (error) errors.push(`profil ${account.email} -> staff: ${error.message}`);
+  }
+  for (const [schoolId, staffId] of Object.entries(data.headStaffBySchool)) {
+    if (!staffId) continue;
+    const userIds = new Set();
+    if (data.directionUserBySchool[schoolId]) userIds.add(data.directionUserBySchool[schoolId]);
+    for (const a of newAccounts) {
+      if (a.schoolId === schoolId && a.role === 'DIRECTION') userIds.add(a.uid);
+    }
+    if (!userIds.size) continue;
+    const { error } = await client
+      .from('profiles')
+      .update({ staff_id: staffId, updated_at: new Date().toISOString() })
+      .eq('school_id', schoolId)
+      .in('user_id', [...userIds]);
+    if (error) errors.push(`profil direction ${schoolId} -> staff: ${error.message}`);
+  }
+}
+
 {
   const { error: licErr } = await client
     .from('licenses')

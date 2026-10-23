@@ -323,6 +323,7 @@ export function generateDataset(options = {}) {
     devices: [],
     accounts: [],
     directionUserBySchool: { [SAINT_LOUIS_ID]: SAINT_LOUIS_DIRECTION_USER },
+    headStaffBySchool: {},
   };
 
   for (const def of SCHOOL_DEFS) {
@@ -477,7 +478,12 @@ export function generateDataset(options = {}) {
     const allSeats = [...adminSeats, ...teacherSeats, ...supportSeats];
     for (const seat of allSeats) {
       staffSeq += 1;
-      const p = person(seat.sex, seat.head ? def.headName.split(' ').slice(1).join(' ') || undefined : undefined);
+      const p = seat.head
+        ? (() => {
+            const parts = def.headName.replace(/^SŒUR\s+/i, '').split(/\s+/);
+            return { first: parts[0], last: parts.slice(1).join(' ') || parts[0], sex: seat.sex };
+          })()
+        : person(seat.sex);
       const isTeacher = seat.type === 'Enseignant';
       const rec = {
         id: makeId(`${def.key}-staff`),
@@ -551,6 +557,7 @@ export function generateDataset(options = {}) {
       }
     }
     out.staff.push(...staffRecords);
+    out.headStaffBySchool[def.id] = staffRecords[0]?.id ?? null;
     const teacherPool = staffRecords.filter((s) => s.type_personnel === 'Enseignant');
     const directionStaff = staffRecords[0];
     const nextTeacher = (() => {
@@ -978,6 +985,39 @@ export function generateDataset(options = {}) {
     { school: 'notre-dame', role: 'SECRETAIRE', first: 'Akouvi', last: 'ANOMA', email: 'secretaire@ndl-lome.tg', pwEnv: 'SEED_PW_NDL_SECRETARY', phone: '228 90887766' },
   ];
 
+  // Rattachement des comptes aux fiches du personnel : chaque compte doit
+  // correspondre à un membre du personnel de son établissement (même
+  // identité et même email). On réutilise les sièges existants générés
+  // ci-dessus afin de ne pas créer de doublons.
+  const usedStaffIds = new Set();
+  for (const ad of accountDefs) {
+    const school = SCHOOL_DEFS.find((s) => s.key === ad.school);
+    const schoolStaff = out.staff.filter((s) => s.school_id === school.id);
+    const available = (filter) => schoolStaff.find((s) => !usedStaffIds.has(s.id) && filter(s));
+
+    let candidate = null;
+    if (ad.role === 'DIRECTION') {
+      candidate = schoolStaff.find((s) => s.id === out.headStaffBySchool[school.id]) ?? null;
+    } else if (ad.role === 'SECRETAIRE') {
+      candidate =
+        available((s) => /secr[eé]taire/i.test(s.fonction || '')) ??
+        available((s) => s.type_personnel === 'Administratif');
+    } else if (ad.role === 'COMPTABLE') {
+      candidate = available((s) => /comptable/i.test(s.fonction || ''));
+    } else if (ad.role === 'PROFESSEUR') {
+      candidate = available((s) => s.type_personnel === 'Enseignant');
+    }
+    if (!candidate) continue;
+
+    usedStaffIds.add(candidate.id);
+    candidate.nom = ad.last;
+    candidate.prenoms = ad.first;
+    candidate.email = ad.email;
+    candidate.telephone_principal = ad.phone;
+    candidate.updated_at = seedStamp(15, 10);
+    ad.staff_id = candidate.id;
+  }
+
   // Résolution des mots de passe : exigée uniquement quand les comptes sont
   // réellement créés (seed cloud). Le seed local n'a pas besoin des comptes.
   const missingPwEnv = accountDefs
@@ -1001,6 +1041,7 @@ export function generateDataset(options = {}) {
       email: ad.email,
       password,
       phone: ad.phone,
+      staff_id: ad.staff_id ?? null,
       metadata: { school_id: school.id, first_name: ad.first, last_name: ad.last, role: ad.role, initial_password: password },
     });
   }

@@ -428,6 +428,197 @@ pub struct Staff {
     pub updated_at: String,
 }
 
+// ── SESSION 6 : MODULE BIBLIOTHÈQUE ────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryCategory {
+    pub id: String,
+    pub school_id: String,
+    pub name: String,
+    pub code: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    // Extra (JOIN)
+    pub book_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryBook {
+    pub id: String,
+    pub school_id: String,
+    pub category_id: Option<String>,
+    pub isbn: Option<String>,
+    pub title: String,
+    pub author: Option<String>,
+    pub publisher: Option<String>,
+    pub publication_year: Option<i64>,
+    pub language: Option<String>,
+    pub edition: Option<String>,
+    pub pages: Option<i64>,
+    pub description: Option<String>,
+    pub shelf_location: Option<String>,
+    pub is_reference: bool,
+    // Extra (JOIN)
+    pub category_name: Option<String>,
+    pub copy_count: i64,
+    pub available_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryCopy {
+    pub id: String,
+    pub school_id: String,
+    pub book_id: String,
+    pub inventory_code: String,
+    pub barcode: Option<String>,
+    pub status: String,
+    pub condition: Option<String>,
+    pub acquisition_date: Option<String>,
+    pub acquisition_source: Option<String>,
+    pub price: Option<f64>,
+    pub location: Option<String>,
+    pub notes: Option<String>,
+    // Extra (JOIN)
+    pub book_title: Option<String>,
+    pub book_author: Option<String>,
+    pub reader_name: Option<String>,
+    pub due_date: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryReader {
+    pub id: String,
+    pub school_id: String,
+    pub reader_type: String,
+    pub student_id: Option<String>,
+    pub staff_id: Option<String>,
+    pub full_name: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub card_number: String,
+    pub class_name: Option<String>,
+    pub max_loans: i64,
+    pub status: String,
+    pub registered_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub notes: Option<String>,
+    // Extra (JOIN)
+    pub active_loans: i64,
+    pub unpaid_penalties: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryLoan {
+    pub id: String,
+    pub school_id: String,
+    pub copy_id: String,
+    pub reader_id: String,
+    pub book_id: String,
+    pub loan_date: String,
+    pub due_date: String,
+    pub returned_at: Option<String>,
+    pub status: String,
+    pub loan_condition: Option<String>,
+    pub notes: Option<String>,
+    pub created_by: Option<String>,
+    // Extra (JOIN)
+    pub book_title: Option<String>,
+    pub book_author: Option<String>,
+    pub inventory_code: Option<String>,
+    pub reader_name: Option<String>,
+    pub reader_type: Option<String>,
+    pub late_days: i64,
+    pub fine_amount: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryReturn {
+    pub id: String,
+    pub school_id: String,
+    pub loan_id: String,
+    pub copy_id: String,
+    pub reader_id: String,
+    pub returned_at: String,
+    pub loan_condition: Option<String>,
+    pub late_days: i64,
+    pub fine_amount: f64,
+    pub remarks: Option<String>,
+    pub handled_by: Option<String>,
+    // Extra (JOIN)
+    pub book_title: Option<String>,
+    pub inventory_code: Option<String>,
+    pub reader_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryPenalty {
+    pub id: String,
+    pub school_id: String,
+    pub reader_id: String,
+    pub loan_id: Option<String>,
+    pub penalty_type: String,
+    pub amount: f64,
+    pub days_late: i64,
+    pub description: Option<String>,
+    pub status: String,
+    pub paid_at: Option<String>,
+    // Extra (JOIN)
+    pub reader_name: Option<String>,
+    pub reader_type: Option<String>,
+    pub book_title: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryReservation {
+    pub id: String,
+    pub school_id: String,
+    pub book_id: String,
+    pub reader_id: String,
+    pub reserved_at: String,
+    pub available_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub status: String,
+    pub queue_position: i64,
+    pub notified_at: Option<String>,
+    pub fulfilled_at: Option<String>,
+    pub loan_id: Option<String>,
+    // Extra (JOIN)
+    pub book_title: Option<String>,
+    pub book_author: Option<String>,
+    pub reader_name: Option<String>,
+    pub reader_type: Option<String>,
+    pub available_copies: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibrarySettings {
+    pub id: String,
+    pub school_id: String,
+    pub loan_duration_days: i64,
+    pub max_loans_per_reader: i64,
+    pub fine_per_day: f64,
+    pub grace_days: i64,
+    pub reservation_expiry_days: i64,
+}
+
+/// Indicateurs de pilotage de la bibliothèque.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryDashboard {
+    pub total_books: i64,
+    pub total_copies: i64,
+    pub available_copies: i64,
+    pub loaned_copies: i64,
+    pub lost_copies: i64,
+    pub maintenance_copies: i64,
+    pub total_readers: i64,
+    pub active_readers: i64,
+    pub active_loans: i64,
+    pub overdue_loans: i64,
+    pub pending_reservations: i64,
+    pub unpaid_penalties: i64,
+    pub unpaid_penalty_amount: f64,
+}
+
 // ── TABLEAU DE BORD ───────────────────────────────────────────
 
 /// Profil de l'utilisateur connecté, lu depuis la base locale (fonctionne hors-ligne).

@@ -55,10 +55,19 @@ const REMOTE_COLUMNS: &[(&str, &[&str])] = &[
     ("class_subjects",      &["id", "school_id", "academic_year_id", "class_id", "subject_id", "teacher_id", "coefficient", "created_at", "updated_at"]),
     ("teacher_assignments", &["id", "school_id", "academic_year_id", "teacher_id", "class_subject_id", "created_at", "updated_at"]),
     ("grades",              &["id", "school_id", "academic_year_id", "enrollment_id", "student_id", "class_subject_id", "grading_period_id", "grade_type_id", "score", "max_score", "evaluation_date", "notes", "recorded_by", "is_absent", "created_at", "updated_at"]),
+    // Session 6 — Module bibliothèque
+    ("library_categories",   &["id", "school_id", "name", "code", "description", "color", "created_at", "updated_at"]),
+    ("library_books",        &["id", "school_id", "category_id", "isbn", "title", "author", "publisher", "publication_year", "language", "edition", "pages", "description", "shelf_location", "is_reference", "created_at", "updated_at"]),
+    ("library_copies",       &["id", "school_id", "book_id", "inventory_code", "barcode", "status", "condition", "acquisition_date", "acquisition_source", "price", "location", "notes", "created_at", "updated_at"]),
+    ("library_readers",      &["id", "school_id", "reader_type", "student_id", "staff_id", "full_name", "email", "phone", "card_number", "class_name", "max_loans", "status", "registered_at", "expires_at", "notes", "created_at", "updated_at"]),
+    ("library_loans",        &["id", "school_id", "copy_id", "reader_id", "book_id", "loan_date", "due_date", "returned_at", "status", "loan_condition", "notes", "created_by", "created_at", "updated_at"]),
+    ("library_returns",      &["id", "school_id", "loan_id", "copy_id", "reader_id", "returned_at", "loan_condition", "late_days", "fine_amount", "remarks", "handled_by", "created_at", "updated_at"]),
+    ("library_penalties",    &["id", "school_id", "reader_id", "loan_id", "penalty_type", "amount", "days_late", "description", "status", "paid_at", "created_at", "updated_at"]),
+    ("library_reservations", &["id", "school_id", "book_id", "reader_id", "reserved_at", "available_at", "expires_at", "status", "queue_position", "notified_at", "fulfilled_at", "loan_id", "notes", "created_at", "updated_at"]),
 ];
 
 // Colonnes booléennes : SQLite les range en 0/1, PostgreSQL attend true/false.
-const BOOLEAN_COLUMNS: &[&str] = &["is_current", "is_mandatory", "is_active", "is_absent"];
+const BOOLEAN_COLUMNS: &[&str] = &["is_current", "is_mandatory", "is_active", "is_absent", "is_reference"];
 
 /// Convertit une valeur SQLite en JSON, en honorant le type booléen attendu.
 fn column_to_json(row: &rusqlite::Row, idx: usize, as_bool: bool) -> rusqlite::Result<serde_json::Value> {
@@ -124,7 +133,7 @@ fn remote_payload(conn: &Connection, table: &str, id: &str) -> Result<serde_json
 }
 
 /// Met une entité locale en file d'attente pour Supabase.
-fn enqueue_entity(conn: &Connection, table: &str, school_id: &str, id: &str) {
+pub(crate) fn enqueue_entity(conn: &Connection, table: &str, school_id: &str, id: &str) {
     if let Ok(payload) = remote_payload(conn, table, id) {
         // `UPSERT` est idempotent (`?on_conflict=id`) : rejouer l'envoi d'une
         // entité déjà présente ne provoque pas d'erreur de doublon.
@@ -332,11 +341,26 @@ pub fn set_local_user_role(user_id: String, school_id: String, role_name: String
 
 
 /// Retourne l'identifiant `staff` correspondant à l'utilisateur connecté.
-/// Le rapprochement se fait via l'email (users.email == staff.email).
+/// Le lien explicite `profiles.staff_id` est prioritaire ; à défaut, on
+/// retombe sur le rapprochement par email (users.email == staff.email).
 /// Un professeur ne peut ainsi accéder qu'à ses propres affectations.
 #[tauri::command]
 pub fn get_current_staff_id(state: State<'_, DbState>, user_id: String, school_id: String) -> Result<Option<String>, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+
+    let linked_staff_id: Option<String> = conn.query_row(
+        "SELECT p.staff_id
+           FROM profiles p
+           JOIN staff s ON s.id = p.staff_id AND s.school_id = p.school_id
+          WHERE p.user_id = ?1 AND p.school_id = ?2 AND p.deleted_at IS NULL
+          LIMIT 1",
+        rusqlite::params![user_id, school_id],
+        |row| row.get::<_, Option<String>>(0),
+    ).unwrap_or(None);
+
+    if linked_staff_id.is_some() {
+        return Ok(linked_staff_id);
+    }
 
     let email: Option<String> = conn.query_row(
         "SELECT email FROM users WHERE id = ?1",
@@ -496,6 +520,18 @@ pub fn get_sync_conflicts(app: tauri::AppHandle) -> Result<Vec<InboxConflict>, S
         .join("orion.sqlite");
 
     crate::sync::get_conflicts_internal(&db_path)
+}
+
+// ──────────────────────────────────────────────
+// COMMANDE : Supprimer TOUS les conflits en attente
+// ──────────────────────────────────────────────
+#[tauri::command]
+pub fn purge_all_sync_conflicts(app: tauri::AppHandle) -> Result<usize, String> {
+    let db_path = app.path().app_data_dir()
+        .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
+        .join("orion.sqlite");
+
+    crate::sync::purge_all_conflicts_internal(&db_path)
 }
 
 // ──────────────────────────────────────────────
@@ -944,6 +980,8 @@ pub fn sync_local_user(
     school_name: String,
     first_name: Option<String>,
     last_name: Option<String>,
+    staff_id: Option<String>,
+    role_name: Option<String>,
     short_name: Option<String>,
     address: Option<String>,
     city: Option<String>,
@@ -1010,6 +1048,36 @@ pub fn sync_local_user(
         |row| row.get(0),
     ).ok();
 
+    // Si le profil cloud ne porte pas encore de staff_id (migration non
+    // appliquée ou compte ancien), on rapproche par email au sein de l'école.
+    // Pour un compte DIRECTION dont l'email de connexion diffère de celui du
+    // personnel, on rattache la fiche du responsable (matricule *-P-0001).
+    let resolved_staff_id: Option<String> = match staff_id.as_deref() {
+        Some(s) if !s.trim().is_empty() => staff_id.clone(),
+        _ => {
+            let by_email: Option<String> = conn.query_row(
+                "SELECT id FROM staff
+                  WHERE school_id = ?1 AND email IS NOT NULL
+                    AND lower(email) = lower(?2)
+                  LIMIT 1",
+                rusqlite::params![school_id, email],
+                |row| row.get(0),
+            ).ok();
+            if by_email.is_some() || !role_name.as_deref().unwrap_or("").eq_ignore_ascii_case("DIRECTION") {
+                by_email
+            } else {
+                conn.query_row(
+                    "SELECT id FROM staff
+                      WHERE school_id = ?1 AND matricule LIKE '%-P-0001'
+                      ORDER BY matricule
+                      LIMIT 1",
+                    rusqlite::params![school_id],
+                    |row| row.get(0),
+                ).ok()
+            }
+        }
+    };
+
     let f_name = first_name
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "Direction".to_string());
@@ -1023,17 +1091,18 @@ pub fn sync_local_user(
                 "UPDATE profiles
                     SET first_name = COALESCE(?1, first_name),
                         last_name  = COALESCE(?2, last_name),
+                        staff_id   = COALESCE(?3, staff_id),
                         updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ?3",
-                rusqlite::params![f_name, l_name, profile_id],
+                  WHERE id = ?4",
+                rusqlite::params![f_name, l_name, resolved_staff_id, profile_id],
             ).map_err(|e| format!("Erreur sync profil: {}", e))?;
         }
         None => {
             let profile_id = format!("prof-{}", user_id);
             conn.execute(
-                "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                rusqlite::params![profile_id, user_id, school_id, f_name, l_name],
+                "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, staff_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                rusqlite::params![profile_id, user_id, school_id, f_name, l_name, resolved_staff_id],
             ).map_err(|e| format!("Erreur création profil: {}", e))?;
         }
     }
@@ -3874,6 +3943,8 @@ pub struct LocalUserInfo {
     pub role_name: Option<String>,
     pub role_id: Option<String>,
     pub profile_id: Option<String>,
+    pub staff_id: Option<String>,
+    pub staff_name: Option<String>,
     pub created_at: String,
 }
 
@@ -3883,9 +3954,11 @@ pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<
 
     let mut stmt = conn.prepare(
         "SELECT u.id, u.email, u.username, u.status, p.first_name, p.last_name, p.phone,
-                r.name as role_name, r.id as role_id, p.id as profile_id, u.created_at
+                r.name as role_name, r.id as role_id, p.id as profile_id, u.created_at,
+                p.staff_id, COALESCE(NULLIF(TRIM(s.nom || ' ' || s.prenoms), ''), NULL) as staff_name
          FROM users u
          LEFT JOIN profiles p ON p.user_id = u.id AND p.school_id = ?1 AND p.deleted_at IS NULL
+         LEFT JOIN staff s ON s.id = p.staff_id AND s.school_id = ?1
          LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ?1
          LEFT JOIN roles r ON r.id = ur.role_id
          WHERE EXISTS (
@@ -3909,6 +3982,8 @@ pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<
             role_id: row.get(8)?,
             profile_id: row.get(9)?,
             created_at: row.get(10)?,
+            staff_id: row.get(11)?,
+            staff_name: row.get(12)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -3957,6 +4032,7 @@ pub fn create_local_user(
     phone: Option<String>,
     role_id: String,
     actor_id: String,
+    staff_id: Option<String>,
     state: State<'_, DbState>
 ) -> Result<LocalUserInfo, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
@@ -3996,6 +4072,36 @@ pub fn create_local_user(
     let password_hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST)
         .map_err(|e| format!("Erreur de hachage du mot de passe: {}", e))?;
 
+    // Résolution du lien avec le personnel : identifiant fourni par
+    // l'interface, sinon rapprochement automatique par email.
+    let mut resolved_staff_id: Option<String> = match staff_id {
+        Some(sid) if !sid.trim().is_empty() => conn.query_row(
+            "SELECT id FROM staff WHERE id = ?1 AND school_id = ?2 LIMIT 1",
+            rusqlite::params![sid, school_id],
+            |row| row.get::<_, String>(0),
+        ).ok(),
+        _ => None,
+    };
+    if resolved_staff_id.is_none() {
+        resolved_staff_id = conn.query_row(
+            "SELECT id FROM staff
+              WHERE school_id = ?1 AND email IS NOT NULL AND lower(email) = lower(?2)
+              LIMIT 1",
+            rusqlite::params![school_id, email],
+            |row| row.get::<_, String>(0),
+        ).ok();
+    }
+    if let Some(sid) = &resolved_staff_id {
+        let already_linked: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM profiles WHERE school_id = ?1 AND staff_id = ?2",
+            rusqlite::params![school_id, sid],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        if already_linked > 0 {
+            return Err("Ce membre du personnel est déjà rattaché à un compte utilisateur.".to_string());
+        }
+    }
+
     let user_id = format!("local-{}", uuid_v4());
     let profile_id = format!("prof-{}", uuid_v4());
     let role_assign_id = format!("ur-{}", uuid_v4());
@@ -4008,9 +4114,9 @@ pub fn create_local_user(
     ).map_err(|e| e.to_string())?;
 
     conn.execute(
-        "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, phone, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-        rusqlite::params![profile_id, user_id, school_id, first_name, last_name, phone, now]
+        "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, phone, staff_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+        rusqlite::params![profile_id, user_id, school_id, first_name, last_name, phone, resolved_staff_id, now]
     ).map_err(|e| e.to_string())?;
 
     conn.execute(
@@ -4024,6 +4130,14 @@ pub fn create_local_user(
         |row| row.get(0)
     ).ok();
 
+    let staff_name: Option<String> = resolved_staff_id.as_ref().and_then(|sid| {
+        conn.query_row(
+            "SELECT NULLIF(TRIM(nom || ' ' || prenoms), '') FROM staff WHERE id = ?1",
+            rusqlite::params![sid],
+            |row| row.get::<_, Option<String>>(0),
+        ).ok().flatten()
+    });
+
     Ok(LocalUserInfo {
         user_id,
         email,
@@ -4035,6 +4149,8 @@ pub fn create_local_user(
         role_name,
         role_id: Some(role_id),
         profile_id: Some(profile_id),
+        staff_id: resolved_staff_id,
+        staff_name,
         created_at: now,
     })
 }
@@ -4365,7 +4481,8 @@ mod finance_tests {
         crate::db::run_migrations(&conn).unwrap();
 
         conn.execute_batch(
-            "INSERT INTO academic_years (id, school_id, name, status, is_current)
+            "INSERT INTO schools (id, name) VALUES ('school-1', 'École de test');
+             INSERT INTO academic_years (id, school_id, name, status, is_current)
              VALUES ('y1', 'school-1', '2025-2026', 'ACTIVE', 1);
              INSERT INTO classes (id, school_id, academic_year_id, name, level)
              VALUES ('c1', 'school-1', 'y1', '6ème A', '6ème'),

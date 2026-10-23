@@ -35,7 +35,7 @@ const SYNC_STATE_ID: &str = "local-device";
 
 /// Tables parentes dont l'insertion doit précéder celle des enfants,
 /// sinon PostgreSQL rejette l'enfant sur une violation de clé étrangère.
-const DEPENDENCY_ORDER: [(&str, u8); 12] = [
+const DEPENDENCY_ORDER: [(&str, u8); 20] = [
     ("schools", 0),
     ("academic_years", 1),
     ("classes", 2),
@@ -49,6 +49,15 @@ const DEPENDENCY_ORDER: [(&str, u8); 12] = [
     ("class_subjects", 7),
     ("teacher_assignments", 7),
     ("grades", 8),
+    // Session 6 — Module bibliothèque
+    ("library_categories", 9),
+    ("library_books", 10),
+    ("library_readers", 10),
+    ("library_copies", 11),
+    ("library_loans", 12),
+    ("library_returns", 13),
+    ("library_penalties", 13),
+    ("library_reservations", 13),
 ];
 
 // ──────────────────────────────────────────────
@@ -370,7 +379,7 @@ async fn process_inbox(
     // `enrollment_history` n'a pas de `updated_at` côté Supabase : son
     // horodatage est `changed_at`. Utiliser `updated_at` partout produisait
     // une erreur 400 sur cette table.
-    let tables: [(&str, &str); 7] = [
+    let tables: [(&str, &str); 15] = [
         ("academic_years", "updated_at"),
         ("classes", "updated_at"),
         ("students", "updated_at"),
@@ -378,6 +387,15 @@ async fn process_inbox(
         ("enrollment_history", "changed_at"),
         ("fee_structures", "updated_at"),
         ("payments", "updated_at"),
+        // Session 6 — Module bibliothèque (l'ordre suit les clés étrangères)
+        ("library_categories", "updated_at"),
+        ("library_books", "updated_at"),
+        ("library_readers", "updated_at"),
+        ("library_copies", "updated_at"),
+        ("library_loans", "updated_at"),
+        ("library_returns", "updated_at"),
+        ("library_penalties", "updated_at"),
+        ("library_reservations", "updated_at"),
     ];
 
     let mut degraded: Vec<String> = Vec::new();
@@ -675,6 +693,260 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
                 ],
             ).map_err(|e| e.to_string())?;
         }
+        "library_categories" => {
+            db.execute(
+                "INSERT INTO library_categories (id, school_id, name, code, description, color, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                 ON CONFLICT(id) DO UPDATE SET
+                     name        = excluded.name,
+                     code        = excluded.code,
+                     description = excluded.description,
+                     color       = excluded.color",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "name").unwrap_or_default(),
+                    str_field(payload, "code"),
+                    str_field(payload, "description"),
+                    str_field(payload, "color"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "library_books" => {
+            db.execute(
+                "INSERT INTO library_books (id, school_id, category_id, isbn, title, author, publisher,
+                     publication_year, language, edition, pages, description, shelf_location,
+                     is_reference, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                 ON CONFLICT(id) DO UPDATE SET
+                     category_id      = excluded.category_id,
+                     isbn             = excluded.isbn,
+                     title            = excluded.title,
+                     author           = excluded.author,
+                     publisher        = excluded.publisher,
+                     publication_year = excluded.publication_year,
+                     language         = excluded.language,
+                     edition          = excluded.edition,
+                     pages            = excluded.pages,
+                     description      = excluded.description,
+                     shelf_location   = excluded.shelf_location,
+                     is_reference     = excluded.is_reference",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "category_id"),
+                    str_field(payload, "isbn"),
+                    str_field(payload, "title").unwrap_or_default(),
+                    str_field(payload, "author"),
+                    str_field(payload, "publisher"),
+                    int_field(payload, "publication_year"),
+                    str_field(payload, "language"),
+                    str_field(payload, "edition"),
+                    int_field(payload, "pages"),
+                    str_field(payload, "description"),
+                    str_field(payload, "shelf_location"),
+                    bool_field(payload, "is_reference"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "library_readers" => {
+            db.execute(
+                "INSERT INTO library_readers (id, school_id, reader_type, student_id, staff_id, full_name,
+                     email, phone, card_number, class_name, max_loans, status, registered_at,
+                     expires_at, notes, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                 ON CONFLICT(id) DO UPDATE SET
+                     reader_type   = excluded.reader_type,
+                     full_name     = excluded.full_name,
+                     email         = excluded.email,
+                     phone         = excluded.phone,
+                     card_number   = excluded.card_number,
+                     class_name    = excluded.class_name,
+                     max_loans     = excluded.max_loans,
+                     status        = excluded.status,
+                     registered_at = excluded.registered_at,
+                     expires_at    = excluded.expires_at,
+                     notes         = excluded.notes",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "reader_type").unwrap_or_else(|| "ELEVE".to_string()),
+                    str_field(payload, "student_id"),
+                    str_field(payload, "staff_id"),
+                    str_field(payload, "full_name").unwrap_or_default(),
+                    str_field(payload, "email"),
+                    str_field(payload, "phone"),
+                    str_field(payload, "card_number").unwrap_or_default(),
+                    str_field(payload, "class_name"),
+                    int_field(payload, "max_loans").unwrap_or(3),
+                    str_field(payload, "status").unwrap_or_else(|| "ACTIF".to_string()),
+                    str_field(payload, "registered_at"),
+                    str_field(payload, "expires_at"),
+                    str_field(payload, "notes"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "library_copies" => {
+            db.execute(
+                "INSERT INTO library_copies (id, school_id, book_id, inventory_code, barcode, status,
+                     condition, acquisition_date, acquisition_source, price, location, notes,
+                     created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                 ON CONFLICT(id) DO UPDATE SET
+                     inventory_code     = excluded.inventory_code,
+                     barcode            = excluded.barcode,
+                     status             = excluded.status,
+                     condition          = excluded.condition,
+                     acquisition_date   = excluded.acquisition_date,
+                     acquisition_source = excluded.acquisition_source,
+                     price              = excluded.price,
+                     location           = excluded.location,
+                     notes              = excluded.notes",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "book_id"),
+                    str_field(payload, "inventory_code").unwrap_or_default(),
+                    str_field(payload, "barcode"),
+                    str_field(payload, "status").unwrap_or_else(|| "DISPONIBLE".to_string()),
+                    str_field(payload, "condition"),
+                    str_field(payload, "acquisition_date"),
+                    str_field(payload, "acquisition_source"),
+                    num_field(payload, "price"),
+                    str_field(payload, "location"),
+                    str_field(payload, "notes"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "library_loans" => {
+            db.execute(
+                "INSERT INTO library_loans (id, school_id, copy_id, reader_id, book_id, loan_date,
+                     due_date, returned_at, status, loan_condition, notes, created_by,
+                     created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                 ON CONFLICT(id) DO UPDATE SET
+                     due_date       = excluded.due_date,
+                     returned_at    = excluded.returned_at,
+                     status         = excluded.status,
+                     loan_condition = excluded.loan_condition,
+                     notes          = excluded.notes",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "copy_id"),
+                    str_field(payload, "reader_id"),
+                    str_field(payload, "book_id"),
+                    ts_field(payload, "loan_date"),
+                    ts_field(payload, "due_date"),
+                    str_field(payload, "returned_at"),
+                    str_field(payload, "status").unwrap_or_else(|| "EN_COURS".to_string()),
+                    str_field(payload, "loan_condition"),
+                    str_field(payload, "notes"),
+                    str_field(payload, "created_by"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "library_returns" => {
+            db.execute(
+                "INSERT INTO library_returns (id, school_id, loan_id, copy_id, reader_id, returned_at,
+                     loan_condition, late_days, fine_amount, remarks, handled_by, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+                 ON CONFLICT(id) DO UPDATE SET
+                     returned_at    = excluded.returned_at,
+                     loan_condition = excluded.loan_condition,
+                     late_days      = excluded.late_days,
+                     fine_amount    = excluded.fine_amount,
+                     remarks        = excluded.remarks",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "loan_id"),
+                    str_field(payload, "copy_id"),
+                    str_field(payload, "reader_id"),
+                    ts_field(payload, "returned_at"),
+                    str_field(payload, "loan_condition"),
+                    int_field(payload, "late_days").unwrap_or(0),
+                    num_field(payload, "fine_amount").unwrap_or(0.0),
+                    str_field(payload, "remarks"),
+                    str_field(payload, "handled_by"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "library_penalties" => {
+            db.execute(
+                "INSERT INTO library_penalties (id, school_id, reader_id, loan_id, penalty_type, amount,
+                     days_late, description, status, paid_at, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                 ON CONFLICT(id) DO UPDATE SET
+                     penalty_type = excluded.penalty_type,
+                     amount       = excluded.amount,
+                     days_late    = excluded.days_late,
+                     description  = excluded.description,
+                     status       = excluded.status,
+                     paid_at      = excluded.paid_at",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "reader_id"),
+                    str_field(payload, "loan_id"),
+                    str_field(payload, "penalty_type").unwrap_or_else(|| "RETARD".to_string()),
+                    num_field(payload, "amount").unwrap_or(0.0),
+                    int_field(payload, "days_late").unwrap_or(0),
+                    str_field(payload, "description"),
+                    str_field(payload, "status").unwrap_or_else(|| "EN_ATTENTE".to_string()),
+                    str_field(payload, "paid_at"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "library_reservations" => {
+            db.execute(
+                "INSERT INTO library_reservations (id, school_id, book_id, reader_id, reserved_at,
+                     available_at, expires_at, status, queue_position, notified_at, fulfilled_at,
+                     loan_id, notes, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+                 ON CONFLICT(id) DO UPDATE SET
+                     reserved_at    = excluded.reserved_at,
+                     available_at   = excluded.available_at,
+                     expires_at     = excluded.expires_at,
+                     status         = excluded.status,
+                     queue_position = excluded.queue_position,
+                     notified_at    = excluded.notified_at,
+                     fulfilled_at   = excluded.fulfilled_at,
+                     loan_id        = excluded.loan_id,
+                     notes          = excluded.notes",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "book_id"),
+                    str_field(payload, "reader_id"),
+                    ts_field(payload, "reserved_at"),
+                    str_field(payload, "available_at"),
+                    str_field(payload, "expires_at"),
+                    str_field(payload, "status").unwrap_or_else(|| "EN_ATTENTE".to_string()),
+                    int_field(payload, "queue_position").unwrap_or(1),
+                    str_field(payload, "notified_at"),
+                    str_field(payload, "fulfilled_at"),
+                    str_field(payload, "loan_id"),
+                    str_field(payload, "notes"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
         _ => {
             // Table non gérée → on l'ignore sans faire échouer la sync
             println!("[Inbox] Table '{}' non supportée pour l'upsert.", entity_type);
@@ -735,31 +1007,47 @@ fn load_pending_mutations(db_path: &PathBuf) -> Result<Vec<(String, String, Stri
          ORDER BY
            -- Pour les INSERT/UPSERT : parents d'abord (school → enrollments)
            -- Pour les DELETE : enfants d'abord (enrollments → school)
-           CASE WHEN operation = 'DELETE' THEN
-             CASE entity_type
-               WHEN 'enrollment_history' THEN 0
-               WHEN 'enrollments' THEN 1
-               WHEN 'payments' THEN 1
-               WHEN 'fee_structures' THEN 2
-               WHEN 'students' THEN 3
-               WHEN 'classes' THEN 3
-               WHEN 'academic_years' THEN 4
-               WHEN 'school' THEN 5
-               ELSE 6
-             END
-           ELSE
-             CASE entity_type
-               WHEN 'school' THEN 0
-               WHEN 'academic_years' THEN 1
-               WHEN 'classes' THEN 2
-               WHEN 'students' THEN 3
-               WHEN 'enrollments' THEN 4
-               WHEN 'enrollment_history' THEN 5
-               WHEN 'fee_structures' THEN 6
-               WHEN 'payments' THEN 7
-               ELSE 8
-             END
-           END,
+            CASE WHEN operation = 'DELETE' THEN
+              CASE entity_type
+                WHEN 'enrollment_history' THEN 0
+                WHEN 'library_returns' THEN 0
+                WHEN 'library_penalties' THEN 0
+                WHEN 'library_reservations' THEN 0
+                WHEN 'enrollments' THEN 1
+                WHEN 'payments' THEN 1
+                WHEN 'library_loans' THEN 2
+                WHEN 'fee_structures' THEN 2
+                WHEN 'library_copies' THEN 3
+                WHEN 'library_readers' THEN 3
+                WHEN 'students' THEN 4
+                WHEN 'classes' THEN 4
+                WHEN 'library_books' THEN 5
+                WHEN 'academic_years' THEN 5
+                WHEN 'library_categories' THEN 6
+                WHEN 'school' THEN 7
+                ELSE 8
+              END
+            ELSE
+              CASE entity_type
+                WHEN 'school' THEN 0
+                WHEN 'academic_years' THEN 1
+                WHEN 'classes' THEN 2
+                WHEN 'students' THEN 3
+                WHEN 'enrollments' THEN 4
+                WHEN 'enrollment_history' THEN 5
+                WHEN 'fee_structures' THEN 6
+                WHEN 'payments' THEN 7
+                WHEN 'library_categories' THEN 9
+                WHEN 'library_books' THEN 10
+                WHEN 'library_readers' THEN 10
+                WHEN 'library_copies' THEN 11
+                WHEN 'library_loans' THEN 12
+                WHEN 'library_returns' THEN 13
+                WHEN 'library_penalties' THEN 13
+                WHEN 'library_reservations' THEN 13
+                ELSE 8
+              END
+            END,
            created_at ASC
          LIMIT 20"
     ).map_err(|e| e.to_string())?;
@@ -968,6 +1256,38 @@ fn blocking_parents(db_path: &PathBuf, entity_type: &str) -> Vec<String> {
 
 fn str_field<'a>(payload: &'a Value, key: &str) -> Option<String> {
     payload.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+/// Champ numérique du payload (accepte un entier JSON comme un flottant).
+fn num_field(payload: &Value, key: &str) -> Option<f64> {
+    payload.get(key).and_then(|v| v.as_f64())
+}
+
+/// Champ entier du payload.
+fn int_field(payload: &Value, key: &str) -> Option<i64> {
+    payload
+        .get(key)
+        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+}
+
+/// Champ booléen du payload (PostgreSQL renvoie true/false).
+fn bool_field(payload: &Value, key: &str) -> bool {
+    payload.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// Horodatage du payload, ou l'instant présent si absent.
+fn ts_field(payload: &Value, key: &str) -> String {
+    str_field(payload, key).unwrap_or_else(now_iso)
+}
+
+/// Horodatage ISO courant.
+fn now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    format_iso(secs)
 }
 
 /// Convertit un nombre de jours depuis l'époque Unix en date civile
@@ -1240,4 +1560,13 @@ pub fn resolve_conflict_internal(
     }
 
     Ok(())
+}
+
+/// Supprimer tous les conflits en attente dans l'inbox
+pub fn purge_all_conflicts_internal(db_path: &PathBuf) -> Result<usize, String> {
+    let db = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let deleted = db
+        .execute("DELETE FROM sync_inbox WHERE status = 'CONFLICT'", [])
+        .map_err(|e| e.to_string())?;
+    Ok(deleted)
 }

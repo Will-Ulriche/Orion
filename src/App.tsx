@@ -18,7 +18,7 @@ import Pedagogie from './pages/Pedagogie';
 import RecapNotes from './pages/RecapNotes';
 import Personnel from './pages/Personnel';
 import Archives from './pages/Archives';
-import VieScolaire from './pages/VieScolaire';
+import Bibliotheque from './pages/Bibliotheque';
 import PriseEnMain from './pages/PriseEnMain';
 import SuperAdminHome from './pages/superadmin/SuperAdminHome';
 import Ecoles from './pages/superadmin/Ecoles';
@@ -136,16 +136,17 @@ function AppRoutes() {
         <Route path="/super-admin/export" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><ExportSuperAdmin /></RoleProtectedRoute>} />
         
         {/* Réservé à DIRECTION, SECRETAIRE, SUPER_ADMIN */}
-        <Route path="/students" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><StudentsMigration /></RoleProtectedRoute>} />
+        <Route path="/students" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE', 'COMPTABLE']}><StudentsMigration /></RoleProtectedRoute>} />
         <Route path="/classes" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><Classes /></RoleProtectedRoute>} />
         <Route path="/prise-en-main" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><PriseEnMain /></RoleProtectedRoute>} />
         
         {/* Réservé à DIRECTION, SUPER_ADMIN */}
-        <Route path="/finances" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Finances /></RoleProtectedRoute>} />
+        <Route path="/finances" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'COMPTABLE']}><Finances /></RoleProtectedRoute>} />
         <Route path="/personnel" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Personnel /></RoleProtectedRoute>} />
         <Route path="/security" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Security /></RoleProtectedRoute>} />
         <Route path="/settings" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Settings /></RoleProtectedRoute>} />
-                    <Route path="/vie-scolaire" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><VieScolaire /></RoleProtectedRoute>} />
+                    <Route path="/vie-scolaire" element={<Navigate to="/bibliotheque" replace />} />
+                    <Route path="/bibliotheque" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><Bibliotheque /></RoleProtectedRoute>} />
                     <Route path="/archives" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Archives /></RoleProtectedRoute>} />
         <Route path="/sync" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><SyncCenter /></RoleProtectedRoute>} />
         
