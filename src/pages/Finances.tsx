@@ -651,7 +651,7 @@ export default function Finances() {
       )}
 
       {/* Contenu */}
-      <div className="flex flex-col flex-1 min-h-0 pb-6 overflow-hidden">
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {!selectedYear ? (
           <div className="flex flex-col items-center justify-center h-64 text-slate-400">
             <CalendarClock size={48} strokeWidth={1} className="mb-3 opacity-40" />
@@ -661,7 +661,7 @@ export default function Finances() {
           <>
             {/* ─────────── GRILLE TARIFAIRE ─────────── */}
             {activeTab === 'grille' && (
-              <div className="space-y-4">
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1 pb-8 custom-scrollbar">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="bg-white border border-slate-100 rounded-2xl p-4 shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)]">
                     <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Frais globaux</p>
@@ -778,9 +778,9 @@ export default function Finances() {
 
             {/* ─────────── PAIEMENTS ÉLÈVE ─────────── */}
             {activeTab === 'paiements' && (
-              <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
+              <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 flex-1 min-h-0 overflow-y-auto lg:overflow-hidden pb-4">
                 {/* Liste des élèves */}
-                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col lg:overflow-hidden">
+                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col min-h-0 lg:h-full lg:overflow-hidden">
                   <div className="sticky top-0 z-10 shrink-0 bg-white rounded-t-2xl p-4 border-b border-slate-100 space-y-3">
                     <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
                       <Users size={15} className="text-[#4f46e5]" /> Élèves inscrits
@@ -809,7 +809,7 @@ export default function Finances() {
                       <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                     </div>
                   </div>
-                  <div className="max-h-[520px] overflow-y-auto overflow-x-hidden overscroll-contain rounded-b-2xl custom-scrollbar lg:max-h-none lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+                  <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain rounded-b-2xl custom-scrollbar max-h-[480px] lg:max-h-none">
                     {filteredStudents.length === 0 ? (
                       <p className="p-8 text-center text-slate-400 text-sm">Aucun élève inscrit.</p>
                     ) : (
@@ -834,7 +834,7 @@ export default function Finances() {
                 </div>
 
                 {/* Situation de l'élève */}
-                <div className="space-y-4 max-h-[70vh] overflow-y-auto overscroll-contain pr-2 custom-scrollbar lg:max-h-none lg:min-h-0 lg:overflow-y-auto lg:pb-4">
+                <div className="space-y-4 min-h-0 lg:h-full overflow-y-auto overscroll-contain pr-2 pb-6 custom-scrollbar">
                   {!selectedStudent ? (
                     <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center h-64 text-slate-400">
                       <UserX size={40} strokeWidth={1} className="mb-3 opacity-40" />
@@ -996,7 +996,7 @@ export default function Finances() {
                   <p className="text-sm">Aucune donnée financière disponible.</p>
                 </div>
               ) : (
-                <div className="space-y-4">
+                <div className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1 pb-8 custom-scrollbar">
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
                     <div className="bg-white border border-slate-100 rounded-2xl p-4 shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)]">
                       <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
