@@ -1746,12 +1746,12 @@ function PanelProfesseurs({ schoolId, yearId }: { schoolId: string; yearId: stri
   const loadClassSubjectsForStaff = useCallback(async () => {
     if (!yearId) return;
     try {
-      const all: ClassSubject[] = [];
-      for (const cls of classes) {
-        const cs = await invoke<ClassSubject[]>('get_class_subjects', { schoolId, academicYearId: yearId, classId: cls.id });
-        all.push(...cs);
-      }
-      setClassSubjects(all);
+      const results = await Promise.all(
+        classes.map(cls =>
+          invoke<ClassSubject[]>('get_class_subjects', { schoolId, academicYearId: yearId, classId: cls.id })
+        )
+      );
+      setClassSubjects(results.flat());
     } catch (e: any) { setError(String(e)); }
   }, [schoolId, yearId, classes]);
 

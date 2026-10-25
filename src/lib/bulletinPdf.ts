@@ -216,24 +216,19 @@ export const appreciationFor = (v: number | null): string => {
   return 'Insuffisant';
 };
 
-/** Note absente → 0 (règle du bulletin). */
-const nz = (v: number | null): number =>
-  v === null || Number.isNaN(v) ? 0 : v;
-
-/** Moyenne d'une matière : (interro + devoir + compo) ÷ 3, note absente = 0. */
-const subjectAverage = (s: BulletinSubjectRow): number =>
-  (nz(s.interro) + nz(s.devoir) + nz(s.compo)) / 3;
 
 /**
- * Totaux du tableau : total des (moyenne matière × coef) et somme des coefs.
+ * Totaux du tableau : total des (moyenne matière × coef) et somme des coefs des matières évaluées.
  * La moyenne trimestrielle affichée = total général ÷ somme des coefs.
  */
 const computeTotals = (subjects: BulletinSubjectRow[]) => {
   let totalGeneral = 0;
   let totalCoefs = 0;
   for (const s of subjects) {
-    totalGeneral += subjectAverage(s) * s.coefficient;
-    totalCoefs += s.coefficient;
+    if (s.average !== null && !Number.isNaN(s.average)) {
+      totalGeneral += s.average * s.coefficient;
+      totalCoefs += s.coefficient;
+    }
   }
   return { totalGeneral, totalCoefs };
 };
@@ -307,7 +302,7 @@ const drawHeader = (doc: jsPDF, bulletin: BulletinData, school: ReceiptSchoolInf
   doc.setFont('times', 'bold');
   doc.setFontSize(10.98);
   doc.setTextColor(...MARRON);
-  const name = winAnsi((school.name || 'ORION COLLEGE EXPERIENCE').toUpperCase());
+  const name = winAnsi((school.name || 'ÉTABLISSEMENT').toUpperCase());
   centered(doc, name, CENTER_X, HEAD_BASELINES[4]);
 
   // Filet bordeaux sous l'en-tête.
@@ -423,12 +418,12 @@ const drawTable = (doc: jsPDF, bulletin: BulletinData): void => {
     };
 
     cell(fmtCoeff(s.coefficient), 1, true);
-    cell(fmt(nz(s.interro)), 2);
-    cell(fmt(nz(s.devoir)), 3);
-    cell(fmt(nz(s.compo)), 4);
-    // Moyenne de la matière = (interro + devoir + compo) ÷ 3 (note absente = 0).
-    cell(fmt(subjectAverage(s)), 5, true);
-    cell(fmt(subjectAverage(s) * s.coefficient), 6);
+    cell(fmt(s.interro), 2);
+    cell(fmt(s.devoir), 3);
+    cell(fmt(s.compo), 4);
+    // Moyenne de la matière = somme des évaluations faites ÷ nombre d'évaluations faites
+    cell(fmt(s.average), 5, true);
+    cell(s.average !== null ? fmt(s.average * s.coefficient) : '--', 6);
 
     // Rang avec exposant « e ».
     if (s.rank !== null) {
@@ -443,7 +438,7 @@ const drawTable = (doc: jsPDF, bulletin: BulletinData): void => {
     // Appréciation automatique selon la moyenne de la matière (barème officiel).
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.49);
-    const appr = winAnsi(appreciationFor(subjectAverage(s)));
+    const appr = winAnsi(s.average !== null ? appreciationFor(s.average) : '—');
     fitSize(doc, appr, COLS[8][1] - COLS[8][0] - 8, 8.49, 6);
     centered(doc, truncate(doc, appr, COLS[8][1] - COLS[8][0] - 8), (COLS[8][0] + COLS[8][1]) / 2, baseline);
   });

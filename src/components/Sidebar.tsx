@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   PieChart,
-  Settings, PanelLeftClose, PanelLeftOpen, Users, GraduationCap, RefreshCw, Coins, BookOpen, UserCog, Archive, Shield, ClipboardList,
+  Settings, PanelLeftClose, Users, GraduationCap, RefreshCw, Coins, BookOpen, UserCog, Archive, Shield, ClipboardList,
   LayoutDashboard, Building2, KeyRound, MonitorSmartphone, WifiOff, ShieldCheck, BarChart2, FileSpreadsheet, Rocket,
   Sparkles, School
 } from 'lucide-react';
@@ -11,7 +11,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { useNetwork } from '../hooks/useNetwork';
 import { useUpdater } from '../contexts/UpdateContext';
 import YearSelector from './YearSelector';
-import orionLogo from '../assets/orion_logo.png';
 import { listSchools, listLicenses, listDevices } from '../lib/superAdminApi';
 
 // Remplacement des icônes pour coller exactement au style "piqowallet" 
@@ -72,10 +71,26 @@ export default function Sidebar() {
       return;
     }
     let cancelled = false;
-    invoke<any>('get_school_settings', { schoolId })
-      .then(s => { if (!cancelled && s?.name) setSchoolName(s.name); })
-      .catch(() => {});
-    return () => { cancelled = true; };
+    const fetchName = () => {
+      invoke<any>('get_school_settings', { schoolId })
+        .then(s => { if (!cancelled && s?.name) setSchoolName(s.name); })
+        .catch(() => {});
+    };
+    fetchName();
+
+    const handleSettingsUpdated = (e: any) => {
+      if (!inSchoolMode) {
+        if (e.detail?.name) setSchoolName(e.detail.name);
+        else fetchName();
+      }
+    };
+    window.addEventListener('orion:school-settings-updated', handleSettingsUpdated);
+    window.addEventListener('orion:school-changed', fetchName);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('orion:school-settings-updated', handleSettingsUpdated);
+      window.removeEventListener('orion:school-changed', fetchName);
+    };
   }, [inSchoolMode, forcedSchoolName, schoolId]);
 
   const handleExitSchoolMode = () => {
@@ -116,7 +131,7 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`app-sidebar flex flex-col transition-all duration-300 ease-in-out m-1.5 sm:m-2.5 lg:m-4 mr-0 rounded-2xl sm:rounded-3xl relative overflow-hidden shrink-0 ${collapsed ? 'app-sidebar--collapsed' : ''}`}
+      className={`app-sidebar flex flex-col transition-[width] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] m-1.5 sm:m-2.5 lg:m-4 mr-0 rounded-2xl sm:rounded-3xl relative overflow-hidden shrink-0 ${collapsed ? 'app-sidebar--collapsed' : ''}`}
       style={{
         width: collapsed ? '80px' : '260px',
         backgroundColor: '#2b2a33',
@@ -124,50 +139,40 @@ export default function Sidebar() {
       }}
     >
       {/* MacOS Window Controls & Collapse Button */}
-      <div className="flex items-center justify-end px-[var(--sb-gutter)] pt-[var(--sb-v)] pb-[var(--sb-v-sm)]">
+      <div className={`flex items-center ${collapsed ? 'justify-center px-0' : 'justify-end px-[var(--sb-gutter)]'} pt-[var(--sb-v)] pb-[var(--sb-v-sm)] transition-all duration-300`}>
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="w-6 h-6 border border-[#44434c] rounded-md flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-[#383742] transition-colors"
           title={collapsed ? "Agrandir le menu" : "Réduire le menu"}
         >
-          {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
+          <PanelLeftClose
+            size={13}
+            className={`transition-transform duration-300 ease-in-out ${collapsed ? 'rotate-180' : 'rotate-0'}`}
+          />
         </button>
       </div>
 
-      {/* Logo */}
-      <div className="px-[var(--sb-gutter)] pt-[var(--sb-v)] pb-[var(--sb-v)]">
-        <div className={`flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-[var(--sb-v)] py-[var(--sb-v-sm)] ${collapsed ? 'justify-center px-2' : ''}`}>
-          <img
-            src={orionLogo}
-            alt="Orion"
-            className="h-[var(--sb-logo)] w-[var(--sb-logo)] flex-shrink-0 object-contain"
-          />
-          {!collapsed && (
-            <span className="text-[length:var(--sb-logo-text)] text-slate-200 font-medium tracking-wide">
-              Orion <span className="font-light italic">Exp</span>
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Nom de l'établissement — sous le logo (masqué pour le SUPER_ADMIN) */}
+      {/* Nom de l'établissement (masqué pour le SUPER_ADMIN) */}
       {!isSuperAdmin && (
-        <div className={`px-[var(--sb-gutter)] pt-[var(--sb-v)] pb-[var(--sb-v)] ${collapsed ? 'flex justify-center px-0' : ''}`}>
-          {collapsed ? (
+        <div className="px-[var(--sb-gutter)] pt-[var(--sb-v-sm)] pb-[var(--sb-v-sm)] transition-all duration-300">
+          <div className={`flex items-center transition-all duration-300 ${collapsed ? 'justify-center' : ''}`}>
             <span
-              className="flex h-[var(--sb-logo)] w-[var(--sb-logo)] items-center justify-center rounded-xl bg-white/5 text-[length:var(--sb-item-font)] font-bold text-slate-300"
+              className="flex h-[var(--sb-logo)] w-[var(--sb-logo)] shrink-0 items-center justify-center rounded-xl bg-white/5 text-[length:var(--sb-item-font)] font-bold text-slate-300 transition-all duration-300"
               title={schoolName || "Nom de l'établissement"}
             >
               {(schoolName || 'E').charAt(0).toUpperCase()}
             </span>
-          ) : (
-            <div className="min-w-0">
-              <p className="text-[length:var(--sb-label-font)] font-bold uppercase tracking-[0.2em] text-slate-500">Établissement</p>
-              <p className="mt-0.5 truncate text-[length:var(--sb-item-font)] font-semibold text-slate-100" title={schoolName || "Nom de l'établissement"}>
+            <div
+              className={`min-w-0 flex-1 overflow-hidden transition-all duration-300 ease-in-out ${
+                collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-[170px] opacity-100 ml-3'
+              }`}
+            >
+              <p className="text-[length:var(--sb-label-font)] font-bold uppercase tracking-[0.2em] text-slate-500 whitespace-nowrap">Établissement</p>
+              <p className="mt-0.5 truncate text-[length:var(--sb-item-font)] font-semibold text-slate-100 whitespace-nowrap" title={schoolName || "Nom de l'établissement"}>
                 {schoolName || "Nom de l'établissement"}
               </p>
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -175,14 +180,20 @@ export default function Sidebar() {
 
       {/* Mode visite d'un établissement : retour possible à l'espace super admin */}
       {inSchoolMode && (
-        <div className={`pt-[var(--sb-v-sm)] pb-[var(--sb-v-sm)] ${collapsed ? 'px-2' : 'px-[var(--sb-gutter)]'}`}>
+        <div className="px-2 pt-[var(--sb-v-sm)] pb-[var(--sb-v-sm)] transition-all duration-300">
           <button
             onClick={handleExitSchoolMode}
             title="Quitter l'espace de l'établissement et revenir à l'espace super administrateur"
-            className={`w-full flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 py-[var(--sb-v-sm)] text-[length:var(--sb-label-font)] font-semibold text-amber-300 hover:bg-amber-400/20 transition-colors ${collapsed ? 'justify-center px-0' : 'px-3'}`}
+            className={`w-full flex items-center rounded-xl border border-amber-400/30 bg-amber-400/10 py-[var(--sb-v-sm)] text-[length:var(--sb-label-font)] font-semibold text-amber-300 hover:bg-amber-400/20 transition-colors ${collapsed ? 'justify-center px-0' : 'px-3 gap-2'}`}
           >
             <ShieldCheck size={14} className="flex-shrink-0" />
-            {!collapsed && <span className="truncate">Retour espace super admin</span>}
+            <div
+              className={`overflow-hidden transition-all duration-300 ease-in-out ${
+                collapsed ? 'max-w-0 opacity-0' : 'max-w-[170px] opacity-100'
+              }`}
+            >
+              <span className="truncate whitespace-nowrap">Retour espace super admin</span>
+            </div>
           </button>
         </div>
       )}
@@ -194,13 +205,19 @@ export default function Sidebar() {
       )}
 
       {/* Navigation */}
-      <nav className={`flex-1 min-h-0 py-[var(--sb-v-sm)] overflow-hidden flex flex-col gap-[var(--sb-v)] ${isSuperAdmin ? 'mt-[var(--sb-v)]' : ''}`}>
+      <nav className={`flex-1 min-h-0 py-[var(--sb-v-sm)] custom-sidebar-scroll flex flex-col ${collapsed ? 'gap-1' : 'gap-[var(--sb-v)]'} ${isSuperAdmin ? 'mt-[var(--sb-v)]' : ''}`}>
 
         {/* MANAGE Section */}
-        <div className="mb-[var(--sb-v)]">
-          <p className={`mt-[var(--sb-v)] text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
-            {sectionLabel}
-          </p>
+        <div className="mb-1 transition-all duration-300">
+          <div
+            className={`overflow-hidden transition-all duration-300 ease-in-out ${
+              collapsed ? 'max-h-0 opacity-0 mb-0' : 'max-h-8 opacity-100 mb-[var(--sb-v)]'
+            }`}
+          >
+            <p className="mt-[var(--sb-v)] text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] px-[var(--sb-nav-px)] whitespace-nowrap">
+              {sectionLabel}
+            </p>
+          </div>
           <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
             {mainItems.map((item) => (
               <NavItem key={item.to} item={item} collapsed={collapsed} />
@@ -210,10 +227,23 @@ export default function Sidebar() {
 
         {/* SETTINGS Section — masquée pour le super administrateur */}
         {!isSuperAdmin && visibleSettingsItems.length > 0 && (
-          <div className="mt-[var(--sb-v)]">
-            <p className={`text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] mb-[var(--sb-v)] ${collapsed ? 'text-center' : 'px-[var(--sb-nav-px)]'}`}>
-              ADMINISTRATION
-            </p>
+          <div className="transition-all duration-300">
+            <div
+              className={`overflow-hidden transition-all duration-300 ease-in-out ${
+                collapsed ? 'max-h-0 opacity-0 my-0' : 'max-h-8 opacity-100 mt-[var(--sb-v)] mb-[var(--sb-v)]'
+              }`}
+            >
+              <p className="text-[length:var(--sb-label-font)] font-bold text-slate-500 tracking-[0.2em] px-[var(--sb-nav-px)] whitespace-nowrap">
+                ADMINISTRATION
+              </p>
+            </div>
+            <div
+              className={`overflow-hidden transition-all duration-300 ease-in-out ${
+                collapsed ? 'max-h-6 opacity-100 my-2.5' : 'max-h-0 opacity-0 my-0'
+              }`}
+            >
+              <div className="mx-auto w-8 border-t border-white/10" title="Administration" />
+            </div>
             <div className="flex flex-col gap-[var(--sb-nav-gap)] relative">
               {visibleSettingsItems.map((item) => (
                 <NavItem key={item.to} item={item} collapsed={collapsed} />
@@ -224,8 +254,8 @@ export default function Sidebar() {
 
       </nav>
 
-      {/* Tag de version au pied du menu — stable sans déformation de la sidebar */}
-      <div className={`sb-version py-[var(--sb-v-sm)] ${collapsed ? 'flex justify-center px-0' : 'px-[var(--sb-gutter)]'}`}>
+      {/* Tag de version au pied du menu */}
+      <div className={`sb-version py-[var(--sb-v-sm)] px-[var(--sb-gutter)] transition-all duration-300 flex ${collapsed ? 'justify-center' : 'justify-start'}`}>
         <button
           onClick={() => {
             openModal();
@@ -233,13 +263,11 @@ export default function Sidebar() {
               checkForUpdates(false);
             }
           }}
-          className={`flex items-center gap-2 text-[length:var(--sb-label-font)] font-mono text-slate-400 hover:text-slate-200 transition-colors py-[var(--sb-v-sm)] cursor-pointer ${
-            collapsed ? 'justify-center' : ''
-          }`}
+          className="flex items-center text-[length:var(--sb-label-font)] font-mono text-slate-400 hover:text-slate-200 transition-colors py-[var(--sb-v-sm)] cursor-pointer"
           title="Vérifier les mises à jour logicielles"
         >
           <span
-            className={`w-2 h-2 rounded-full flex-shrink-0 ${
+            className={`w-2 h-2 rounded-full flex-shrink-0 transition-transform duration-300 ${
               status === 'available' || status === 'downloaded'
                 ? 'bg-blue-400 animate-pulse'
                 : status === 'checking'
@@ -247,8 +275,12 @@ export default function Sidebar() {
                 : 'bg-emerald-500'
             }`}
           />
-          {!collapsed && (
-            <span className="flex items-center gap-1.5">
+          <div
+            className={`flex items-center overflow-hidden transition-all duration-300 ease-in-out ${
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-[160px] opacity-100 ml-2'
+            }`}
+          >
+            <span className="flex items-center gap-1.5 whitespace-nowrap">
               <span>Orion v{currentVersion}</span>
               {(status === 'available' || status === 'downloaded') && (
                 <span className="px-1.5 py-0.5 rounded text-[9px] font-sans font-bold bg-blue-500/25 text-blue-300 border border-blue-500/40">
@@ -256,7 +288,7 @@ export default function Sidebar() {
                 </span>
               )}
             </span>
-          )}
+          </div>
         </button>
       </div>
 
@@ -427,7 +459,7 @@ function UserProfileMenu({
       <button
         id="sidebar-profile-btn"
         onClick={() => setOpen((v) => !v)}
-        className={`w-full flex items-center gap-[var(--sb-icon-gap)] px-[var(--sb-gutter)] py-[var(--sb-profile-py)] transition-all duration-150 group ${collapsed ? 'justify-center px-0' : ''}`}
+        className={`w-full flex items-center px-[var(--sb-gutter)] transition-all duration-300 group ${collapsed ? 'justify-center py-2' : 'py-[var(--sb-profile-py)]'}`}
         style={{
           borderTop: '1px solid rgba(255,255,255,0.05)',
           backgroundColor: open ? 'rgba(255,255,255,0.05)' : 'transparent',
@@ -442,7 +474,7 @@ function UserProfileMenu({
       >
         {/* Avatar avec indicateur de statut */}
         <div className="relative flex-shrink-0">
-          <div className="w-[var(--sb-avatar)] h-[var(--sb-avatar)] rounded-full bg-slate-600 overflow-hidden border border-slate-500">
+          <div className="w-[var(--sb-avatar)] h-[var(--sb-avatar)] rounded-full bg-slate-600 overflow-hidden border border-slate-500 transition-all duration-300">
             <img
               src={session?.user?.user_metadata?.avatar_url || `https://api.dicebear.com/7.x/notionists/svg?seed=${displayName}&backgroundColor=e2e8f0`}
               alt="avatar"
@@ -455,29 +487,31 @@ function UserProfileMenu({
           />
         </div>
 
-        {!collapsed && (
-          <>
-            <div className="min-w-0 flex-1 text-left">
-              <p className="text-[length:var(--sb-item-font)] font-medium text-slate-200 truncate capitalize group-hover:text-slate-100 transition-colors">
-                {displayName}
-              </p>
-              <p className="text-[length:var(--sb-label-font)] text-slate-500 truncate">{email}</p>
-            </div>
+        <div
+          className={`flex items-center flex-1 min-w-0 overflow-hidden transition-all duration-300 ease-in-out ${
+            collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-[180px] opacity-100 ml-3'
+          }`}
+        >
+          <div className="min-w-0 flex-1 text-left">
+            <p className="text-[length:var(--sb-item-font)] font-medium text-slate-200 truncate capitalize group-hover:text-slate-100 transition-colors whitespace-nowrap">
+              {displayName}
+            </p>
+            <p className="text-[length:var(--sb-label-font)] text-slate-500 truncate whitespace-nowrap">{email}</p>
+          </div>
 
-            {/* Chevron animé */}
-            <svg
-              width="14" height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              className="flex-shrink-0 text-slate-600 group-hover:text-slate-400 transition-all duration-200"
-              style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }}
-            >
-              <polyline points="18 15 12 9 6 15" />
-            </svg>
-          </>
-        )}
+          {/* Chevron animé */}
+          <svg
+            width="14" height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            className="flex-shrink-0 text-slate-600 group-hover:text-slate-400 transition-all duration-200 ml-1"
+            style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }}
+          >
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+        </div>
       </button>
 
       <style>{`
@@ -496,35 +530,48 @@ function NavItem({ item, collapsed }: { item: any; collapsed: boolean }) {
     <NavLink
       to={item.to}
       end={item.end ?? item.to === '/'}
+      title={collapsed ? item.label : undefined}
       className={() =>
-        `relative flex items-center gap-[var(--sb-icon-gap)] py-[var(--sb-item-py)] ${collapsed ? 'justify-center px-0' : 'px-[var(--sb-nav-px)]'} transition-all duration-200 group`
+        `relative flex items-center py-[var(--sb-item-py)] ${
+          collapsed ? 'justify-center px-0' : 'px-[var(--sb-nav-px)]'
+        } transition-all duration-300 ease-in-out group`
       }
     >
       {({ isActive }) => (
         <>
           {/* Indicateur actif */}
           {isActive && (
-            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-6 bg-white rounded-r-full" />
+            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-6 bg-white rounded-r-full transition-all duration-300" />
           )}
 
           <item.icon
             size={18}
             strokeWidth={isActive ? 2.5 : 2}
-            className={`flex-shrink-0 ${isActive ? 'text-slate-100' : 'text-slate-500 group-hover:text-slate-300'}`}
+            className={`flex-shrink-0 transition-all duration-200 group-hover:scale-110 ${
+              isActive ? 'text-slate-100' : 'text-slate-500 group-hover:text-slate-300'
+            }`}
           />
 
-          {!collapsed && (
-            <span className={`text-[length:var(--sb-item-font)] truncate flex-1 min-w-0 ${isActive ? 'text-slate-100 font-medium' : 'text-slate-500 group-hover:text-slate-300'}`}>
+          <div
+            className={`flex items-center flex-1 min-w-0 overflow-hidden transition-all duration-300 ease-in-out ${
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-[200px] opacity-100 ml-[var(--sb-icon-gap)]'
+            }`}
+          >
+            <span
+              className={`text-[length:var(--sb-item-font)] truncate whitespace-nowrap transition-colors duration-200 ${
+                isActive ? 'text-slate-100 font-medium' : 'text-slate-500 group-hover:text-slate-300'
+              }`}
+            >
               {item.label}
             </span>
-          )}
 
-          {/* Badge */}
-          {!collapsed && item.badge && (
-            <div className="ml-auto bg-[#3b82f6] text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full">
-              {item.badge}
-            </div>
-          )}
+            {/* Badge */}
+            {item.badge && (
+              <div className="ml-auto bg-[#3b82f6] text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full shrink-0">
+                {item.badge}
+              </div>
+            )}
+          </div>
         </>
       )}
     </NavLink>

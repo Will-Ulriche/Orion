@@ -148,16 +148,13 @@ export default function Classes() {
     if (!selectedYear) return;
     setLoading(true);
     try {
-      const data = await invoke<Class[]>('get_classes', { schoolId, academicYearId: selectedYear.id });
+      const [data, allPeriods] = await Promise.all([
+        invoke<Class[]>('get_classes', { schoolId, academicYearId: selectedYear.id }),
+        invoke<GradingPeriod[]>('get_grading_periods', {
+          schoolId, academicYearId: selectedYear.id, classId: null,
+        }),
+      ]);
       setClasses(data);
-      // Charger les périodes de CHAQUE classe pour l'affichage dans le tableau
-      const allPeriods: GradingPeriod[] = [];
-      for (const cls of data) {
-        const ps = await invoke<GradingPeriod[]>('get_grading_periods', {
-          schoolId, academicYearId: selectedYear.id, classId: cls.id,
-        });
-        allPeriods.push(...ps);
-      }
       setClassPeriods(allPeriods);
     } catch (e: any) {
       setError(e.toString());

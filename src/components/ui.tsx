@@ -851,7 +851,7 @@ export function AnimatedSelect({
   const hasValue = Boolean(value);
 
   return (
-    <div ref={ref} className={cx('relative', className)}>
+    <div ref={ref} className={cx('relative min-w-[160px]', className)}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
@@ -863,7 +863,7 @@ export function AnimatedSelect({
           hasValue ? 'text-slate-800' : 'text-slate-400',
         )}
       >
-        <span className="truncate">{selectedLabel || placeholder}</span>
+        <span className="truncate mr-2">{selectedLabel || placeholder}</span>
         <ChevronDown
           size={14}
           className={cx(

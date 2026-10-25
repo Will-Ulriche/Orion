@@ -128,6 +128,7 @@ export interface NominalListDocOptions {
   pages: NominalListClassData[];
   assets: NominalListAssets;
   groupLabel: string;
+  schoolName?: string;
   documentType?: 'nominative' | 'notes';
   subjectName?: string;
 }
@@ -268,9 +269,10 @@ function drawPage(doc: jsPDF, page: NominalListPage, assets: NominalListAssets, 
   // Bande libre entre le logo et « CLASSE : » : le titre est centré sur le repère
   // du modèle à l'espacement naturel (comme la liste de présence) ; seul le
   // corps baisse s'il déborde de la bande.
-  fitSize(doc, TEXT.brand.label, TITLE_BAND.right - TITLE_BAND.left, TEXT.brand.size, 10);
-  const brandW = doc.getTextWidth(TEXT.brand.label);
-  doc.text(TEXT.brand.label, TEXT.brand.center - brandW / 2, TEXT.brand.baseline);
+  const brandLabel = (opts.schoolName || TEXT.brand.label).toUpperCase();
+  fitSize(doc, brandLabel, TITLE_BAND.right - TITLE_BAND.left, TEXT.brand.size, 10);
+  const brandW = doc.getTextWidth(brandLabel);
+  doc.text(brandLabel, TEXT.brand.center - brandW / 2, TEXT.brand.baseline);
 
   doc.setTextColor(0, 0, 0);
   useFont(doc, 'serif');

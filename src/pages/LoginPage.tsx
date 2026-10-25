@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { isCloudManagedUserId, verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation';
-import { Shield, UserCircle2, KeyRound, Loader2, X, Eye, EyeOff, Globe, ArrowRight } from 'lucide-react';
+import { UserCircle2, KeyRound, Loader2, X, Eye, EyeOff, Globe, ArrowRight } from 'lucide-react';
+import orionLogo from '../assets/orion_logo.png';
 
 interface LoginResult {
   user_id: string;
@@ -88,8 +89,8 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
 
         {/* Left Side - Branding */}
         <div className="hidden lg:flex w-1/2 flex-col justify-center px-16 relative z-10">
-          <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-sky-500 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/20 mb-8">
-            <Shield className="text-white" size={32} />
+          <div className="w-20 h-20 rounded-2xl flex items-center justify-center p-2.5 bg-white/80 border border-slate-200/80 shadow-lg shadow-indigo-500/10 mb-8 backdrop-blur-sm">
+            <img src={orionLogo} alt="Orion" className="w-full h-full object-contain" />
           </div>
           <h1 className="text-5xl font-bold text-slate-800 mb-6 leading-tight">
             Bienvenue sur <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-sky-600">Orion</span>

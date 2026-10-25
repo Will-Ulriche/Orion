@@ -7,6 +7,7 @@ import {
   type StudentIdentityData,
 } from '../lib/studentIdentityPdf';
 import type { ReceiptSchoolInfo } from '../lib/receiptPdf';
+import { getCurrentSchoolId } from '../contexts/AuthContext';
 
 const deaccent = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 
@@ -67,6 +68,19 @@ export default function StudentIdentityModal({
   const [busy, setBusy] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [freshSchool, setFreshSchool] = useState<ReceiptSchoolInfo>(school);
+
+  useEffect(() => {
+    setFreshSchool(school);
+  }, [school]);
+
+  useEffect(() => {
+    invoke<Partial<ReceiptSchoolInfo>>('get_school_settings', { schoolId: getCurrentSchoolId() })
+      .then(s => {
+        if (s) setFreshSchool(prev => ({ ...prev, ...s }));
+      })
+      .catch(() => {});
+  }, []);
 
   // ── Classes de l'onglet (filtrimax par recherche) — une seule sélectionnable ──
   const grouped = useMemo(() => {
@@ -204,7 +218,7 @@ export default function StudentIdentityModal({
     const timer = setTimeout(() => {
       if (cancelled) return;
       try {
-        const doc = buildStudentIdentityPdf({ students: details, school });
+        const doc = buildStudentIdentityPdf({ students: details, school: freshSchool });
         const blob = doc.output('blob');
         const url = URL.createObjectURL(blob);
         revokePreviewUrl();
@@ -223,7 +237,7 @@ export default function StudentIdentityModal({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [details, loadingDetails, school, onError]);
+  }, [details, loadingDetails, freshSchool, onError]);
 
   // Dernière URL de l'aperçu : révoquée au démontage du modal.
   useEffect(() => () => {

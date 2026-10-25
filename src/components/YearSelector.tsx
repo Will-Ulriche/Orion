@@ -43,24 +43,30 @@ export default function YearSelector({ collapsed }: { collapsed: boolean }) {
   }
 
   return (
-    <div className={`relative px-6 py-2 border-b border-[#44434c] ${collapsed ? 'flex justify-center px-0' : ''}`}>
+    <div className={`relative py-1.5 border-b border-[#44434c] transition-all duration-300 ${collapsed ? 'px-2' : 'px-4'}`}>
       <div className="group relative">
-        <button className="flex items-center gap-3 w-full p-2 rounded-xl hover:bg-[#383742] transition-colors text-left">
+        <button
+          className={`flex items-center w-full p-2 rounded-xl hover:bg-[#383742] transition-colors text-left ${collapsed ? 'justify-center' : ''}`}
+          title={collapsed ? `${selectedYear.name} (${getStatusLabel(selectedYear.status)})` : undefined}
+        >
           <div className="relative flex-shrink-0">
             <CalendarDays size={18} className="text-slate-300" />
             <div className={`absolute -bottom-1 -right-1 w-2.5 h-2.5 rounded-full border-2 border-[#2b2a33] ${getStatusColor(selectedYear.status)}`} />
           </div>
           
-          {!collapsed && (
+          <div
+            className={`flex items-center flex-1 min-w-0 overflow-hidden transition-all duration-300 ease-in-out ${
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-[170px] opacity-100 ml-3'
+            }`}
+          >
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-slate-200 truncate">{selectedYear.name}</p>
-              <p className="text-[10px] font-bold text-slate-500 tracking-wider mt-0.5">
+              <p className="text-sm font-medium text-slate-200 truncate whitespace-nowrap">{selectedYear.name}</p>
+              <p className="text-[10px] font-bold text-slate-500 tracking-wider mt-0.5 whitespace-nowrap">
                 {getStatusLabel(selectedYear.status)}
               </p>
             </div>
-          )}
-          
-          {!collapsed && <ChevronDown size={14} className="text-slate-500 flex-shrink-0" />}
+            <ChevronDown size={14} className="text-slate-500 flex-shrink-0 ml-1" />
+          </div>
         </button>
 
         {/* Dropdown Menu (Hover based for simplicity, in real app use click/headless UI) */}

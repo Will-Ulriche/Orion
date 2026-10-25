@@ -50,7 +50,7 @@ export const IMAGES = {
 
 export const TEXT = {
   brand: {
-    label: 'ORION COLLEGE EXPERIENCE',
+    label: 'ÉTABLISSEMENT',
     size: 20,
     baseline: 41.8,
     /**

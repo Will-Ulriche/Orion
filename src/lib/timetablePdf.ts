@@ -1,7 +1,7 @@
 import { jsPDF } from 'jspdf';
 import logoAsset from '../assets/orion_logo.png';
-import qrAsset from '../assets/orion_qr.png';
 import watermarkAsset from '../assets/orion_watermark_blue.png';
+import { generateTimetableQr } from './timetableQr';
 import {
   BORDER, BORDER_SHIFT, BREAK, BREAK_FILL, COL_EDGES, DAYS, GFT, HOURS,
   HOUR_BASELINES, HOUR_FILL, HOUR_SIZE, HEADER, IMAGES, PAGE, ROW_EDGES, SUBJECT,
@@ -31,8 +31,9 @@ type Style = 'normal' | 'bold' | 'italic';
 
 export interface TimetableAssets {
   logo: string;
-  qr: string;
   watermark: string;
+  /** QR optionnel — non utilisé pour le chargement statique (remplacé par génération dynamique). */
+  qr?: string;
 }
 
 export type { TimetableGridData };
@@ -75,8 +76,8 @@ let assetsPromise: Promise<TimetableAssets> | null = null;
  */
 export function loadTimetableAssets(): Promise<TimetableAssets> {
   if (!assetsPromise) {
-    assetsPromise = Promise.all([toDataUrl(logoAsset), toDataUrl(qrAsset), toDataUrl(watermarkAsset)])
-      .then(([logo, qr, watermark]) => ({ logo, qr, watermark }))
+    assetsPromise = Promise.all([toDataUrl(logoAsset), toDataUrl(watermarkAsset)])
+      .then(([logo, watermark]) => ({ logo, watermark }))
       .catch(err => {
         assetsPromise = null; // nouvel essai à la prochaine ouverture
         throw err;
@@ -129,7 +130,7 @@ const lastCol = COL_EDGES[COL_EDGES.length - 1];
  * Dessine la page complète : images de marque, titres, encadré G / F / T,
  * trame du tableau, cases, puis filigrane (au-dessus de tout, comme le modèle).
  */
-function drawPage(doc: jsPDF, opts: TimetablePdfOptions): void {
+function drawPage(doc: jsPDF, opts: TimetablePdfOptions, qrDataUrl: string): void {
   const { className, teacherName, boyCount, girlCount, grid, assets } = opts;
   const totalCount = (boyCount ?? 0) + (girlCount ?? 0);
 
@@ -147,13 +148,27 @@ function drawPage(doc: jsPDF, opts: TimetablePdfOptions): void {
   } catch (e) {
     doc.addImage(assets.logo, 'PNG', IMAGES.logo.x, IMAGES.logo.y, IMAGES.logo.w, IMAGES.logo.h, undefined, 'FAST');
   }
-  doc.addImage(assets.qr, 'PNG', IMAGES.qr.x, IMAGES.qr.y, IMAGES.qr.w, IMAGES.qr.h, undefined, 'FAST');
+
+  // ── QR dynamique généré pour cet emploi du temps ──
+  if (qrDataUrl) {
+    try {
+      doc.addImage(qrDataUrl, 'PNG', IMAGES.qr.x, IMAGES.qr.y, IMAGES.qr.w, IMAGES.qr.h, undefined, 'FAST');
+    } catch {
+      // QR non critique : on continue sans
+    }
+  }
 
   // ── Bandeau : marque (bleue, centrée) + titre souligné ──
   useFont(doc, 'sans', 'bold');
-  doc.setFontSize(TEXT.brand.size);
+  const brandLabel = (opts.schoolName || TEXT.brand.label).toUpperCase();
+  // Réduit le corps si le nom est plus long que la zone disponible (~500 pt).
+  const brandMaxW = 500;
+  for (let s = TEXT.brand.size; s > 10; s -= 0.25) {
+    doc.setFontSize(s);
+    if (doc.getTextWidth(brandLabel) <= brandMaxW) break;
+  }
   doc.setTextColor(...(TEXT.brand.color as unknown as [number, number, number]));
-  doc.text(TEXT.brand.label, TEXT.brand.center, TEXT.brand.baseline, { align: 'center' });
+  doc.text(brandLabel, TEXT.brand.center, TEXT.brand.baseline, { align: 'center' });
 
   doc.setTextColor(0, 0, 0);
   useFont(doc, 'serif');
@@ -277,13 +292,24 @@ function drawPage(doc: jsPDF, opts: TimetablePdfOptions): void {
 }
 
 /** Construit le document : une page A4 paysage, aux dimensions exactes du modèle. */
-export function buildTimetablePdf(opts: TimetablePdfOptions): jsPDF {
+export async function buildTimetablePdf(opts: TimetablePdfOptions): Promise<jsPDF> {
+  // Génère le QR unique pour cet emploi du temps
+  const qrDataUrl = await generateTimetableQr({
+    schoolName: opts.schoolName,
+    className: opts.className,
+    yearName: opts.yearName,
+    teacherName: opts.teacherName,
+    boyCount: opts.boyCount,
+    girlCount: opts.girlCount,
+    grid: opts.grid,
+  }).catch(() => ''); // QR non critique
+
   const doc = new jsPDF({ unit: 'pt', format: FORMAT, orientation: 'landscape' });
   doc.setProperties({
     title: `Emploi du temps — ${opts.className}`,
     subject: `${opts.schoolName} — ${opts.yearName}`,
   });
-  drawPage(doc, opts);
+  drawPage(doc, opts, qrDataUrl);
   return doc;
 }
 

@@ -10,6 +10,7 @@ interface PresenceListModalProps {
   classes: NominalListClassInput[];
   groupLabel: string;
   yearName: string;
+  schoolName?: string;
   onClose: () => void;
   onError: (message: string) => void;
   onSuccess?: (message: string) => void;
@@ -21,7 +22,7 @@ const deaccent = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '
 const clampZoom = (z: number) => Math.min(3, Math.max(0.3, Math.round(z * 100) / 100));
 
 export default function PresenceListModal({
-  classes, groupLabel, yearName, onClose, onError, onSuccess,
+  classes, groupLabel, yearName, schoolName: propSchoolName, onClose, onError, onSuccess,
 }: PresenceListModalProps) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -68,16 +69,26 @@ export default function PresenceListModal({
   const [previewing, setPreviewing] = useState(false);
   const pdfBytesRef = useRef<Uint8Array | null>(null);
   const [logoUrl, setLogoUrl] = useState<string | undefined>();
-  const [schoolName, setSchoolName] = useState<string>("ORION COLLEGE EXPERIENCE");
+  const [schoolName, setSchoolName] = useState<string>(propSchoolName || '');
   const [zoom, setZoom] = useState(1);
+
+  useEffect(() => {
+    if (propSchoolName) setSchoolName(propSchoolName);
+  }, [propSchoolName]);
 
   useEffect(() => {
     // Modèle PDF déjà en cache → le 1er aperçu ne re-fetch/re-parse pas.
     preloadPresenceTemplate();
+    // Toujours recharger les paramètres depuis la DB pour avoir le nom à jour,
+    // même si propSchoolName était déjà fourni (il peut contenir l'ancien nom).
     invoke<any>('get_school_settings', { schoolId: getCurrentSchoolId() }).then(s => {
       if (s && s.logo_url) setLogoUrl(s.logo_url);
       if (s && s.name) setSchoolName(s.name);
-    }).catch(() => {});
+    }).catch(() => {
+      // Repli sur la prop si la DB est inaccessible
+      if (propSchoolName) setSchoolName(propSchoolName);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Aperçu : le PDF réel (mêmes octets que le fichier téléchargé) ─────────

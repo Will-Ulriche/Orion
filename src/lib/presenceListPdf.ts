@@ -166,7 +166,7 @@ export const buildPresenceListPdf = async (
   _groupLabel: string,
   yearName: string,
   logoDataUrl?: string,
-  schoolName: string = 'ORION COLLEGE EXPERIENCE'
+  schoolName: string = ''
 ): Promise<Uint8Array> => {
   // Modèle : 1ʳᵉ appelée = fetch + parse (~400 ms), suivantes = cache mémoire.
   const srcDoc = await getTemplate();
@@ -245,7 +245,7 @@ export const buildPresenceListPdf = async (
       pdfPage.drawRectangle({ x: 200, y: 545, width: 460, height: 35, color: rgb(1, 1, 1) });
       
       // ── Nouveau Titre ──
-      const rawTitle = (schoolName || 'ORION COLLEGE EXPERIENCE').toUpperCase();
+      const rawTitle = (schoolName || 'ÉTABLISSEMENT').toUpperCase();
       const titleLabel = winAnsi(rawTitle);
       const titleFont = bold;
       // Largeur de la page A4 paysage est 841.92 pt. Centre exact: 420.96

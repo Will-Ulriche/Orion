@@ -391,6 +391,7 @@ export default function StudentsMigration() {
           onChange={setFilterLevel}
           placeholder="Tous les niveaux"
           options={levels.map(l => ({ value: l, label: l }))}
+          className="w-48 shrink-0"
         />
 
         <AnimatedSelect
@@ -398,6 +399,7 @@ export default function StudentsMigration() {
           onChange={setFilterClass}
           placeholder="Toutes les classes"
           options={classes.map(c => ({ value: c.id, label: c.name }))}
+          className="w-52 shrink-0"
         />
       </div>
 

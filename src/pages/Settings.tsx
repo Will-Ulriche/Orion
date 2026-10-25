@@ -213,6 +213,13 @@ export default function Settings() {
       setStatus({ type: 'success', msg: 'Modifications enregistrées' });
       setTimeout(() => setStatus(null), 4000);
 
+      // Notification globale dans l'application pour mettre à jour instantanément
+      // la Sidebar, les Archives, les Finances et les fichiers générés (PDFs).
+      window.dispatchEvent(new CustomEvent('orion:school-settings-updated', {
+        detail: { schoolId, settings: formData, name: formData.name }
+      }));
+      window.dispatchEvent(new Event('orion:school-changed'));
+
       // Propagation best-effort vers le cloud : la direction et la
       // super-administration partagent ainsi les mêmes informations.
       if (schoolId && schoolId !== 'school-1') {

@@ -56,9 +56,10 @@ const LINE: [number, number, number] = [203, 213, 225];
 const BRAND: [number, number, number] = [14, 116, 144];
 const BRAND_LIGHT: [number, number, number] = [36, 200, 219];
 
-const PAGE_W = 210;
-const MARGIN = 14;
-const CONTENT_W = PAGE_W - MARGIN * 2;
+const PAGE_W = 210;   // A5 paysage : largeur 210 mm
+const PAGE_H = 148;   // A5 paysage : hauteur 148 mm
+const MARGIN = 10;
+const CONTENT_W = PAGE_W - MARGIN * 2; // 190 mm
 
 const UNITS = [
   'zéro', 'un', 'deux', 'trois', 'quatre', 'cinq', 'six', 'sept', 'huit', 'neuf',
@@ -221,73 +222,70 @@ export function buildReceiptPdf(opts: BuildReceiptOptions): jsPDF {
   const currency = school.currency || 'XOF';
   const cancelled = payment.status === 'CANCELLED';
 
-  const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+  const doc = new jsPDF({ unit: 'mm', format: 'a5', orientation: 'landscape' });
   doc.setProperties({
     title: `Reçu ${payment.receipt_number}`,
     subject: `Paiement de ${student.last_name} ${student.first_name}`,
   });
 
   // ── Bandeau d'en-tête ────────────────────────────────────────
-  const headerH = 30;
+  const headerH = 18;
   doc.setFillColor(...BRAND);
   doc.rect(0, 0, PAGE_W, headerH, 'F');
   doc.setFillColor(...BRAND_LIGHT);
   doc.rect(0, headerH - 1.2, PAGE_W, 1.2, 'F');
 
   let textLeft = MARGIN;
-  if (school.logo_url && addImageSafe(doc, school.logo_url, MARGIN, 5.5, 19, 19)) {
-    textLeft = MARGIN + 24;
+  if (school.logo_url && addImageSafe(doc, school.logo_url, MARGIN, 2, 14, 14)) {
+    textLeft = MARGIN + 19;
   }
 
-  const headW = 118;
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(14);
+  doc.setFontSize(12);
   doc.setTextColor(255, 255, 255);
-  doc.text(doc.splitTextToSize(school.name || 'Établissement', headW) as string[], textLeft, 10.5);
+  doc.text(doc.splitTextToSize(school.name || 'Établissement', PAGE_W - textLeft - MARGIN - 50) as string[], textLeft, 6.5);
 
   doc.setFont('helvetica', 'italic');
-  doc.setFontSize(7.5);
+  doc.setFontSize(6.5);
   doc.setTextColor(219, 234, 254);
   const sub: string[] = [];
-  if (school.ministry_name) {
-    sub.push(...school.ministry_name.split('\n'));
-  }
+  if (school.ministry_name) sub.push(...school.ministry_name.split('\n'));
   const loc = [school.address, school.city, school.country].filter(Boolean).join(', ');
   if (loc) sub.push(loc);
   if (school.phone || school.email) sub.push([school.phone, school.email].filter(Boolean).join(' · '));
-  doc.text(sub, textLeft, 16.5);
+  doc.text(sub, textLeft, 10.5);
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(13);
-  doc.setTextColor(255, 255, 255);
-  doc.text('REÇU DE PAIEMENT', PAGE_W - MARGIN, 10, { align: 'right' });
-  doc.setFont('courier', 'bold');
   doc.setFontSize(11);
-  doc.text(payment.receipt_number, PAGE_W - MARGIN, 16, { align: 'right' });
+  doc.setTextColor(255, 255, 255);
+  doc.text('REÇU DE PAIEMENT', PAGE_W - MARGIN, 6.5, { align: 'right' });
+  doc.setFont('courier', 'bold');
+  doc.setFontSize(9);
+  doc.text(payment.receipt_number, PAGE_W - MARGIN, 10.5, { align: 'right' });
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
+  doc.setFontSize(6.5);
   doc.setTextColor(219, 234, 254);
-  doc.text(`Année scolaire ${academicYearName}`, PAGE_W - MARGIN, 21, { align: 'right' });
+  doc.text(`Année scolaire ${academicYearName}`, PAGE_W - MARGIN, 14.5, { align: 'right' });
 
-  let y = headerH + 10;
+  let y = headerH + 4;
 
   // ── Bandeau d'annulation ─────────────────────────────────────
   if (cancelled) {
     doc.setFillColor(254, 242, 242);
     doc.setDrawColor(220, 38, 38);
     doc.setLineWidth(0.4);
-    doc.roundedRect(MARGIN, y, CONTENT_W, 12, 1.5, 1.5, 'FD');
+    doc.roundedRect(MARGIN, y, CONTENT_W, 10, 1.5, 1.5, 'FD');
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
+    doc.setFontSize(9);
     doc.setTextColor(185, 28, 28);
-    doc.text('REÇU ANNULÉ', MARGIN + 5, y + 5);
+    doc.text('REÇU ANNULÉ', MARGIN + 4, y + 4);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
+    doc.setFontSize(7);
     doc.text(
-      doc.splitTextToSize(`Motif : ${payment.cancel_reason || 'non précisé'}`, CONTENT_W - 10) as string[],
-      MARGIN + 5, y + 9,
+      doc.splitTextToSize(`Motif : ${payment.cancel_reason || 'non précisé'}`, CONTENT_W - 8) as string[],
+      MARGIN + 4, y + 7.5,
     );
-    y += 18;
+    y += 14;
   }
 
   // ── Bloc identité élève / paiement ────────────────────────────
@@ -301,10 +299,10 @@ export function buildReceiptPdf(opts: BuildReceiptOptions): jsPDF {
   let ry = y;
   for (const [label, value] of rightValues) {
     ry = labelValue(doc, label, value, rightX, ry, colW);
-    ry += 4.6;
+    ry += 4;
   }
 
-  y = Math.max(y + 13, ry) + 2;
+  y = Math.max(y + 11, ry) + 2;
 
   const secondRow: [string, string, number][] = [
     ['Classe', student.class_name || '—', MARGIN],
@@ -314,65 +312,64 @@ export function buildReceiptPdf(opts: BuildReceiptOptions): jsPDF {
   for (const [label, value, x] of secondRow) {
     labelValue(doc, label, value, x, y, colW / 2);
   }
-  y += 13;
+  y += 11;
 
   // ── Détail du règlement ──────────────────────────────────────
   autoTable(doc, {
     startY: y,
     margin: { left: MARGIN, right: MARGIN },
-    head: [['Désignation', 'Type', 'Échéance', 'Attendu', 'Payé']],
+    head: [['Désignation', 'Date', 'Mode', 'Montant', 'Référence']],
     body: [[
       payment.fee_name || 'Acompte / paiement libre',
-      payment.fee_type_label,
-      formatDate(payment.fee_due_date),
-      payment.fee_expected != null ? formatMoney(payment.fee_expected, currency) : '—',
+      formatDate(payment.payment_date),
+      payment.payment_method,
       formatMoney(payment.amount, currency),
+      payment.reference || '—',
     ]],
     theme: 'grid',
     styles: {
       font: 'helvetica',
-      fontSize: 9,
-      cellPadding: 2.4,
+      fontSize: 7.5,
+      cellPadding: 1.6,
       lineColor: LINE,
       lineWidth: 0.2,
       textColor: INK,
       overflow: 'linebreak',
     },
-    headStyles: { fillColor: BRAND, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
-    // La somme des largeurs doit égaler CONTENT_W, sinon autoTable laisse
-    // la différence non allouée et tronque la table.
+    headStyles: { fillColor: BRAND, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7 },
+    // La somme des largeurs doit égaler CONTENT_W (190 mm en A5 paysage).
     columnStyles: {
-      0: { cellWidth: 70, fontStyle: 'bold' },
+      0: { cellWidth: 55, fontStyle: 'bold' },
       1: { cellWidth: 30 },
-      2: { cellWidth: 26 },
-      3: { cellWidth: 28, halign: 'right' },
-      4: { cellWidth: 28, halign: 'right', fontStyle: 'bold', textColor: BRAND },
+      2: { cellWidth: 32 },
+      3: { cellWidth: 35, halign: 'right' },
+      4: { cellWidth: 38, halign: 'right', fontStyle: 'bold', textColor: BRAND },
     },
   });
 
-  y = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 7;
+  y = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
 
   // ── Montant en lettres ───────────────────────────────────────
   const wordsLines = doc.splitTextToSize(
     `${amountToFrenchWords(payment.amount, currency)}.`, CONTENT_W - 8,
   ) as string[];
-  const wordsH = Math.max(14, 9 + wordsLines.length * 4.4);
+  const wordsH = Math.max(12, 8 + wordsLines.length * 4);
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(...LINE);
   doc.setLineWidth(0.2);
   doc.roundedRect(MARGIN, y, CONTENT_W, wordsH, 1.5, 1.5, 'FD');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.5);
+  doc.setFontSize(7);
   doc.setTextColor(...MUTED);
-  doc.text('MONTANT EN LETTRES', MARGIN + 4, y + 5);
+  doc.text('MONTANT EN LETTRES', MARGIN + 4, y + 4);
   doc.setFont('helvetica', 'italic');
-  doc.setFontSize(10);
+  doc.setFontSize(9);
   doc.setTextColor(...INK);
-  doc.text(wordsLines, MARGIN + 4, y + 10.5);
-  y += wordsH + 6;
+  doc.text(wordsLines, MARGIN + 4, y + 8);
+  y += wordsH + 5;
 
-  // ── Totaux ───────────────────────────────────────────────────
-  const boxW = 84;
+  // ── Situation + totaux (côte à côte) ─────────────────────────
+  const boxW = 80;
   const boxX = PAGE_W - MARGIN - boxW;
   const rows: [string, string][] = [
     ['Montant du présent reçu', formatMoney(payment.amount, currency)],
@@ -382,99 +379,88 @@ export function buildReceiptPdf(opts: BuildReceiptOptions): jsPDF {
   ];
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
+  doc.setFontSize(7.5);
   doc.setTextColor(...INK);
   doc.text('SITUATION DE L\'ÉLÈVE', MARGIN, y + 4);
 
   const statusText = totals.status === 'SOLDE' ? 'COMPTE À JOUR'
     : totals.status === 'PARTIEL' ? 'PAIEMENT PARTIEL' : 'IMPAYÉ';
-  stamp(doc, statusText, MARGIN, y + 7, 46, 9);
+  stamp(doc, statusText, MARGIN, y + 6.5, 42, 8);
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
+  doc.setFontSize(6.5);
   doc.setTextColor(...MUTED);
-  doc.text(doc.splitTextToSize('Situation arrêtée à la date d\'édition du présent reçu.', 52) as string[], MARGIN, y + 21);
+  doc.text(doc.splitTextToSize('Situation arrêtée à la date d\'édition du reçu.', 48) as string[], MARGIN, y + 16);
 
   doc.setDrawColor(...LINE);
   doc.setFillColor(248, 250, 252);
   doc.setLineWidth(0.2);
-  doc.roundedRect(boxX, y, boxW, 10 + rows.length * 7.5, 1.5, 1.5, 'FD');
+  doc.roundedRect(boxX, y, boxW, 8 + rows.length * 6.5, 1.5, 1.5, 'FD');
 
-  let ty = y + 8;
+  let ty = y + 6;
   rows.forEach(([label, value], i) => {
     const isMain = i === 0;
     doc.setFont('helvetica', isMain ? 'bold' : 'normal');
-    doc.setFontSize(isMain ? 9.5 : 8.5);
+    doc.setFontSize(isMain ? 8 : 7);
     doc.setTextColor(...(isMain ? BRAND : MUTED));
     doc.text(label, boxX + 4, ty);
     doc.setTextColor(...(isMain ? BRAND : INK));
     doc.setFont('helvetica', 'bold');
     doc.text(value, boxX + boxW - 4, ty, { align: 'right' });
-    ty += 7.5;
+    ty += 6.5;
   });
 
-  y += 10 + rows.length * 7.5 + 12;
+  y += 8 + rows.length * 6.5 + 8;
 
-  // ── Observations ─────────────────────────────────────────────
-  // Borné à 4 lignes : au-delà, le bloc empiéterait sur la zone des signatures.
+  // ── Observations (borné à 3 lignes) ──────────────────────────
   if (payment.notes) {
     const allLines = doc.splitTextToSize(payment.notes, CONTENT_W) as string[];
-    const notesLines = allLines.length > 4
-      ? [...allLines.slice(0, 4).slice(0, -1), `${allLines[3].slice(0, -1)}…`]
+    const notesLines = allLines.length > 3
+      ? [...allLines.slice(0, 3).slice(0, -1), `${allLines[2].slice(0, -1)}…`]
       : allLines;
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.5);
+    doc.setFontSize(7);
     doc.setTextColor(...MUTED);
     doc.text('OBSERVATIONS', MARGIN, y);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
+    doc.setFontSize(7.5);
     doc.setTextColor(...INK);
-    doc.text(notesLines, MARGIN, y + 4.5);
-    y += 5.5 + notesLines.length * 4.2;
+    doc.text(notesLines, MARGIN, y + 4);
+    y += 5 + notesLines.length * 3.8;
   }
 
   // ── Signatures ───────────────────────────────────────────────
-  const sigY = Math.min(Math.max(y, 214), 236);
+  // Forcée dans la bande basse de la page A5 paysage pour rester visible.
+  const sigY = Math.min(Math.max(y, PAGE_H - 42), PAGE_H - 30);
   const sigW = (CONTENT_W - 12) / 3;
   const sigLabels = ["L'élève / le tuteur", 'Le Comptable', school.head_title || 'Le Directeur'];
   sigLabels.forEach((label, i) => {
     const x = MARGIN + i * (sigW + 6);
     if (i === 2 && school.signature_url) {
-      addImageSafe(doc, school.signature_url, x + sigW / 2 - 17, sigY - 1, 34, 13);
+      addImageSafe(doc, school.signature_url, x + sigW / 2 - 14, sigY - 1, 26, 10);
     }
     doc.setDrawColor(...LINE);
     doc.setLineWidth(0.3);
-    doc.line(x, sigY + 14, x + sigW, sigY + 14);
+    doc.line(x, sigY + 11, x + sigW, sigY + 11);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
+    doc.setFontSize(7);
     doc.setTextColor(...MUTED);
     const caption = i === 2 && school.head_name ? `${label}\n${school.head_name}` : label;
-    doc.text(doc.splitTextToSize(caption, sigW) as string[], x + sigW / 2, sigY + 18, { align: 'center' });
+    doc.text(doc.splitTextToSize(caption, sigW) as string[], x + sigW / 2, sigY + 14.5, { align: 'center' });
   });
 
   // ── Cachet officiel ──────────────────────────────────────────
   if (school.stamp_url) {
-    addImageSafe(doc, school.stamp_url, PAGE_W - MARGIN - 30, sigY - 3, 30, 30, 0.35);
-  }
-
-  // ── Slogan ───────────────────────────────────────────────────
-  if (school.slogan) {
-    doc.setFont('helvetica', 'italic');
-    doc.setFontSize(7.5);
-    doc.setTextColor(...BRAND);
-    doc.text(
-      doc.splitTextToSize(school.slogan, 90) as string[],
-      MARGIN, Math.min(sigY + 22, 268),
-    );
+    addImageSafe(doc, school.stamp_url, PAGE_W - MARGIN - 26, sigY - 2, 24, 24, 0.35);
   }
 
   // ── Pied de page ─────────────────────────────────────────────
-  const footY = 282;
+  const footY = PAGE_H - 5;
   doc.setDrawColor(...LINE);
   doc.setLineWidth(0.2);
-  doc.line(MARGIN, footY - 5, PAGE_W - MARGIN, footY - 5);
+  doc.line(MARGIN, footY - 4, PAGE_W - MARGIN, footY - 4);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7);
+  doc.setFontSize(6);
   doc.setTextColor(...MUTED);
   const idLine = [
     school.short_name,
@@ -483,10 +469,10 @@ export function buildReceiptPdf(opts: BuildReceiptOptions): jsPDF {
   doc.text(idLine || school.name || '', MARGIN, footY);
   doc.text(`Édité le ${formatDate(new Date().toISOString().slice(0, 10))} par ${printedBy}`, PAGE_W - MARGIN, footY, { align: 'right' });
   doc.setFont('helvetica', 'italic');
-  doc.setFontSize(6.5);
+  doc.setFontSize(6);
   doc.text(
-    'Ce reçu atteste du règlement effectué. Il doit être conservé par l\'élève ou son tuteur.',
-    PAGE_W / 2, footY + 4, { align: 'center' },
+    'Ce reçu atteste du règlement effectué. À conserver par l\'élève ou son tuteur.',
+    PAGE_W / 2, footY + 3.5, { align: 'center' },
   );
 
   return doc;

@@ -106,8 +106,15 @@ pub fn init(app: &AppHandle) -> Result<Connection, String> {
     let db_path = app_dir.join("orion.sqlite");
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     
-    // Activer les clés étrangères pour garantir l'intégrité des données
-    conn.execute("PRAGMA foreign_keys = ON;", []).map_err(|e| e.to_string())?;
+    // Activer les clés étrangères et pragmas de haute performance
+    conn.execute_batch("
+        PRAGMA foreign_keys = ON;
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA cache_size = -64000;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA mmap_size = 268435456;
+    ").map_err(|e| e.to_string())?;
     
     // Exécuter uniquement les migrations non encore appliquées
     run_migrations(&conn)?;

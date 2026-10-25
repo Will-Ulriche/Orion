@@ -200,30 +200,42 @@ export default function Finances() {
   }, [schoolId, selectedYear, loadFees]);
 
   useEffect(() => {
-    invoke<Partial<ReceiptSchoolInfo>>('get_school_settings', { schoolId })
-      .then(s => {
-        if (s?.currency) setCurrency(s.currency);
-        setSchoolInfo({
-          name: s?.name ?? '',
-          short_name: s?.short_name ?? '',
-          ministry_name: s?.ministry_name ?? '',
-          address: s?.address ?? '',
-          city: s?.city ?? '',
-          country: s?.country ?? '',
-          phone: s?.phone ?? '',
-          email: s?.email ?? '',
-          website: s?.website ?? '',
-          registration_number: s?.registration_number ?? '',
-          logo_url: s?.logo_url ?? '',
-          stamp_url: s?.stamp_url ?? '',
-          signature_url: s?.signature_url ?? '',
-          head_title: s?.head_title ?? 'Le Directeur',
-          head_name: s?.head_name ?? '',
-          slogan: s?.slogan ?? '',
-          currency: s?.currency ?? 'XOF',
-        });
-      })
-      .catch(() => { /* devise par défaut */ });
+    const fetchSettings = () => {
+      invoke<Partial<ReceiptSchoolInfo>>('get_school_settings', { schoolId })
+        .then(s => {
+          if (s?.currency) setCurrency(s.currency);
+          setSchoolInfo({
+            name: s?.name ?? '',
+            short_name: s?.short_name ?? '',
+            ministry_name: s?.ministry_name ?? '',
+            address: s?.address ?? '',
+            city: s?.city ?? '',
+            country: s?.country ?? '',
+            phone: s?.phone ?? '',
+            email: s?.email ?? '',
+            website: s?.website ?? '',
+            registration_number: s?.registration_number ?? '',
+            logo_url: s?.logo_url ?? '',
+            stamp_url: s?.stamp_url ?? '',
+            signature_url: s?.signature_url ?? '',
+            head_title: s?.head_title ?? 'Le Directeur',
+            head_name: s?.head_name ?? '',
+            slogan: s?.slogan ?? '',
+            currency: s?.currency ?? 'XOF',
+          });
+        })
+        .catch(() => { /* devise par défaut */ });
+    };
+
+    fetchSettings();
+
+    // Mise à jour automatique quand les paramètres de l'établissement changent
+    window.addEventListener('orion:school-settings-updated', fetchSettings);
+    window.addEventListener('orion:school-changed', fetchSettings);
+    return () => {
+      window.removeEventListener('orion:school-settings-updated', fetchSettings);
+      window.removeEventListener('orion:school-changed', fetchSettings);
+    };
   }, [schoolId]);
 
   useEffect(() => { loadAll(); }, [loadAll]);

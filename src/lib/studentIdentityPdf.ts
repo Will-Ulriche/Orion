@@ -239,7 +239,7 @@ const drawHeader = (doc: jsPDF, student: StudentIdentityData, school: ReceiptSch
   // Nom de l'école (Anton bleu du modèle → Helvetica bold, corps réduit si long).
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...BRAND);
-  const schoolName = winAnsi((school.name || 'ORION COLLEGE EXPERIENCE').toUpperCase());
+  const schoolName = winAnsi((school.name || 'ÉTABLISSEMENT').toUpperCase());
   doc.setFontSize(fitSize(doc, schoolName, X(225.9), 12, 8));
   doc.text(schoolName, X(MINISTRY_CX), Y(89.2), { align: 'center' });
 

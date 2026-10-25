@@ -47,9 +47,12 @@ interface BulletinModalProps {
 
 const PERIOD_LABELS = ['T1', 'T2', 'T3'] as const;
 
-/** Notes i/d/c d'un élève dans une matière (mêmes règles que la liste de notes). */
+/** Notes d'un élève dans une matière : toutes les évaluations faites + détail i/d/c. */
 interface TypeAverages {
-  i: number[]; d: number[]; c: number[];
+  all: number[];
+  i: number[];
+  d: number[];
+  c: number[];
 }
 
 const avg = (arr: number[]): number | null =>
@@ -67,6 +70,19 @@ export default function BulletinModal({
   const [busy, setBusy] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [freshSchool, setFreshSchool] = useState<ReceiptSchoolInfo>(school);
+
+  useEffect(() => {
+    setFreshSchool(school);
+  }, [school]);
+
+  useEffect(() => {
+    invoke<Partial<ReceiptSchoolInfo>>('get_school_settings', { schoolId })
+      .then(s => {
+        if (s) setFreshSchool(prev => ({ ...prev, ...s }));
+      })
+      .catch(() => {});
+  }, [schoolId]);
 
   // ── Classes de l'onglet (une seule sélectionnable) ─────────────────────────
   const grouped = useMemo(() => {
@@ -114,7 +130,15 @@ export default function BulletinModal({
   );
 
 
-  // ── Chargement des données réelles du bulletin ─────────────────────────────
+  // ── Cache des données de la classe entière par période (accélération drastique) ─
+  interface ClassPeriodBundle {
+    period: { id: string; period_order: number; name?: string };
+    classSubjects: { id: string; subject_name: string; coefficient: number }[];
+    rankings: { rank: number; student_id: string; general_average: number | null; appreciation: string }[];
+    gradesPerSubject: { student_id: string; score: number; max_score: number; grade_type_name: string; is_absent?: boolean }[][];
+    homeroom: string | null;
+  }
+  const classCacheRef = useRef(new Map<string, ClassPeriodBundle>());
   const cacheRef = useRef(new Map<string, BulletinData>());
   const [bulletin, setBulletin] = useState<BulletinData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -136,98 +160,140 @@ export default function BulletinModal({
     (async () => {
       try {
         const classId = selectedRow.class_id!;
-        // Période du trimestre choisi (un seul à la fois).
-        const periods = await invoke<{ id: string; period_order: number }[]>('get_grading_periods', {
-          schoolId, academicYearId: yearId, classId,
-        });
-        const period = periods.find(p => p.period_order === periodOrder);
-        if (!period) {
-          if (!cancelled) {
-            setBulletin(null);
-            setLoading(false);
-            onError(`Aucune période « ${PERIOD_LABELS[periodOrder - 1]} » configurée pour cette classe.`);
-          }
-          return;
-        }
-        const [classSubjects, rankings] = await Promise.all([
-          invoke<{ id: string; subject_name: string; coefficient: number }[]>('get_class_subjects', {
+        const classBundleKey = `${classId}:${periodOrder}`;
+        let bundle = classCacheRef.current.get(classBundleKey);
+
+        if (!bundle) {
+          // Période du trimestre choisi (un seul à la fois).
+          const periods = await invoke<{ id: string; period_order: number; name?: string }[]>('get_grading_periods', {
             schoolId, academicYearId: yearId, classId,
-          }),
-          invoke<{
-            rank: number; student_id: string; general_average: number | null; appreciation: string;
-          }[]>('get_class_rankings', {
-            schoolId, academicYearId: yearId, classId, gradingPeriodId: period.id,
-          }).catch(() => []),
-        ]);
-        // ── Règle du bulletin :
-        //  • une note absente vaut 0 ;
-        //  • moyenne d'une matière = (interro + devoir + compo) ÷ 3 ;
-        //  • moyenne trimestrielle = Σ (moyenne matière × coef) ÷ Σ coefs.
+          });
+          const period = periods.find(p => p.period_order === periodOrder);
+          if (!period) {
+            if (!cancelled) {
+              setBulletin(null);
+              setLoading(false);
+              onError(`Aucune période « ${PERIOD_LABELS[periodOrder - 1]} » configurée pour cette classe.`);
+            }
+            return;
+          }
+          const [classSubjects, rankings] = await Promise.all([
+            invoke<{ id: string; subject_name: string; coefficient: number }[]>('get_class_subjects', {
+              schoolId, academicYearId: yearId, classId,
+            }),
+            invoke<{
+              rank: number; student_id: string; general_average: number | null; appreciation: string;
+            }[]>('get_class_rankings', {
+              schoolId, academicYearId: yearId, classId, gradingPeriodId: period.id,
+            }).catch(() => []),
+          ]);
+
+          const gradesPerSubject = await Promise.all(
+            classSubjects.map(cs =>
+              invoke<{
+                student_id: string; score: number; max_score: number; grade_type_name: string; is_absent?: boolean;
+              }[]>('get_grades_by_class', {
+                schoolId, academicYearId: yearId,
+                classSubjectId: cs.id, gradingPeriodId: period.id,
+              })
+            )
+          );
+
+          const homeroom = classes.find(c => c.id === classId)?.homeroom_teacher_name ?? null;
+
+          bundle = {
+            period,
+            classSubjects,
+            rankings,
+            gradesPerSubject,
+            homeroom,
+          };
+          classCacheRef.current.set(classBundleKey, bundle);
+        }
+
+        const { classSubjects, rankings, gradesPerSubject, homeroom } = bundle;
+
+        // ── Règle de calcul :
+        //  • moyenne d'une matière = somme de toutes les évaluations faites ÷ nombre d'évaluations faites ;
+        //  • moyenne générale = Σ (moyenne matière × coef) ÷ Σ coefs des matières évaluées.
         const subjectsRows: BulletinSubjectRow[] = [];
         // Cumul par élève de la classe pour la moyenne générale / le classement.
-        const totalByStudent = new Map<string, number>(
-          classRows.map(r => [r.student_id, 0]),
+        const totalByStudent = new Map<string, { totalPoints: number; totalCoefs: number }>(
+          classRows.map(r => [r.student_id, { totalPoints: 0, totalCoefs: 0 }]),
         );
-        let totalCoefs = 0;
 
-        for (const cs of classSubjects) {
-          const grades = await invoke<{
-            student_id: string; score: number; max_score: number; grade_type_name: string;
-          }[]>('get_grades_by_class', {
-            schoolId, academicYearId: yearId,
-            classSubjectId: cs.id, gradingPeriodId: period.id,
-          });
+        for (let idx = 0; idx < classSubjects.length; idx++) {
+          const cs = classSubjects[idx];
+          const grades = gradesPerSubject[idx];
           const byStudent = new Map<string, TypeAverages>();
           for (const g of grades) {
+            if (g.is_absent) continue; // Absent = non évalué
             let entry = byStudent.get(g.student_id);
-            if (!entry) { entry = { i: [], d: [], c: [] }; byStudent.set(g.student_id, entry); }
+            if (!entry) { entry = { all: [], i: [], d: [], c: [] }; byStudent.set(g.student_id, entry); }
             const scoreOn20 = g.max_score > 0 ? (g.score / g.max_score) * 20 : 0;
+            entry.all.push(scoreOn20);
             const gName = (g.grade_type_name || '').toLowerCase();
-            if (gName.includes('devoir')) entry.d.push(scoreOn20);
-            else if (gName.includes('compo')) entry.c.push(scoreOn20);
+            if (gName.includes('devoir') || gName.includes('d')) entry.d.push(scoreOn20);
+            else if (gName.includes('compo') || gName.includes('c')) entry.c.push(scoreOn20);
             else entry.i.push(scoreOn20);
           }
-          // Moyenne matière par élève : note absente = 0.
-          const meanOf = (t: TypeAverages | undefined): number =>
-            t ? ((avg(t.i) ?? 0) + (avg(t.d) ?? 0) + (avg(t.c) ?? 0)) / 3 : 0;
 
-          totalCoefs += cs.coefficient;
+          // Moyenne de la matière : somme de toutes les évaluations faites ÷ nombre d'évaluations faites
+          const meanOf = (t: TypeAverages | undefined): number | null =>
+            t && t.all.length > 0 ? t.all.reduce((a, b) => a + b, 0) / t.all.length : null;
+
           for (const row of classRows) {
             const m = meanOf(byStudent.get(row.student_id));
-            totalByStudent.set(row.student_id, (totalByStudent.get(row.student_id) ?? 0) + m * cs.coefficient);
+            if (m !== null) {
+              const cur = totalByStudent.get(row.student_id) ?? { totalPoints: 0, totalCoefs: 0 };
+              cur.totalPoints += m * cs.coefficient;
+              cur.totalCoefs += cs.coefficient;
+              totalByStudent.set(row.student_id, cur);
+            }
           }
 
-          // Rang dans la matière : classement sur ces mêmes moyennes.
+          // Rang dans la matière : classement sur ces moyennes parmi les élèves évalués
           const means = classRows.map(row => ({
             id: row.student_id, mean: meanOf(byStudent.get(row.student_id)),
           }));
-          const sorted = [...means].sort((a, b) => b.mean - a.mean);
+          const sorted = means.filter(m => m.mean !== null).sort((a, b) => b.mean! - a.mean!);
           const rankIdx = sorted.findIndex(m => m.id === selectedRow.student_id);
           const own = byStudent.get(selectedRow.student_id);
+          const ownMean = meanOf(own);
 
           subjectsRows.push({
             name: cs.subject_name,
             coefficient: cs.coefficient,
-            interro: own ? avg(own.i) : 0,
-            devoir: own ? avg(own.d) : 0,
-            compo: own ? avg(own.c) : 0,
-            average: meanOf(own),
-            rank: rankIdx >= 0 ? rankIdx + 1 : null,
-            // Appréciation automatique selon la moyenne de la matière (barème officiel).
-            appreciation: appreciationFor(meanOf(own)),
+            interro: own && own.i.length > 0 ? avg(own.i) : null,
+            devoir: own && own.d.length > 0 ? avg(own.d) : null,
+            compo: own && own.c.length > 0 ? avg(own.c) : null,
+            average: ownMean,
+            rank: ownMean !== null && rankIdx >= 0 ? rankIdx + 1 : null,
+            appreciation: ownMean !== null ? appreciationFor(ownMean) : '—',
           });
         }
 
-        // Moyenne générale / classement de la classe (même règle).
-        const generalMeans = classRows.map(row => ({
-          id: row.student_id,
-          mean: totalCoefs > 0 ? (totalByStudent.get(row.student_id) ?? 0) / totalCoefs : 0,
-        }));
-        const generalSorted = [...generalMeans].sort((a, b) => b.mean - a.mean);
-        const ownIdx = generalSorted.findIndex(m => m.id === selectedRow.student_id);
-        const generalAvgs = generalMeans.map(m => m.mean);
+        // Moyenne générale / classement de la classe
+        const generalMeans = classRows.map(row => {
+          const cur = totalByStudent.get(row.student_id);
+          const mean = cur && cur.totalCoefs > 0 ? cur.totalPoints / cur.totalCoefs : null;
+          return { id: row.student_id, mean };
+        });
+        const generalSorted = generalMeans
+          .filter(m => m.mean !== null)
+          .sort((a, b) => b.mean! - a.mean!);
+        const ownRankIdx = generalSorted.findIndex(m => m.id === selectedRow.student_id);
+        const generalAvgs = generalSorted.map(m => m.mean as number);
+        const ownMeanObj = generalMeans.find(m => m.id === selectedRow.student_id);
+        const ownGeneralAvg = ownMeanObj?.mean ?? null;
+
+        const classAverage = generalAvgs.length > 0
+          ? generalAvgs.reduce((a, b) => a + b, 0) / generalAvgs.length
+          : null;
+        const bestAverage = generalAvgs.length > 0 ? generalAvgs[0] : null;
+        const worstAverage = generalAvgs.length > 0 ? generalAvgs[generalAvgs.length - 1] : null;
+
         const ownRanking = rankings.find(r => r.student_id === selectedRow.student_id);
-        const homeroom = classes.find(c => c.id === classId)?.homeroom_teacher_name ?? null;
 
         const data: BulletinData = {
           studentFirstName: selectedRow.first_name,
@@ -237,16 +303,15 @@ export default function BulletinModal({
           periodOrder,
           yearName,
           subjects: subjectsRows,
-          generalAverage: ownIdx >= 0 ? generalSorted[ownIdx].mean : null,
-          rank: ownIdx >= 0 ? ownIdx + 1 : null,
+          generalAverage: ownGeneralAvg,
+          rank: ownGeneralAvg !== null && ownRankIdx >= 0 ? ownRankIdx + 1 : null,
           classSize: classRows.length,
-          classAverage: generalAvgs.length > 0
-            ? generalAvgs.reduce((a, b) => a + b, 0) / generalAvgs.length : null,
-          bestAverage: generalAvgs.length > 0 ? Math.max(...generalAvgs) : null,
-          worstAverage: generalAvgs.length > 0 ? Math.min(...generalAvgs) : null,
+          classAverage,
+          bestAverage,
+          worstAverage,
           // Appréciation globale : texte du conseil s'il existe, sinon le barème.
           globalAppreciation: (ownRanking?.appreciation ?? '').trim()
-            || appreciationFor(ownIdx >= 0 ? generalSorted[ownIdx].mean : null),
+            || appreciationFor(ownGeneralAvg),
           homeroomTeacher: homeroom,
         };
         cacheRef.current.set(cacheKey, data);
@@ -286,11 +351,11 @@ export default function BulletinModal({
 
     let cancelled = false;
     setPreviewing(true);
-    // Court délai : React peint le spinner avant le build jsPDF synchrone.
+    // Rendu quasi-instantané (10ms) pour une réactivité maximale
     const timer = setTimeout(() => {
       if (cancelled) return;
       try {
-        const doc = buildBulletinPdf({ bulletin, school });
+        const doc = buildBulletinPdf({ bulletin, school: freshSchool });
         const blob = doc.output('blob');
         const url = URL.createObjectURL(blob);
         revokePreviewUrl();
@@ -303,13 +368,13 @@ export default function BulletinModal({
       } finally {
         if (!cancelled) setPreviewing(false);
       }
-    }, 150);
+    }, 10);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [bulletin, school, onError]);
+  }, [bulletin, freshSchool, onError]);
 
   // Dernière URL de l'aperçu : révoquée au démontage du modal.
   useEffect(() => () => {

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { useYear } from '../contexts/YearContext';
 import {
-  Archive, BookOpen, GraduationCap, Coins, UserCog, FileText, Download,
+  BookOpen, GraduationCap, Coins, UserCog, FileText, Download,
   CalendarDays, Users, Loader2, CheckCircle, AlertCircle, X, Search, ClipboardList, ClipboardCheck,
   User, CreditCard, ChevronRight, Info, RefreshCw,
 } from 'lucide-react';
@@ -15,7 +15,7 @@ import BulletinModal from '../components/BulletinModal';
 import NominalListModal from '../components/NominalListModal';
 import PresenceListModal from '../components/PresenceListModal';
 import TimetableModal from '../components/TimetableModal';
-import type { NominalListClassInput } from '../lib/nominalListTemplate';
+import { genderCode, type NominalListClassInput } from '../lib/nominalListTemplate';
 import { saveFinanceReportPdf, type FinanceReportData } from '../lib/financeReportPdf';
 import { preloadPresenceTemplate } from '../lib/presenceListPdf';
 import type { ReceiptSchoolInfo } from '../lib/receiptPdf';
@@ -114,6 +114,14 @@ interface ArchivesCacheEntry {
   staff?: StaffRecord[];
 }
 const archivesCache = new Map<string, ArchivesCacheEntry>();
+
+if (typeof window !== 'undefined') {
+  const clearArchives = () => {
+    archivesCache.clear();
+  };
+  window.addEventListener('orion:school-settings-updated', clearArchives);
+  window.addEventListener('orion:school-changed', clearArchives);
+}
 
 
 const TABS: { id: Tab; label: string; icon: typeof Users }[] = [
@@ -257,11 +265,29 @@ export default function Archives() {
 
   useEffect(() => () => { if (toastTimer.current) window.clearTimeout(toastTimer.current); }, []);
 
-  // Précharge le modèle PDF de la liste de présence (fetch + parse ~400 ms)
-  // dès l'ouverture de la page : le premier aperçu devient quasi instantané.
-  useEffect(() => { preloadPresenceTemplate(); }, []);
+  // Précharge le modèle PDF de la liste de présence de manière différée (après le rendu initial)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      preloadPresenceTemplate();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, []);
 
-  // ── Chargement initial : socle commun (sections, niveaux, classes, infos école) ──
+  // Réinitialiser le cache et recharger immédiatement si le nom ou les réglages changent
+  useEffect(() => {
+    const handleSettingsUpdated = () => {
+      archivesCache.clear();
+      setRefreshNonce(n => n + 1);
+    };
+    window.addEventListener('orion:school-settings-updated', handleSettingsUpdated);
+    window.addEventListener('orion:school-changed', handleSettingsUpdated);
+    return () => {
+      window.removeEventListener('orion:school-settings-updated', handleSettingsUpdated);
+      window.removeEventListener('orion:school-changed', handleSettingsUpdated);
+    };
+  }, []);
+
+  // ── Chargement initial consolidé (socle + élèves + personnel en parallèle) ──
   const yearId = selectedYear?.id;
   const cacheKey = schoolId && yearId ? `${schoolId}::${yearId}` : null;
 
@@ -275,9 +301,9 @@ export default function Archives() {
       setClasses(cached.classes);
       setSchoolInfo(cached.schoolInfo);
       setStudents(cached.students ?? []);
-      setStudentsLoaded(!!cached.students);
+      setStudentsLoaded(true);
       setStaff(cached.staff ?? []);
-      setStaffLoaded(!!cached.staff);
+      setStaffLoaded(true);
       setBaseLoading(false);
       return;
     }
@@ -288,88 +314,54 @@ export default function Archives() {
     setStudents([]); setStudentsLoaded(false);
     setStaff([]); setStaffLoaded(false);
     setSchoolInfo(EMPTY_SCHOOL_INFO);
+
     (async () => {
       try {
-        const [secs, lvls, cls, settings] = await Promise.all([
+        const [secs, lvls, cls, settings, stds, stf] = await Promise.all([
           invoke<SectionRow[]>('get_sections', { schoolId }),
           invoke<LevelRow[]>('get_levels', { schoolId, sectionId: null }),
           invoke<ClassRow[]>('get_classes', { schoolId, academicYearId: yearId }),
           invoke<Partial<ReceiptSchoolInfo>>('get_school_settings', { schoolId }).catch(() => ({} as Partial<ReceiptSchoolInfo>)),
+          invoke<StudentRow[]>('get_students', {
+            schoolId, academicYearId: yearId, classId: null, includePhotos: false,
+          }).catch(err => {
+            console.error('Erreur get_students:', err);
+            return [] as StudentRow[];
+          }),
+          invoke<StaffRecord[]>('get_staff', { schoolId, includePhotos: false }).catch(err => {
+            console.error('Erreur get_staff:', err);
+            return [] as StaffRecord[];
+          }),
         ]);
+
         if (cancelled) return;
         const schoolInfo = { ...EMPTY_SCHOOL_INFO, ...settings };
-        archivesCache.set(cacheKey, { sections: secs, levels: lvls, classes: cls, schoolInfo });
-        setSections(secs); setLevels(lvls); setClasses(cls); setSchoolInfo(schoolInfo);
+        archivesCache.set(cacheKey, {
+          sections: secs,
+          levels: lvls,
+          classes: cls,
+          schoolInfo,
+          students: stds,
+          staff: stf,
+        });
+
+        setSections(secs);
+        setLevels(lvls);
+        setClasses(cls);
+        setSchoolInfo(schoolInfo);
+        setStudents(stds);
+        setStudentsLoaded(true);
+        setStaff(stf);
+        setStaffLoaded(true);
       } catch (e) {
         if (!cancelled) showToast('error', `Impossible de charger les archives : ${String(e)}`);
       } finally {
         if (!cancelled) setBaseLoading(false);
       }
     })();
+
     return () => { cancelled = true; };
   }, [cacheKey, schoolId, yearId, refreshNonce, showToast]);
-
-  const needsStudents = tab === 'college' || tab === 'lycee';
-  const needsStaff = tab === 'personnel';
-
-  // ── À la demande : élèves (onglets Collège / Lycée) ──
-  useEffect(() => {
-    if (!cacheKey || baseLoading || !needsStudents || studentsLoaded) return;
-
-    const cached = archivesCache.get(cacheKey);
-    if (cached?.students) {
-      setStudents(cached.students);
-      setStudentsLoaded(true);
-      return;
-    }
-
-    let cancelled = false;
-    invoke<StudentRow[]>('get_students', {
-      schoolId, academicYearId: yearId, classId: null, includePhotos: false,
-    })
-      .then(data => {
-        if (cancelled) return;
-        setStudents(data);
-        setStudentsLoaded(true);
-        const entry = archivesCache.get(cacheKey);
-        if (entry) entry.students = data;
-      })
-      .catch(e => {
-        if (cancelled) return;
-        // On rend la page utilisable même en cas d'erreur (le toast prévient l'utilisateur).
-        setStudentsLoaded(true);
-        showToast('error', `Impossible de charger les élèves : ${String(e)}`);
-      });
-    return () => { cancelled = true; };
-  }, [cacheKey, schoolId, yearId, baseLoading, needsStudents, studentsLoaded, refreshNonce, showToast]);
-
-  // ── À la demande : personnel (onglet Personnel) ──
-  useEffect(() => {
-    if (!cacheKey || baseLoading || !needsStaff || staffLoaded) return;
-
-    const cached = archivesCache.get(cacheKey);
-    if (cached?.staff) {
-      setStaff(cached.staff);
-      setStaffLoaded(true);
-      return;
-    }
-
-    let cancelled = false;
-    invoke<StaffRecord[]>('get_staff', { schoolId, includePhotos: false })
-      .then(data => {
-        if (cancelled) return;
-        setStaff(data);
-        setStaffLoaded(true);
-        const entry = archivesCache.get(cacheKey);
-        if (entry) entry.staff = data;
-      })
-      .catch(e => {
-        if (cancelled) return;
-        setStaffLoaded(true);
-        showToast('error', `Impossible de charger le personnel : ${String(e)}`);
-      });
-    return () => { cancelled = true; };
-  }, [cacheKey, schoolId, baseLoading, needsStaff, staffLoaded, refreshNonce, showToast]);
 
   // ── Regroupement des classes par niveau ──
   const isSchoolTab = tab === 'college' || tab === 'lycee';
@@ -532,14 +524,8 @@ export default function Archives() {
     });
   }, [staff, staffTeachingMap]);
 
-  const contentLoading =
-    baseLoading ||
-    (needsStudents && !studentsLoaded) ||
-    (needsStaff && !staffLoaded);
-
-  const loadingLabel = baseLoading
-    ? 'Chargement des archives…'
-    : needsStaff ? 'Chargement du personnel…' : 'Chargement des élèves…';
+  const contentLoading = baseLoading || !studentsLoaded;
+  const loadingLabel = 'Chargement des archives…';
 
   // ── Rendu ──
   if (!selectedYear) {
@@ -563,16 +549,11 @@ export default function Archives() {
         <div className="mx-auto max-w-7xl space-y-4 px-8 py-5">
         {/* En-tête */}
         <div className="flex animate-fade-in items-start justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] text-white shadow-lg">
-              <Archive size={22} />
-            </span>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight text-slate-800">Archives</h1>
-              <p className="text-[13px] text-slate-400">
-                Bulletins, listes, emplois du temps, rapports… tous les documents téléchargeables de l'établissement.
-              </p>
-            </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-slate-800">Archives</h1>
+            <p className="text-[13px] text-slate-400">
+              Bulletins, listes, emplois du temps, rapports… tous les documents téléchargeables de l'établissement.
+            </p>
           </div>
           <span className="flex flex-shrink-0 items-center gap-2">
             <button
@@ -957,6 +938,7 @@ export default function Archives() {
           classes={nominalListClasses}
           groupLabel={groupLabel}
           yearName={selectedYear.name}
+          schoolName={schoolInfo.name || ''}
           documentType="nominative"
           onClose={() => setNominalListOpen(false)}
           onError={msg => showToast('error', msg)}
@@ -972,6 +954,7 @@ export default function Archives() {
           classes={nominalListClasses}
           groupLabel={groupLabel}
           yearName={selectedYear.name}
+          schoolName={schoolInfo.name || ''}
           documentType="notes"
           onClose={() => setNotesListOpen(false)}
           onError={msg => showToast('error', msg)}
@@ -985,6 +968,7 @@ export default function Archives() {
           classes={nominalListClasses}
           groupLabel={groupLabel}
           yearName={selectedYear.name}
+          schoolName={schoolInfo.name || ''}
           onClose={() => setPresenceListOpen(false)}
           onError={msg => showToast('error', msg)}
           onSuccess={msg => showToast('success', msg)}
@@ -998,7 +982,18 @@ export default function Archives() {
           academicYearId={selectedYear.id}
           yearName={selectedYear.name}
           schoolName={schoolInfo.name || 'Établissement'}
-          classes={groupClasses.map(c => ({ id: c.id, name: c.name }))}
+          classes={groupClasses.map(c => {
+            const classStudents = students.filter(s => s.class_id === c.id);
+            const boyCount = classStudents.filter(s => genderCode(s.gender) === 'M').length;
+            const girlCount = classStudents.filter(s => genderCode(s.gender) === 'F').length;
+            return {
+              id: c.id,
+              name: c.name,
+              homeroom_teacher_name: c.homeroom_teacher_name,
+              boyCount,
+              girlCount,
+            };
+          })}
           onClose={() => setTimetableOpen(false)}
         />
       )}

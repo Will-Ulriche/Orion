@@ -9,6 +9,11 @@ import {
   type TimetableAssets, type TimetableGridData,
 } from "../lib/timetablePdf";
 
+// ─── Module-level cache (persists across modal open/close) ────────────────────
+// Assets (fonts, logo) are expensive to load — cache them once per session.
+let _assetsCache: TimetableAssets | null = null;
+let _assetsCacheSchoolId: string | null = null;
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Subject {
@@ -21,6 +26,9 @@ interface Subject {
 interface ClassItem {
   id: string;
   name: string;
+  homeroom_teacher_name?: string | null;
+  boyCount?: number;
+  girlCount?: number;
 }
 
 interface TimetableSlotData {
@@ -220,20 +228,35 @@ export default function TimetableModal({
   const frameRef = useRef<HTMLIFrameElement>(null);
   // Bascule entre l'éditeur de grille et l'aperçu du PDF (comme la liste nominative).
   const [view, setView] = useState<"edit" | "preview">("edit");
+  // Nom frais de l'établissement rechargé depuis la DB (évite d'utiliser l'ancien nom en cache).
+  const [freshSchoolName, setFreshSchoolName] = useState<string>(schoolName);
+  // Titulaire de classe personnalisable (pré-rempli avec homeroom_teacher_name de la classe)
+  const [customTeachers, setCustomTeachers] = useState<Record<string, string>>({});
 
 
-  // Load assets
+  // Load assets + nom frais de l'école depuis la DB
+  // Les assets (polices, logo) sont mis en cache au niveau module pour éviter
+  // de les recharger à chaque ouverture du modal.
   useEffect(() => {
+    // Si le cache correspond à cette école, l'utiliser directement
+    if (_assetsCache && _assetsCacheSchoolId === schoolId) {
+      setAssets(_assetsCache);
+      return;
+    }
     Promise.all([
       loadTimetableAssets(),
       invoke<any>("get_school_settings", { schoolId }).catch(() => null)
     ]).then(([baseAssets, school]) => {
-      if (school && school.logo_url) {
-        setAssets({ ...baseAssets, logo: school.logo_url });
-      } else {
-        setAssets(baseAssets);
-      }
+      const merged = school?.logo_url
+        ? { ...baseAssets, logo: school.logo_url }
+        : baseAssets;
+      _assetsCache = merged;
+      _assetsCacheSchoolId = schoolId;
+      setAssets(merged);
+      // Toujours utiliser le nom frais depuis la DB (le prop peut contenir l'ancien nom en cache)
+      if (school?.name) setFreshSchoolName(school.name);
     }).catch(console.error);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schoolId]);
 
   // Load subjects once
@@ -277,6 +300,14 @@ export default function TimetableModal({
     [classes, selectedClass]
   );
 
+  const currentTeacher = useMemo(() => {
+    if (!selectedClass) return "";
+    if (customTeachers[selectedClass] !== undefined) {
+      return customTeachers[selectedClass];
+    }
+    return currentClassObj?.homeroom_teacher_name ?? "";
+  }, [selectedClass, customTeachers, currentClassObj]);
+
   const currentClassIndex = useMemo(
     () => classes.findIndex((c) => c.id === selectedClass),
     [classes, selectedClass]
@@ -297,28 +328,73 @@ export default function TimetableModal({
     return g;
   }, [currentGrid, getSubject]);
 
-  // Build PDF blob for preview
+  // ── Debounce ref for PDF generation ────────────────────────────────────────
+  const pdfTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Cache PDF blobs par classe : évite de regénérer si on revient sur une classe déjà vue.
+  // Clé = classId, valeur = { blob, url }. Invalide quand une cellule est modifiée.
+  const pdfCacheRef = useRef<Map<string, { blob: Blob; url: string }>>(new Map());
+
+  // Build PDF blob for preview — debounced (120 ms) so rapid changes (e.g. typing
+  // the teacher name) don't trigger multiple heavy jsPDF renders back-to-back.
+  // Also skipped entirely when the user is in "edit" view to avoid wasted work.
+  // Cache par classe : si l'utilisateur revient sur une classe déjà prévisualisée,
+  // le blob est réutilisé immédiatement sans reconstruction.
   useEffect(() => {
     if (!assets || !currentClassObj) { setBlobUrl(null); setPdfBlob(null); return; }
-    try {
-      const doc = buildTimetablePdf({
+    if (view !== "preview") return;
+
+    // ── Cache hit ? ──
+    const cached = pdfCacheRef.current.get(currentClassObj.id);
+    if (cached) {
+      setPdfBlob(cached.blob);
+      setBlobUrl(cached.url);
+      return;
+    }
+
+    // ── Cache miss : générer avec debounce ──
+    let cancelled = false;
+    // urlToRevoke : uniquement pour les URLs NON mises en cache (en cas d'annulation)
+    let urlToRevoke: string | null = null;
+
+    if (pdfTimerRef.current) clearTimeout(pdfTimerRef.current);
+    pdfTimerRef.current = setTimeout(() => {
+      buildTimetablePdf({
         className: currentClassObj.name,
-        schoolName,
+        schoolName: freshSchoolName,
         yearName,
+        teacherName: currentTeacher || undefined,
+        boyCount: currentClassObj.boyCount,
+        girlCount: currentClassObj.girlCount,
         grid: codeGrid,
         assets,
-      });
-      const blob = doc.output("blob");
-      const url = URL.createObjectURL(blob);
-      setPdfBlob(blob);
-      setBlobUrl(url);
-      return () => URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error(e);
-      setBlobUrl(null);
-      setPdfBlob(null);
-    }
-  }, [assets, currentClassObj, schoolName, yearName, codeGrid]);
+      })
+        .then(doc => {
+          if (cancelled) return;
+          const blob = doc.output("blob");
+          const url = URL.createObjectURL(blob);
+          // Stocker dans le cache — le cache est propriétaire de l'URL,
+          // le cleanup NE doit PAS révoquer cette URL.
+          pdfCacheRef.current.set(currentClassObj.id, { blob, url });
+          urlToRevoke = null; // L'URL appartient au cache, pas au cleanup
+          setPdfBlob(blob);
+          setBlobUrl(url);
+        })
+        .catch(e => {
+          if (cancelled) return;
+          console.error(e);
+          setBlobUrl(null);
+          setPdfBlob(null);
+        });
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      if (pdfTimerRef.current) clearTimeout(pdfTimerRef.current);
+      // Révoquer uniquement si l'URL n'a pas été mise en cache
+      if (urlToRevoke) URL.revokeObjectURL(urlToRevoke);
+    };
+  }, [assets, currentClassObj, freshSchoolName, yearName, codeGrid, currentTeacher, view]);
+
 
   const filtered = useMemo(() => {
     const q = deaccent(query).trim().toLowerCase();
@@ -341,6 +417,11 @@ export default function TimetableModal({
           ...prev,
           [selectedClass]: { ...(prev[selectedClass] ?? {}), [key]: subjectId },
         }));
+        // Invalider le cache PDF de cette classe : la grille a changé.
+        // Révoquer l'URL du blob avant suppression pour éviter les fuites mémoire.
+        const oldCache = pdfCacheRef.current.get(selectedClass);
+        if (oldCache) URL.revokeObjectURL(oldCache.url);
+        pdfCacheRef.current.delete(selectedClass);
       } catch (e) {
         console.error(e);
       } finally {
@@ -476,7 +557,14 @@ export default function TimetableModal({
                         <span className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border-2 transition-colors ${on ? "border-violet-600 bg-violet-600" : "border-slate-300 bg-white"}`}>
                           {on && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
                         </span>
-                        <span className="block truncate text-[12.5px] font-semibold text-slate-700">{c.name}</span>
+                        <div className="flex flex-col min-w-0">
+                          <span className="block truncate text-[12.5px] font-semibold text-slate-700">{c.name}</span>
+                          {(customTeachers[c.id] ?? c.homeroom_teacher_name) && (
+                            <span className="block truncate text-[10.5px] text-slate-400">
+                              Titulaire : {customTeachers[c.id] ?? c.homeroom_teacher_name}
+                            </span>
+                          )}
+                        </div>
                       </button>
                     </li>
                   );
@@ -506,9 +594,28 @@ export default function TimetableModal({
           {/* ── Right panel: Grid ── */}
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5">
-              <p className="text-[12px] font-semibold text-slate-600">
-                {currentClassObj ? currentClassObj.name : "Sélectionnez une classe"}
-              </p>
+              <div className="flex items-center gap-3">
+                <p className="text-[12px] font-semibold text-slate-600">
+                  {currentClassObj ? currentClassObj.name : "Sélectionnez une classe"}
+                </p>
+                {currentClassObj && (
+                  <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1">
+                    <span className="text-[11px] font-medium text-slate-500">Titulaire :</span>
+                    <input
+                      type="text"
+                      placeholder="Nom du titulaire…"
+                      value={currentTeacher}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (selectedClass) {
+                          setCustomTeachers((prev) => ({ ...prev, [selectedClass]: val }));
+                        }
+                      }}
+                      className="bg-transparent text-[11px] font-semibold text-slate-700 placeholder-slate-400 outline-none w-48 focus:bg-white focus:ring-1 focus:ring-violet-400 rounded px-1 transition-all"
+                    />
+                  </div>
+                )}
+              </div>
               {savingCell && (
                 <span className="flex items-center gap-1.5 text-[11px] text-violet-500">
                   <LoaderCircle size={11} className="animate-spin" />

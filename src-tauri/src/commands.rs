@@ -1338,15 +1338,21 @@ pub fn get_students(
 ) -> Result<Vec<StudentEnrollment>, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     
-    let mut query = "
+    let photo_field = if include_photos == Some(false) {
+        "CAST(NULL AS TEXT) as photo_url"
+    } else {
+        "s.photo_url"
+    };
+
+    let mut query = format!("
         SELECT e.id, e.student_id, e.class_id, e.enrollment_type, e.status,
-               s.first_name, s.last_name, s.matricule, s.photo_url, c.name as class_name,
+               s.first_name, s.last_name, s.matricule, {}, c.name as class_name,
                c.level as class_level, s.birth_date, s.birth_place, s.gender, s.address
         FROM enrollments e
         JOIN students s ON e.student_id = s.id
         LEFT JOIN classes c ON e.class_id = c.id
         WHERE e.school_id = ?1 AND e.academic_year_id = ?2
-    ".to_string();
+    ", photo_field);
     
     if class_id.is_some() {
         query.push_str(" AND e.class_id = ?3");
@@ -1385,13 +1391,6 @@ pub fn get_students(
     let mut students = Vec::new();
     for student in iter {
         students.push(student.map_err(|e| e.to_string())?);
-    }
-
-    // Les photos (base64) pèsent plusieurs Mo : on les écarte quand l'appelant n'en a pas besoin.
-    if include_photos == Some(false) {
-        for s in students.iter_mut() {
-            s.photo_url = None;
-        }
     }
 
     Ok(students)
@@ -3443,14 +3442,16 @@ const STAFF_SELECT: &str = "
 #[tauri::command(async)]
 pub fn get_staff(school_id: String, include_photos: Option<bool>, state: State<'_, DbState>) -> Result<Vec<crate::models::Staff>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let query = format!("{} WHERE school_id=?1 ORDER BY nom, prenoms", STAFF_SELECT);
+    let select_clause = if include_photos == Some(false) {
+        STAFF_SELECT.replace("staff.photo_url,", "CAST(NULL AS TEXT) as photo_url,")
+    } else {
+        STAFF_SELECT.to_string()
+    };
+    let query = format!("{} WHERE school_id=?1 ORDER BY nom, prenoms", select_clause);
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let rows = stmt.query_map(rusqlite::params![school_id], row_to_staff).map_err(|e| e.to_string())?;
     let mut res = Vec::new();
     for r in rows { match r { Ok(s) => res.push(s), Err(e) => return Err(format!("Erreur lecture personnel: {:?}", e)) } }
-    if include_photos == Some(false) {
-        for s in res.iter_mut() { s.photo_url = None; }
-    }
     Ok(res)
 }
 

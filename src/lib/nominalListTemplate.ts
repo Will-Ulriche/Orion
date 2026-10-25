@@ -46,7 +46,7 @@ export const TITLE_BAND_CENTER = (TITLE_BAND.left + TITLE_BAND.right) / 2;
 
 export const TEXT = {
   brand: {
-    label: 'ORION COLLEGE EXPERIENCE',
+    label: 'ÉTABLISSEMENT',
     size: 20.04,
     baseline: 41.76,
     color: [0, 51, 204] as const, // #0033CC
