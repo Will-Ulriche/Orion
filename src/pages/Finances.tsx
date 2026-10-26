@@ -126,7 +126,7 @@ export default function Finances() {
   const { schoolId, user } = useAuth();
   const { selectedYear } = useYear();
 
-  const [activeTab, setActiveTab] = useState<'grille' | 'paiements' | 'dashboard'>('grille');
+  const [activeTab, setActiveTab] = useState<'grille' | 'paiements' | 'dashboard'>('dashboard');
   const [currency, setCurrency] = useState('XOF');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -239,6 +239,10 @@ export default function Finances() {
   }, [schoolId]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
 
   useEffect(() => {
     if (activeTab === 'dashboard') loadDashboard();
@@ -591,9 +595,9 @@ export default function Finances() {
   };
 
   const tabs = [
-    { id: 'grille' as const, label: 'Grille Tarifaire', icon: List },
-    { id: 'paiements' as const, label: 'Paiements Élève', icon: Receipt },
     { id: 'dashboard' as const, label: 'Tableau de Bord', icon: TrendingUp },
+    { id: 'paiements' as const, label: 'Paiements Élève', icon: Receipt },
+    { id: 'grille' as const, label: 'Grille Tarifaire', icon: List },
   ];
 
   return (

@@ -5,7 +5,7 @@ import { useYear } from '../contexts/YearContext';
 import {
   BookOpen, GraduationCap, Coins, UserCog, FileText, Download,
   CalendarDays, Users, Loader2, CheckCircle, AlertCircle, X, Search, ClipboardList, ClipboardCheck,
-  User, CreditCard, ChevronRight, Info, RefreshCw,
+  User, CreditCard, ChevronRight, Info, RefreshCw, Wallet, TrendingUp, CheckCircle2, BarChart2,
 } from 'lucide-react';
 import { EmptyState, Loader } from '../components/ui';
 import StaffIdentityModal from '../components/StaffIdentityModal';
@@ -35,6 +35,47 @@ interface StudentRow {
   first_name: string | null; last_name: string | null; matricule: string | null;
   class_name: string | null; class_level: string | null; gender: string | null;
 }
+interface FinancialDashboard {
+  total_due: number;
+  total_paid: number;
+  remaining_balance: number;
+  recovery_rate: number;
+  student_count: number;
+  settled_count: number;
+  partial_count: number;
+  unpaid_count: number;
+  cancelled_payment_count: number;
+  by_class: {
+    class_id: string | null;
+    class_name: string;
+    student_count: number;
+    total_due: number;
+    total_paid: number;
+    remaining_balance: number;
+  }[];
+  by_method: {
+    method: string;
+    amount: number;
+    payment_count: number;
+  }[];
+  debtors: {
+    student_id?: string;
+    enrollment_id: string;
+    first_name: string;
+    last_name: string;
+    class_name: string;
+    total_due: number;
+    total_paid: number;
+    remaining_balance: number;
+    status: string;
+  }[];
+}
+
+interface FeeStructureRow {
+  id: string; name: string; amount: number; fee_type: string; applies_to: string;
+  class_name: string | null; due_date: string | null; is_mandatory: boolean;
+}
+
 interface StaffRow {
   id: string; matricule: string | null; nom: string; prenoms: string;
   type_personnel: string | null; fonction: string | null; statut_administratif: string;
@@ -183,47 +224,6 @@ function Toast({ type, message, onClose }: { type: 'success' | 'error' | 'info';
   );
 }
 
-// ─────────────────────────────────────────────────────
-// Carte de document
-// ─────────────────────────────────────────────────────
-function DocCard({
-  icon: Icon, tint, title, description, children, actionLabel, onAction, busy, disabled,
-}: {
-  icon: React.ComponentType<{ size?: number | string }>;
-  tint: string;
-  title: string;
-  description: string;
-  children?: React.ReactNode;
-  actionLabel: string;
-  onAction: () => void;
-  busy?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="flex flex-col rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-raise">
-      <div className="flex items-start gap-3">
-        <span className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl ${tint}`}>
-          <Icon size={18} />
-        </span>
-        <div className="min-w-0">
-          <p className="text-[14px] font-bold text-slate-800">{title}</p>
-          <p className="mt-0.5 text-[12px] leading-relaxed text-slate-400">{description}</p>
-        </div>
-      </div>
-      {children && <div className="mt-4 space-y-2.5">{children}</div>}
-      <div className="mt-auto pt-4">
-        <button
-          onClick={onAction}
-          disabled={busy || disabled}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-[#4f46e5] to-[#6d28d9] px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition-all duration-200 hover:shadow-md hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-          {busy ? 'Génération…' : actionLabel}
-        </button>
-      </div>
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────
 // Page Archives
@@ -247,6 +247,8 @@ export default function Archives() {
   const [schoolInfo, setSchoolInfo] = useState<ReceiptSchoolInfo>(EMPTY_SCHOOL_INFO);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [financeDashboard, setFinanceDashboard] = useState<FinancialDashboard | null>(null);
+  const [financeLoading, setFinanceLoading] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
   const [staffListModalOpen, setStaffListModalOpen] = useState(false);
   const [studentIdentityOpen, setStudentIdentityOpen] = useState(false);
@@ -362,6 +364,28 @@ export default function Archives() {
 
     return () => { cancelled = true; };
   }, [cacheKey, schoolId, yearId, refreshNonce, showToast]);
+
+  // ── Chargement du tableau de bord financier (Archives > Finances) ──
+  useEffect(() => {
+    if (tab !== 'finances' || !selectedYear?.id || !schoolId) return;
+    let cancelled = false;
+    setFinanceLoading(true);
+    invoke<FinancialDashboard>('get_financial_dashboard', {
+      schoolId,
+      academicYearId: selectedYear.id,
+    })
+      .then(data => {
+        if (!cancelled) setFinanceDashboard(data);
+      })
+      .catch(err => {
+        console.error('Erreur get_financial_dashboard:', err);
+        if (!cancelled) showToast('error', 'Impossible de charger le tableau de bord financier.');
+      })
+      .finally(() => {
+        if (!cancelled) setFinanceLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [tab, selectedYear?.id, schoolId, refreshNonce, showToast]);
 
   // ── Regroupement des classes par niveau ──
   const isSchoolTab = tab === 'college' || tab === 'lycee';
@@ -756,34 +780,509 @@ export default function Archives() {
                   </table>
                 </div>
               </div>
+                        ) : tab === 'finances' ? (
+              /* ── Tableau de bord financier complet (Courbes & Diagrammes réels) ── */
+              financeLoading && !financeDashboard ? (
+                <div className="flex flex-col items-center justify-center gap-3 py-24 text-slate-400">
+                  <Loader2 size={24} className="animate-spin text-[#4f46e5]" />
+                  <span className="text-sm font-medium">Chargement des données financières…</span>
+                </div>
+              ) : !financeDashboard ? (
+                <div className="flex flex-col items-center justify-center gap-3 py-24 text-slate-400">
+                  <BarChart2 size={44} strokeWidth={1.5} className="opacity-40" />
+                  <p className="text-sm">Aucune donnée financière disponible pour cette année scolaire.</p>
+                </div>
+              ) : (() => {
+                const currency = schoolInfo.currency || 'XOF';
+                const fmt = (v: number) =>
+                  new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(v / 100);
+
+                return (
+                  <div className="space-y-6 animate-fade-in pb-8">
+                    {/* ── En-tête avec bouton de téléchargement ── */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card">
+                      <div>
+                        <h2 className="text-base font-bold text-slate-800">Synthèse Financière Annuelle</h2>
+                        <p className="text-[12px] text-slate-500 mt-0.5">
+                          Situation globale des recouvrements, encaissements et reliquats pour l'année {selectedYear.name}
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleFinanceReport}
+                        disabled={busy === 'finance'}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-[#4f46e5] to-[#6d28d9] px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition-all duration-200 hover:shadow-md hover:brightness-110 disabled:opacity-50"
+                      >
+                        {busy === 'finance' ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                        Télécharger le rapport financier (PDF)
+                      </button>
+                    </div>
+
+                    {/* ── KPI Cards ── */}
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card hover:shadow-md transition-shadow">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total attendu</span>
+                          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
+                            <Wallet size={16} />
+                          </span>
+                        </div>
+                        <p className="mt-2 text-2xl font-black text-slate-800 tracking-tight">
+                          {fmt(financeDashboard.total_due)} <span className="text-xs font-normal text-slate-400">{currency}</span>
+                        </p>
+                        <p className="mt-1 text-[11px] text-slate-400">
+                          {financeDashboard.student_count} élève(s) inscrit(s)
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50/50 to-white p-5 shadow-card hover:shadow-md transition-shadow">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-600">Total encaissé</span>
+                          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+                            <CheckCircle2 size={16} />
+                          </span>
+                        </div>
+                        <p className="mt-2 text-2xl font-black text-emerald-700 tracking-tight">
+                          {fmt(financeDashboard.total_paid)} <span className="text-xs font-normal text-emerald-500">{currency}</span>
+                        </p>
+                        <p className="mt-1 text-[11px] text-emerald-600 font-medium">
+                          {financeDashboard.settled_count} élève(s) soldé(s)
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-rose-100 bg-gradient-to-br from-rose-50/50 to-white p-5 shadow-card hover:shadow-md transition-shadow">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-rose-500">Reste à recouvrer</span>
+                          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-rose-100 text-rose-600">
+                            <AlertCircle size={16} />
+                          </span>
+                        </div>
+                        <p className="mt-2 text-2xl font-black text-rose-600 tracking-tight">
+                          {fmt(Math.max(0, financeDashboard.remaining_balance))} <span className="text-xs font-normal text-rose-400">{currency}</span>
+                        </p>
+                        <p className="mt-1 text-[11px] text-rose-500 font-medium">
+                          {financeDashboard.debtors.length} débiteur(s)
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/50 to-white p-5 shadow-card hover:shadow-md transition-shadow">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-[#4f46e5]">Taux recouvrement</span>
+                          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-100 text-[#4f46e5]">
+                            <TrendingUp size={16} />
+                          </span>
+                        </div>
+                        <p className="mt-2 text-2xl font-black text-[#4f46e5] tracking-tight">
+                          {financeDashboard.recovery_rate.toFixed(1)} %
+                        </p>
+                        <div className="mt-2.5 h-2 w-full overflow-hidden rounded-full bg-indigo-100">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-[#4f46e5] to-emerald-500 transition-all duration-500"
+                            style={{ width: `${Math.min(100, Math.max(0, financeDashboard.recovery_rate))}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ── Courbes réelles SVG : Recouvrement par Classe ── */}
+                    {financeDashboard.by_class.length > 0 && (() => {
+                      const cls = financeDashboard.by_class;
+                      const W = 840, H = 275, pL = 70, pR = 30, pT = 20, pB = 55;
+                      const cW = W - pL - pR, cH = H - pT - pB;
+                      const maxV = Math.max(...cls.map(c => Math.max(c.total_due, c.total_paid)), 1);
+
+                      const xOf = (i: number) => pL + (cls.length > 1 ? (i * cW) / (cls.length - 1) : cW / 2);
+                      const yOf = (v: number) => pT + cH - (v / maxV) * cH;
+
+                      const fmtCompact = (v: number) =>
+                        new Intl.NumberFormat('fr-FR', { notation: 'compact', maximumFractionDigits: 1 }).format(v / 100);
+
+                      // Helper pour abréger intelligemment les noms de classes afin d'éviter tout chevauchement
+                      const abbreviateClass = (raw: string): string => {
+                        if (!raw) return '';
+                        let s = raw.trim();
+                        s = s.replace(/sixi[eè]me/gi, '6e')
+                             .replace(/cinqui[eè]me/gi, '5e')
+                             .replace(/quatri[eè]me/gi, '4e')
+                             .replace(/troisi[eè]me/gi, '3e')
+                             .replace(/seconde/gi, '2nde')
+                             .replace(/premi[eè]re/gi, '1ère')
+                             .replace(/terminale/gi, 'Tle');
+
+                        s = s.replace(/6\s*[eè]me/gi, '6e')
+                             .replace(/5\s*[eè]me/gi, '5e')
+                             .replace(/4\s*[eè]me/gi, '4e')
+                             .replace(/3\s*[eè]me/gi, '3e')
+                             .replace(/2\s*n?de/gi, '2nde')
+                             .replace(/1\s*[eè]re/gi, '1ère')
+                             .replace(/term\b/gi, 'Tle');
+
+                        s = s.replace(/^classe\s*(de\s*)?/gi, '');
+                        s = s.replace(/\s+/g, ' ').trim();
+                        if (s.length > 7) {
+                          s = s.slice(0, 6) + '…';
+                        }
+                        return s;
+                      };
+
+                      const shouldRotate = cls.length > 7;
+
+                      // Path helper for smooth curves
+                      const buildSmoothPath = (pts: { x: number; y: number }[]) => {
+                        if (pts.length === 0) return '';
+                        if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
+                        let path = `M ${pts[0].x} ${pts[0].y}`;
+                        for (let i = 0; i < pts.length - 1; i++) {
+                          const cpX = (pts[i].x + pts[i + 1].x) / 2;
+                          path += ` C ${cpX} ${pts[i].y}, ${cpX} ${pts[i + 1].y}, ${pts[i + 1].x} ${pts[i + 1].y}`;
+                        }
+                        return path;
+                      };
+
+                      const duePts = cls.map((c, i) => ({ x: xOf(i), y: yOf(c.total_due) }));
+                      const paidPts = cls.map((c, i) => ({ x: xOf(i), y: yOf(c.total_paid) }));
+
+                      const dueCurve = buildSmoothPath(duePts);
+                      const paidCurve = buildSmoothPath(paidPts);
+
+                      const dueArea = `${dueCurve} L ${duePts[duePts.length - 1].x} ${pT + cH} L ${duePts[0].x} ${pT + cH} Z`;
+                      const paidArea = `${paidCurve} L ${paidPts[paidPts.length - 1].x} ${pT + cH} L ${paidPts[0].x} ${pT + cH} Z`;
+
+                      return (
+                        <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-card">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                            <div>
+                              <h3 className="text-[14px] font-bold text-slate-800">
+                                Courbe de Recouvrement par Classe
+                              </h3>
+                              <p className="text-[11px] text-slate-400">
+                                Comparatif direct entre le montant attendu et le montant effectivement encaissé
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-5">
+                              <span className="flex items-center gap-2 text-[12px] font-semibold text-slate-600">
+                                <span className="h-2 w-5 rounded-full bg-[#6366f1] inline-block shadow-sm" />
+                                Attendu
+                              </span>
+                              <span className="flex items-center gap-2 text-[12px] font-semibold text-slate-600">
+                                <span className="h-2 w-5 rounded-full bg-[#10b981] inline-block shadow-sm" />
+                                Encaissé
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="w-full overflow-x-auto">
+                            <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[650px]" style={{ height: 275 }}>
+                              <defs>
+                                <linearGradient id="areaDue" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="#6366f1" stopOpacity="0.28" />
+                                  <stop offset="100%" stopColor="#6366f1" stopOpacity="0.01" />
+                                </linearGradient>
+                                <linearGradient id="areaPaid" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="#10b981" stopOpacity="0.32" />
+                                  <stop offset="100%" stopColor="#10b981" stopOpacity="0.01" />
+                                </linearGradient>
+                              </defs>
+
+                              {/* Horizontals */}
+                              {[0, 0.25, 0.5, 0.75, 1].map(r => (
+                                <g key={r}>
+                                  <line
+                                    x1={pL}
+                                    x2={W - pR}
+                                    y1={pT + r * cH}
+                                    y2={pT + r * cH}
+                                    stroke="#f1f5f9"
+                                    strokeWidth="1.2"
+                                    strokeDasharray={r === 1 ? undefined : '3 3'}
+                                  />
+                                  <text
+                                    x={pL - 10}
+                                    y={pT + r * cH + 4}
+                                    textAnchor="end"
+                                    fontSize={10}
+                                    fill="#94a3b8"
+                                    fontWeight="500"
+                                  >
+                                    {fmtCompact(maxV * (1 - r))}
+                                  </text>
+                                </g>
+                              ))}
+
+                              {/* Areas */}
+                              <path d={dueArea} fill="url(#areaDue)" />
+                              <path d={paidArea} fill="url(#areaPaid)" />
+
+                              {/* Lines */}
+                              <path
+                                d={dueCurve}
+                                fill="none"
+                                stroke="#6366f1"
+                                strokeWidth="2.5"
+                                strokeLinecap="round"
+                              />
+                              <path
+                                d={paidCurve}
+                                fill="none"
+                                stroke="#10b981"
+                                strokeWidth="2.5"
+                                strokeLinecap="round"
+                              />
+
+                              {/* Points & Labels */}
+                              {cls.map((c, i) => {
+                                const x = xOf(i);
+                                const yDue = yOf(c.total_due);
+                                const yPaid = yOf(c.total_paid);
+                                const shortName = abbreviateClass(c.class_name);
+                                return (
+                                  <g key={c.class_id ?? i} className="group cursor-pointer">
+                                    <title>{`${c.class_name}\nAttendu : ${fmt(c.total_due)} ${currency}\nEncaissé : ${fmt(c.total_paid)} ${currency}\nReliquat : ${fmt(Math.max(0, c.remaining_balance))} ${currency}`}</title>
+                                    <circle
+                                      cx={x}
+                                      cy={yDue}
+                                      r="4.5"
+                                      fill="#6366f1"
+                                      stroke="#ffffff"
+                                      strokeWidth="2"
+                                      className="transition-transform duration-150 hover:scale-125"
+                                    />
+                                    <circle
+                                      cx={x}
+                                      cy={yPaid}
+                                      r="4.5"
+                                      fill="#10b981"
+                                      stroke="#ffffff"
+                                      strokeWidth="2"
+                                      className="transition-transform duration-150 hover:scale-125"
+                                    />
+                                    <text
+                                      x={x}
+                                      y={shouldRotate ? H - 10 : H - 14}
+                                      textAnchor={shouldRotate ? 'end' : 'middle'}
+                                      transform={shouldRotate ? `rotate(-35, ${x}, ${H - 10})` : undefined}
+                                      fontSize={9.5}
+                                      fill="#64748b"
+                                      fontWeight="600"
+                                    >
+                                      {shortName}
+                                    </text>
+                                  </g>
+                                );
+                              })}
+                            </svg>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* ── Deux colonnes : Donut des statuts + Diagramme des modes de paiement ── */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                      {/* Donut Statuts Élèves */}
+                      <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-card flex flex-col justify-between">
+                        <div>
+                          <h3 className="text-[14px] font-bold text-slate-800">
+                            Statut de Règlement des Élèves
+                          </h3>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Répartition des {financeDashboard.student_count} élève(s) selon l'état de leur compte
+                          </p>
+                        </div>
+
+                        {(() => {
+                          const slices = [
+                            { label: 'Soldés', value: financeDashboard.settled_count, color: '#10b981', bg: 'bg-emerald-500' },
+                            { label: 'Partiel', value: financeDashboard.partial_count, color: '#f59e0b', bg: 'bg-amber-500' },
+                            { label: 'Impayés', value: financeDashboard.unpaid_count, color: '#ef4444', bg: 'bg-rose-500' },
+                          ].filter(s => s.value > 0);
+
+                          const total = slices.reduce((acc, s) => acc + s.value, 0) || 1;
+                          const cx = 95, cy = 95, r = 75, ri = 48;
+                          let angle = -Math.PI / 2;
+
+                          const paths = slices.map(s => {
+                            const sweep = (s.value / total) * 2 * Math.PI;
+                            const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
+                            const x2 = cx + r * Math.cos(angle + sweep), y2 = cy + r * Math.sin(angle + sweep);
+                            const xi1 = cx + ri * Math.cos(angle), yi1 = cy + ri * Math.sin(angle);
+                            const xi2 = cx + ri * Math.cos(angle + sweep), yi2 = cy + ri * Math.sin(angle + sweep);
+                            const large = sweep > Math.PI ? 1 : 0;
+                            const d = `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L ${xi2.toFixed(2)} ${yi2.toFixed(2)} A ${ri} ${ri} 0 ${large} 0 ${xi1.toFixed(2)} ${yi1.toFixed(2)} Z`;
+                            angle += sweep;
+                            return { ...s, d };
+                          });
+
+                          return (
+                            <div className="flex flex-col sm:flex-row items-center justify-around gap-6 my-4">
+                              <svg viewBox="0 0 190 190" className="w-44 h-44 shrink-0 drop-shadow-sm">
+                                {paths.map((p, idx) => (
+                                  <path
+                                    key={idx}
+                                    d={p.d}
+                                    fill={p.color}
+                                    stroke="#ffffff"
+                                    strokeWidth="2.5"
+                                  />
+                                ))}
+                                <text x={cx} y={cy - 6} textAnchor="middle" fontSize={16} fontWeight="800" fill="#1e293b">
+                                  {financeDashboard.recovery_rate.toFixed(0)}%
+                                </text>
+                                <text x={cx} y={cy + 12} textAnchor="middle" fontSize={10} fill="#94a3b8" fontWeight="500">
+                                  recouvré
+                                </text>
+                              </svg>
+
+                              <div className="space-y-3 w-full max-w-xs">
+                                {slices.map(s => {
+                                  const pct = ((s.value / total) * 100).toFixed(1);
+                                  return (
+                                    <div key={s.label} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                      <div className="flex items-center gap-2.5">
+                                        <span className={`w-3 h-3 rounded-full shrink-0 ${s.bg}`} />
+                                        <span className="text-[12px] font-semibold text-slate-700">{s.label}</span>
+                                      </div>
+                                      <div className="text-right">
+                                        <span className="text-[13px] font-bold text-slate-800">{s.value}</span>
+                                        <span className="text-[11px] text-slate-400 ml-1.5">({pct}%)</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                        <div className="border-t border-slate-100 pt-3 text-[11px] text-slate-400 text-center">
+                          Les comptes soldés ont réglé la totalité de leurs frais de scolarité
+                        </div>
+                      </div>
+
+                      {/* Modes de paiement */}
+                      <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-card flex flex-col justify-between">
+                        <div>
+                          <h3 className="text-[14px] font-bold text-slate-800">
+                            Répartition des Modes d'Encaissement
+                          </h3>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Volume total des transactions par canal de règlement
+                          </p>
+                        </div>
+
+                        <div className="space-y-3.5 my-4">
+                          {financeDashboard.by_method.length === 0 ? (
+                            <p className="text-xs text-slate-400 py-6 text-center">Aucun encaissement enregistré.</p>
+                          ) : (() => {
+                            const maxM = Math.max(...financeDashboard.by_method.map(m => m.amount), 1);
+                            const totalM = financeDashboard.by_method.reduce((acc, m) => acc + m.amount, 0) || 1;
+
+                            return financeDashboard.by_method.map(m => {
+                              const label = PAYMENT_METHODS.find(p => p.id === m.method)?.label ?? m.method;
+                              const pctOfTotal = ((m.amount / totalM) * 100).toFixed(1);
+                              const barPct = (m.amount / maxM) * 100;
+
+                              return (
+                                <div key={m.method} className="space-y-1">
+                                  <div className="flex items-center justify-between text-[12px]">
+                                    <span className="font-semibold text-slate-700">{label}</span>
+                                    <span className="font-bold text-slate-800">
+                                      {fmt(m.amount)} {currency}{' '}
+                                      <span className="font-normal text-slate-400 text-[11px]">({pctOfTotal}%)</span>
+                                    </span>
+                                  </div>
+                                  <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+                                    <div
+                                      className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
+                                      style={{ width: `${Math.max(4, barPct)}%` }}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-slate-400 text-right">
+                                    {m.payment_count} transaction(s)
+                                  </p>
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+
+                        <div className="border-t border-slate-100 pt-3 text-[11px] text-slate-400 text-center">
+                          Total des recettes encaissées : <strong className="text-slate-700">{fmt(financeDashboard.total_paid)} {currency}</strong>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ── Tableau synthétique par classe ── */}
+                    {financeDashboard.by_class.length > 0 && (
+                      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card">
+                        <div className="border-b border-slate-100 px-6 py-4 flex items-center justify-between">
+                          <div>
+                            <h3 className="text-[14px] font-bold text-slate-800">
+                              Détail du Recouvrement par Classe
+                            </h3>
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              Situation financière détaillée et taux de recouvrement par division
+                            </p>
+                          </div>
+                          <span className="text-xs font-semibold text-slate-400">
+                            {financeDashboard.by_class.length} classe(s)
+                          </span>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-[12px]">
+                            <thead className="border-b border-slate-100 bg-slate-50/75 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                              <tr>
+                                <th className="px-5 py-3">Classe</th>
+                                <th className="px-4 py-3 text-center">Effectif</th>
+                                <th className="px-4 py-3 text-right">Total Attendu</th>
+                                <th className="px-4 py-3 text-right">Encaissé</th>
+                                <th className="px-4 py-3 text-right">Reliquat</th>
+                                <th className="px-5 py-3 text-right">Taux</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-slate-700">
+                              {financeDashboard.by_class.map(c => {
+                                const rate = c.total_due > 0 ? (c.total_paid / c.total_due) * 100 : 100;
+                                return (
+                                  <tr key={c.class_id ?? c.class_name} className="hover:bg-slate-50/50 transition-colors">
+                                    <td className="px-5 py-3 font-semibold text-slate-900">{c.class_name}</td>
+                                    <td className="px-4 py-3 text-center text-slate-500">{c.student_count}</td>
+                                    <td className="px-4 py-3 text-right font-medium">{fmt(c.total_due)} {currency}</td>
+                                    <td className="px-4 py-3 text-right font-semibold text-emerald-600">{fmt(c.total_paid)} {currency}</td>
+                                    <td className="px-4 py-3 text-right font-semibold text-rose-500">
+                                      {fmt(Math.max(0, c.remaining_balance))} {currency}
+                                    </td>
+                                    <td className="px-5 py-3 text-right">
+                                      <span
+                                        className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-bold ${
+                                          rate >= 80
+                                            ? 'bg-emerald-50 text-emerald-700'
+                                            : rate >= 50
+                                            ? 'bg-amber-50 text-amber-700'
+                                            : 'bg-rose-50 text-rose-700'
+                                        }`}
+                                      >
+                                        {rate.toFixed(1)} %
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()
             ) : (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {tab === 'finances' && (
-                  <DocCard
-                    icon={Coins}
-                    tint="bg-emerald-50 text-emerald-600"
-                    title="Rapport financier annuel"
-                    description="Recouvrement global, synthèse par classe, modes de paiement, débiteurs et grilles tarifaires."
-                    actionLabel="Télécharger le rapport"
-                    busy={busy === 'finance'}
-                    onAction={handleFinanceReport}
-                  />
-                )}
-
               </div>
-            )}
-
-            {tab === 'finances' && (
-              <p className="flex items-center gap-2 text-[12px] text-slate-400">
-                <FileText size={13} className="flex-shrink-0" />
-                Les reçus de paiement individuels restent téléchargeables depuis l'onglet « Finances &amp; Paiements ».
-              </p>
             )}
           </div>
         )}
         </div>{/* / colonne principale */}
 
-        {/* ── Colonne de droite : boutons de documents ── */}
+        {/* ── Colonne de droite : boutons de documents (masquée en mode finances) ── */}
+        {tab !== 'finances' && (
         <aside className="w-72 xl:w-80 flex-shrink-0 self-start sticky top-4">
           <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card animate-fade-in">
             <div className="border-b border-slate-100 px-4 py-3.5">
@@ -874,6 +1373,7 @@ export default function Archives() {
             </div>
           </div>
         </aside>
+        )}
         </div>{/* / rangée contenu + colonne */}
         </div>
       </div>

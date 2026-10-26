@@ -198,7 +198,18 @@ export function buildFinanceReportProPdf(opts: BuildFinanceReportProOptions): js
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(6.6);
     doc.setTextColor(...GOLD);
-    doc.text((school.ministry_name || '').toUpperCase().slice(0, 60), lx, 29, { maxWidth: lw });
+    const ministryLinesPro = (school.ministry_name || '')
+      .split('\n')
+      .map((l: string) => l.trim())
+      .filter(Boolean)
+      .slice(0, 2);
+    if (ministryLinesPro.length > 0) {
+      ministryLinesPro.forEach((line: string, idx: number) => {
+        doc.text(line.toUpperCase(), lx, 29 + idx * 3.2, { maxWidth: lw });
+      });
+    } else {
+      doc.text('', lx, 29);
+    }
 
     const rx = PAGE_W - MARGIN;
     doc.setFont('helvetica', 'bold');

@@ -417,7 +417,8 @@ ${sec.rows.map(([k, v]) => `          <div class="field"><span class="k">${idEsc
     <div class="head">
       <div>
         <div class="school-name">${idEscape(school.name || 'Établissement scolaire')}</div>
-        ${school.ministry_name ? `<div class="school-meta">${idEscape(school.ministry_name)}</div>` : ''}
+        ${school.ministry_name ? `<div 
+class="school-meta">${String(school.ministry_name).split('\n').map((l: string) => idEscape(l.trim())).filter(Boolean).join('<br>')}</div>` : ''}
         ${schoolMeta ? `<div class="school-meta">${idEscape(schoolMeta)}</div>` : ''}
       </div>
       <div class="year">Année académique<strong>${idEscape(yearName)}</strong></div>

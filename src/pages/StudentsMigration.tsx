@@ -157,6 +157,10 @@ export default function StudentsMigration() {
 
   const handleAddStudent = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!newStudent.classId) {
+      setError('Veuillez sélectionner une classe.');
+      return;
+    }
     try {
       await invoke('create_student', {
         schoolId: schoolId,
@@ -343,20 +347,23 @@ export default function StudentsMigration() {
             </div>
             <div>
               <label className="block text-[12px] font-semibold text-slate-700 mb-1.5">Classe <span className="text-[#4f46e5]">*</span></label>
-              <select
-                required
+              <AnimatedSelect
                 value={newStudent.classId}
-                onChange={e => {
-                  const cls = classes.find(c => c.id === e.target.value);
-                  setNewStudent({ ...newStudent, classId: e.target.value, level: cls?.level ?? newStudent.level });
+                onChange={val => {
+                  const cls = classes.find(c => c.id === val);
+                  setNewStudent(prev => ({
+                    ...prev,
+                    classId: val,
+                    level: cls?.level ?? prev.level,
+                  }));
                 }}
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]"
-              >
-                <option value="">{classesForLevel.length > 0 ? '— Choisir une classe —' : 'Aucune classe disponible'}</option>
-                {classesForLevel.map(c => (
-                  <option key={c.id} value={c.id}>{c.name}{c.level ? ` — ${c.level}` : ''}</option>
-                ))}
-              </select>
+                placeholder={classesForLevel.length > 0 ? '— Choisir une classe —' : 'Aucune classe disponible'}
+                options={classesForLevel.map(c => ({
+                  value: c.id,
+                  label: c.name + (c.level ? ` — ${c.level}` : ''),
+                }))}
+                className="w-full"
+              />
             </div>
             <div className="flex gap-2">
               <button type="button" onClick={() => { setShowAddForm(false); setNewStudent({ firstName: '', lastName: '', level: '', classId: '' }); }}
@@ -536,11 +543,13 @@ export default function StudentsMigration() {
               </div>
               <div>
                 <label className="block text-[12px] font-semibold text-slate-700 mb-2">Classe cible (optionnel)</label>
-                <select value={migrationTargetClass} onChange={e => setMigrationTargetClass(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5]">
-                  <option value="">— Sans classe —</option>
-                  {targetClasses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                <AnimatedSelect
+                  value={migrationTargetClass}
+                  onChange={setMigrationTargetClass}
+                  placeholder="— Sans classe —"
+                  options={targetClasses.map(c => ({ value: c.id, label: c.name }))}
+                  className="w-full"
+                />
                 {targetClasses.length === 0 && (
                   <p className="text-[11px] text-amber-600 mt-2">Aucune classe définie pour l'année planifiée.</p>
                 )}
@@ -576,11 +585,13 @@ export default function StudentsMigration() {
             <form onSubmit={handleTransferClass} className="space-y-4">
               <div>
                 <label className="block text-[12px] font-semibold text-slate-700 mb-2">Nouvelle classe</label>
-                <select value={transferTargetClass} onChange={e => setTransferTargetClass(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[13.5px] outline-none focus:ring-2 focus:ring-[#f59e0b]/20 focus:border-[#f59e0b]">
-                  <option value="">— Retirer de la classe actuelle —</option>
-                  {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                <AnimatedSelect
+                  value={transferTargetClass}
+                  onChange={setTransferTargetClass}
+                  placeholder="— Retirer de la classe actuelle —"
+                  options={classes.map(c => ({ value: c.id, label: c.name }))}
+                  className="w-full"
+                />
               </div>
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={() => setTransferringStudent(null)}

@@ -125,7 +125,17 @@ export function buildFinanceReportPdf(opts: BuildFinanceReportOptions): jsPDF {
     doc.setFontSize(7.5);
     doc.setTextColor(...BRAND_LIGHT);
     const loc = [school.address, school.city, school.country].filter(Boolean).join(', ');
-    doc.text(doc.splitTextToSize(loc || school.ministry_name || '', 120) as string[], MARGIN, 14);
+    const ministryLines = (loc || school.ministry_name || '')
+      .split('\n')
+      .map((l: string) => l.trim())
+      .filter(Boolean);
+    if (ministryLines.length > 0) {
+      ministryLines.slice(0, 3).forEach((line: string, idx: number) => {
+        doc.text(line, MARGIN, 14 + idx * 3.6);
+      });
+    } else {
+      doc.text('', MARGIN, 14);
+    }
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10);
     doc.setTextColor(255, 255, 255);

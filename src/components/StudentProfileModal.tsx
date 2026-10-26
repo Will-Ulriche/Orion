@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check, ArrowRight, Camera, Trash2, Loader2 } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check, ArrowRight, Camera, Trash2, Loader2, KeyRound, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { uploadStudentPhoto, deleteStudentPhoto, isLocalBase64 } from '../lib/photoStorage';
 
@@ -52,8 +52,15 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
   const [success, setSuccess] = useState(false);
 
   // Photo de l'élève
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
+
+  // Modal de code d'autorisation pour ajout/modification de photo
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [photoCode, setPhotoCode] = useState('');
+  const [codeError, setCodeError] = useState('');
+  const [showCode, setShowCode] = useState(false);
 
   useEffect(() => {
     loadStudent();
@@ -85,6 +92,29 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) { setError(err.toString()); }
     finally { setSaving(false); }
+  };
+
+  const handlePhotoClick = () => {
+    if (readOnly || uploadingPhoto) return;
+    setPhotoCode('');
+    setCodeError('');
+    setShowCode(false);
+    setShowCodeModal(true);
+  };
+
+  const handleValidateCode = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = photoCode.trim();
+    if (!trimmed.startsWith('#')) {
+      setCodeError("Code d'accès incorrect. Veuillez réessayer.");
+      return;
+    }
+    setShowCodeModal(false);
+    setPhotoCode('');
+    setCodeError('');
+    setTimeout(() => {
+      fileInputRef.current?.click();
+    }, 60);
   };
 
   const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -162,8 +192,10 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                     <Camera size={14} /> Photo de l'élève
                   </h3>
                   <div className="flex items-center gap-4">
-                    <label
-                      htmlFor="student-photo-input"
+                    <button
+                      type="button"
+                      onClick={handlePhotoClick}
+                      disabled={readOnly || uploadingPhoto}
                       className={`relative w-20 h-20 rounded-2xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] flex items-center justify-center text-white text-xl font-bold ring-4 ring-white shadow-md overflow-hidden flex-shrink-0 ${readOnly ? 'cursor-default' : 'cursor-pointer hover:opacity-90 transition-opacity'}`}
                       title={readOnly ? undefined : 'Cliquez pour choisir une photo'}
                     >
@@ -177,10 +209,11 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                           <Loader2 size={20} className="animate-spin" />
                         </span>
                       )}
-                    </label>
+                    </button>
 
                     <div className="flex-1 min-w-0">
                       <input
+                        ref={fileInputRef}
                         id="student-photo-input"
                         type="file"
                         accept="image/*"
@@ -190,8 +223,10 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                       />
                       <div className="flex flex-wrap items-center gap-2">
                         {!readOnly && (
-                          <label
-                            htmlFor="student-photo-input"
+                          <button
+                            type="button"
+                            onClick={handlePhotoClick}
+                            disabled={uploadingPhoto}
                             className={`flex items-center gap-2 px-3 py-1.5 bg-white border rounded-lg text-[12px] font-medium transition-all w-fit ${
                               uploadingPhoto
                                 ? 'border-slate-200 text-slate-400 cursor-not-allowed'
@@ -203,7 +238,7 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
                             ) : (
                               <><Camera size={13} /> {student.photo_url ? 'Changer la photo' : 'Ajouter une photo'}</>
                             )}
-                          </label>
+                          </button>
                         )}
                         {!readOnly && student.photo_url && !uploadingPhoto && (
                           <button
@@ -378,6 +413,91 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
           </div>
         </div>
       </div>
+
+      {/* Pop-up de confirmation du code pour ajouter/modifier la photo */}
+      {showCodeModal && (
+        <div 
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm animate-in fade-in duration-150"
+          onMouseDown={e => { if (e.target === e.currentTarget) { setShowCodeModal(false); setPhotoCode(''); setCodeError(''); } }}
+        >
+          <div 
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center flex-shrink-0">
+                  <KeyRound size={20} />
+                </div>
+                <div>
+                  <h4 className="text-[15px] font-bold text-slate-800">Code d'autorisation</h4>
+                  <p className="text-[11.5px] text-slate-400">Modification de la photo</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setShowCodeModal(false); setPhotoCode(''); setCodeError(''); }}
+                className="text-slate-400 hover:text-slate-600 rounded-lg p-1 hover:bg-slate-100 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={handleValidateCode}>
+              <p className="text-[12.5px] text-slate-600 mb-3 leading-relaxed">
+                Veuillez entrer le code d'accès pour modifier la photo de cet élève :
+              </p>
+
+              <div className="mb-3">
+                <div className="relative flex items-center">
+                  <input
+                    type={showCode ? "text" : "password"}
+                    autoFocus
+                    placeholder="Entrez le code d'accès..."
+                    value={photoCode}
+                    onChange={e => {
+                      setPhotoCode(e.target.value);
+                      if (codeError) setCodeError('');
+                    }}
+                    className="w-full px-3.5 py-2.5 pr-10 bg-slate-50 border border-slate-200 rounded-xl text-[14px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-800 placeholder:text-slate-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCode(v => !v)}
+                    title={showCode ? "Masquer le code" : "Afficher le code"}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 transition-colors rounded-lg"
+                  >
+                    {showCode ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                {codeError && (
+                  <p className="text-[11.5px] text-red-600 font-medium mt-1.5 flex items-center gap-1">
+                    <AlertCircle size={12} className="flex-shrink-0" />
+                    <span>{codeError}</span>
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => { setShowCodeModal(false); setPhotoCode(''); setCodeError(''); }}
+                  className="px-3.5 py-2 rounded-xl text-[12.5px] font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl text-[12.5px] font-semibold text-white bg-[#4f46e5] hover:bg-[#4338ca] shadow-sm transition-colors"
+                >
+                  Valider
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
