@@ -417,7 +417,7 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
       {/* Pop-up de confirmation du code pour ajouter/modifier la photo */}
       {showCodeModal && (
         <div 
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm animate-in fade-in duration-150"
+          className="absolute inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm animate-in fade-in duration-150"
           onMouseDown={e => { if (e.target === e.currentTarget) { setShowCodeModal(false); setPhotoCode(''); setCodeError(''); } }}
         >
           <div 

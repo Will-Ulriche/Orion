@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { uploadStaffPhoto, deleteStaffPhoto, isLocalBase64 } from '../lib/photoStorage';
+import { saveStaffDocumentPdf, SchoolSettingsInfo } from '../utils/staffDocumentPdf';
 import { ConfirmDialog } from '../components/ui';
 import {
   User, Phone, Briefcase, MapPin, BookOpen,
@@ -11,7 +13,7 @@ import {
   Baby, GraduationCap, Award,
   LogOut, Plus,
   CheckCircle, XCircle, Loader2, Trash2, Save,
-  Eye, Printer, Download, X
+  Eye, EyeOff, KeyRound, Printer, Download, X
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────
@@ -100,8 +102,8 @@ const SECTIONS = [
   { id: 'enseignement',    label: 'Enseignement',                  icon: BookOpen },
   { id: 'situation_admin', label: 'Situation administrative',      icon: Shield },
   { id: 'documents',       label: 'Documents',                     icon: FileText },
-  { id: 'infos_systeme',   label: 'Informations systeme',          icon: Info },
 ];
+
 
 // ─────────────────────────────────────────────────────
 // Composants de base
@@ -182,7 +184,8 @@ function Select({ label, value, onChange, options, icon: Icon }: {
 
 // ─── PhotoUploadButton ────────────────────────────────────────────────────────
 // Bouton de sélection/suppression de photo avec upload Supabase Storage intégré.
-// Affiche un spinner pendant l'upload et un badge "local" si hors-ligne.
+// Affiche un modal de code d'autorisation avant l'upload (même comportement que
+// pour les photos d'élèves dans StudentProfileModal).
 function PhotoUploadButton({
   staffId,
   schoolId,
@@ -198,6 +201,34 @@ function PhotoUploadButton({
 }) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // ── Modal de code d'autorisation ─────────────────────────────────────────
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [photoCode, setPhotoCode] = useState('');
+  const [codeError, setCodeError] = useState('');
+  const [showCode, setShowCode] = useState(false);
+
+  const handleButtonClick = () => {
+    if (uploading) return;
+    setPhotoCode('');
+    setCodeError('');
+    setShowCode(false);
+    setShowCodeModal(true);
+  };
+
+  const handleValidateCode = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = photoCode.trim();
+    if (!trimmed.startsWith('#')) {
+      setCodeError("Code d'accès incorrect. Veuillez réessayer.");
+      return;
+    }
+    setShowCodeModal(false);
+    setPhotoCode('');
+    setCodeError('');
+    setTimeout(() => { fileInputRef.current?.click(); }, 60);
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -224,57 +255,144 @@ function PhotoUploadButton({
   const isLocal = isLocalBase64(currentUrl);
 
   return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <label
-        className={`flex items-center gap-2 px-3 py-1.5 bg-white border rounded-lg text-[12px] font-medium transition-all w-fit
-          ${uploading
-            ? 'border-slate-200 text-slate-400 cursor-not-allowed'
-            : 'border-slate-200 text-slate-600 hover:bg-[#ede9fe] hover:text-[#6d28d9] hover:border-[#c4b5fd] cursor-pointer'
-          }`}
-      >
-        {uploading ? (
-          <><Loader2 size={13} className="animate-spin" /> Envoi en cours...</>
-        ) : (
-          <><Camera size={13} /> Changer la photo</>
-        )}
-        <input
-          type="file"
-          accept="image/*"
-          className="hidden"
-          disabled={uploading}
-          onChange={handleFileChange}
-        />
-      </label>
+    <>
+      {/* Input fichier caché — déclenché après validation du code */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        disabled={uploading}
+        onChange={handleFileChange}
+      />
 
-      {currentUrl && !uploading && (
+      <div className="flex items-center gap-2 flex-wrap">
         <button
           type="button"
-          onClick={onRemoved}
-          className="flex items-center gap-2 px-3 py-1.5 bg-white border border-red-200 rounded-lg text-[12px] text-red-600 hover:bg-red-50 hover:border-red-300 transition-all font-medium"
+          onClick={handleButtonClick}
+          disabled={uploading}
+          className={`flex items-center gap-2 px-3 py-1.5 bg-white border rounded-lg text-[12px] font-medium transition-all w-fit
+            ${uploading
+              ? 'border-slate-200 text-slate-400 cursor-not-allowed'
+              : 'border-slate-200 text-slate-600 hover:bg-[#ede9fe] hover:text-[#6d28d9] hover:border-[#c4b5fd] cursor-pointer'
+            }`}
         >
-          <Trash2 size={13} /> Supprimer
+          {uploading ? (
+            <><Loader2 size={13} className="animate-spin" /> Envoi en cours...</>
+          ) : (
+            <><Camera size={13} /> Changer la photo</>
+          )}
         </button>
-      )}
 
-      {/* Badge "stockée localement" si hors-ligne lors de l'upload */}
-      {isLocal && !uploading && (
-        <span
-          className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium"
-          style={{
-            background: 'rgba(251,191,36,0.1)',
-            border: '1px solid rgba(251,191,36,0.3)',
-            color: '#d97706',
-          }}
-          title="Photo stockée localement. Elle sera synchronisée vers Supabase à la prochaine connexion."
-        >
-          <AlertCircle size={10} /> Locale — sync en attente
-        </span>
-      )}
+        {currentUrl && !uploading && (
+          <button
+            type="button"
+            onClick={onRemoved}
+            className="flex items-center gap-2 px-3 py-1.5 bg-white border border-red-200 rounded-lg text-[12px] text-red-600 hover:bg-red-50 hover:border-red-300 transition-all font-medium"
+          >
+            <Trash2 size={13} /> Supprimer
+          </button>
+        )}
 
-      {uploadError && (
-        <span className="text-[11px] text-red-500">{uploadError}</span>
+        {/* Badge "stockée localement" si hors-ligne lors de l'upload */}
+        {isLocal && !uploading && (
+          <span
+            className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium"
+            style={{
+              background: 'rgba(251,191,36,0.1)',
+              border: '1px solid rgba(251,191,36,0.3)',
+              color: '#d97706',
+            }}
+            title="Photo stockée localement. Elle sera synchronisée vers Supabase à la prochaine connexion."
+          >
+            <AlertCircle size={10} /> Locale — sync en attente
+          </span>
+        )}
+
+        {uploadError && (
+          <span className="text-[11px] text-red-500">{uploadError}</span>
+        )}
+      </div>
+
+      {/* ── Modal code d'autorisation (rendu dans <main> uniquement, ne couvre pas la sidebar) ── */}
+      {showCodeModal && createPortal(
+        <div className="absolute inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl p-5 border border-slate-100">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center flex-shrink-0">
+                  <KeyRound size={20} />
+                </div>
+                <div>
+                  <h4 className="text-[15px] font-bold text-slate-800">Code d'autorisation</h4>
+                  <p className="text-[11.5px] text-slate-400">Modification de la photo du personnel</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setShowCodeModal(false); setPhotoCode(''); setCodeError(''); }}
+                className="text-slate-400 hover:text-slate-600 rounded-lg p-1 hover:bg-slate-100 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={handleValidateCode}>
+              <p className="text-[12.5px] text-slate-600 mb-3 leading-relaxed">
+                Veuillez entrer le code d'accès pour modifier la photo de ce membre du personnel :
+              </p>
+
+              <div className="mb-3">
+                <div className="relative flex items-center">
+                  <input
+                    type={showCode ? 'text' : 'password'}
+                    autoFocus
+                    placeholder="Entrez le code d'accès..."
+                    value={photoCode}
+                    onChange={e => {
+                      setPhotoCode(e.target.value);
+                      if (codeError) setCodeError('');
+                    }}
+                    className="w-full px-3.5 py-2.5 pr-10 bg-slate-50 border border-slate-200 rounded-xl text-[14px] outline-none focus:ring-2 focus:ring-[#4f46e5]/20 focus:border-[#4f46e5] text-slate-800 placeholder:text-slate-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCode(v => !v)}
+                    title={showCode ? 'Masquer le code' : 'Afficher le code'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 transition-colors rounded-lg"
+                  >
+                    {showCode ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                {codeError && (
+                  <p className="text-[11.5px] text-red-600 font-medium mt-1.5 flex items-center gap-1">
+                    <AlertCircle size={12} className="flex-shrink-0" />
+                    <span>{codeError}</span>
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => { setShowCodeModal(false); setPhotoCode(''); setCodeError(''); }}
+                  className="px-3.5 py-2 rounded-xl text-[12.5px] font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl text-[12.5px] font-semibold text-white bg-[#4f46e5] hover:bg-[#4338ca] shadow-sm transition-colors"
+                >
+                  Valider
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.querySelector('main') ?? document.body
       )}
-    </div>
+    </>
   );
 }
 
@@ -543,18 +661,29 @@ function SectionSituationAdmin({ form, set }: { form: Staff; set: (k: keyof Staf
 // ─────────────────────────────────────────────────────
 // Génère le contenu HTML du document pour l'aperçu et le téléchargement
 // ─────────────────────────────────────────────────────
-function buildDocumentHTML(docName: string, staff: Staff): string {
+function buildDocumentHTML(docName: string, staff: Staff, schoolSettings?: SchoolSettingsInfo | null): string {
   const today = new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' });
   const nom_complet = `${staff.nom} ${staff.prenoms}`;
   const matricule = staff.matricule ?? 'N/A';
   const fonction = staff.fonction ?? 'N/A';
-  const etablissement = staff.etablissement ?? "l'établissement";
+  const etablissement = schoolSettings?.name?.trim() || staff.etablissement || "l'établissement";
+  const rawMinistry = schoolSettings?.ministry_name?.trim() || "Ministère des Enseignements Primaire et Secondaire";
+  const ministryHtml = rawMinistry.split(/\r?\n/).map(l => l.trim()).filter(Boolean).join('<br>');
+  const city = schoolSettings?.city?.trim() || 'Lomé';
+  const headTitle = schoolSettings?.head_title?.trim() || 'Le Directeur';
   const date_prise_service = staff.date_prise_service
     ? new Date(staff.date_prise_service).toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })
     : '___________';
   const date_affectation = staff.date_affectation
     ? new Date(staff.date_affectation).toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' })
     : '___________';
+
+  // Matière(s) enseignée(s) — affiché après la fonction si disponible
+  const matiere_principale = staff.matiere_principale?.trim() || null;
+  const matieres_secondaires = staff.matieres_secondaires?.trim() || null;
+  const matiereHtml = matiere_principale
+    ? `, chargé(e) de l'enseignement de <strong>${matiere_principale}</strong>${matieres_secondaires ? ` (et de : ${matieres_secondaires})` : ''}`
+    : '';
 
   // Corps spécifique selon le type de document
   const bodies: Record<string, string> = {
@@ -564,7 +693,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
         ${nom_complet}
       </p>
       <p>Matricule : <strong>${matricule}</strong><br/>
-      est actuellement en service dans notre établissement en qualité de <strong>${fonction}</strong>
+      est actuellement en service dans notre établissement en qualité de <strong>${fonction}</strong>${matiereHtml},
       depuis le <strong>${date_prise_service}</strong>.</p>
       <p>Cette attestation lui est délivrée pour servir et valoir ce que de droit.</p>`,
 
@@ -573,7 +702,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
       <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
         ${nom_complet} — Matricule : ${matricule}
       </p>
-      <p>occupe le poste de <strong>${fonction}</strong> au sein de notre établissement
+      <p>occupe le poste de <strong>${fonction}</strong>${matiereHtml} au sein de notre établissement
       depuis le <strong>${date_affectation}</strong>.</p>
       <p>Le présent certificat est établi à sa demande pour tous usages légaux.</p>`,
 
@@ -582,7 +711,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
       <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
         ${nom_complet} — Matricule : ${matricule}
       </p>
-      <p>a effectivement pris service dans notre établissement en qualité de <strong>${fonction}</strong>
+      <p>a effectivement pris service dans notre établissement en qualité de <strong>${fonction}</strong>${matiereHtml},
       à compter du <strong>${date_prise_service}</strong>.</p>
       <p>En foi de quoi, la présente attestation lui est délivrée pour servir et valoir ce que de droit.</p>`,
 
@@ -591,7 +720,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
       <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
         ${nom_complet} — Matricule : ${matricule}
       </p>
-      <p>a repris son service en qualité de <strong>${fonction}</strong> le <strong>${today}</strong>,
+      <p>a repris son service en qualité de <strong>${fonction}</strong>${matiereHtml}, le <strong>${today}</strong>,
       après une période d'absence autorisée.</p>
       <p>Cette attestation est délivrée pour servir et valoir ce que de droit.</p>`,
 
@@ -600,7 +729,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
       <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
         ${nom_complet} — Matricule : ${matricule}
       </p>
-      <p>a exercé les fonctions de <strong>${fonction}</strong> au sein de notre établissement.
+      <p>a exercé les fonctions de <strong>${fonction}</strong>${matiereHtml} au sein de notre établissement.
       Son contrat a pris fin le <strong>${staff.date_depart ? new Date(staff.date_depart).toLocaleDateString('fr-FR') : today}</strong>
       ${staff.motif_depart ? `pour le motif suivant : <em>${staff.motif_depart}</em>` : ''}.</p>
       <p>Cette attestation est délivrée pour servir et valoir ce que de droit.</p>`,
@@ -611,7 +740,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
         ${nom_complet} — Matricule : ${matricule}
       </p>
       <p>a rempli toutes les obligations administratives vis-à-vis de ${etablissement} et qu'il/elle
-      ne doit rien à l'établissement au titre de ses fonctions de <strong>${fonction}</strong>.</p>
+      ne doit rien à l'établissement au titre de ses fonctions de <strong>${fonction}</strong>${matiereHtml}.</p>
       <p>En foi de quoi, le présent quitus lui est délivré pour servir et valoir ce que de droit.</p>`,
 
     'Certificat de salaire': `
@@ -619,7 +748,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
       <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
         ${nom_complet} — Matricule : ${matricule}
       </p>
-      <p>est rémunéré(e) mensuellement par ${etablissement} en tant que <strong>${fonction}</strong>
+      <p>est rémunéré(e) mensuellement par ${etablissement} en tant que <strong>${fonction}</strong>${matiereHtml}
       ${staff.indice ? `avec un indice de <strong>${staff.indice}</strong>` : ''}.
       Statut : <strong>${staff.statut_professionnel ?? 'N/A'}</strong>.</p>
       <p>Ce certificat est établi à la demande de l'intéressé(e).</p>`,
@@ -642,7 +771,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
       <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
         ${nom_complet} — Matricule : ${matricule}
       </p>
-      <p>fonctionnaire au grade de <strong>${fonction}</strong>, à s'absenter du service
+      <p>fonctionnaire en qualité de <strong>${fonction}</strong>${matiereHtml}, à s'absenter du service
       du <strong>___________</strong> au <strong>___________</strong>
       pour le motif suivant : <strong>___________</strong>.</p>
       <p>L'intéressé(e) devra reprendre son service dès la fin de la période autorisée.</p>`,
@@ -670,7 +799,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
       <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
         ${nom_complet} — Matricule : ${matricule}
       </p>
-      <p>a effectué un stage au sein de notre établissement en qualité de <strong>${fonction}</strong>
+      <p>a effectué un stage au sein de notre établissement en qualité de <strong>${fonction}</strong>${matiereHtml},
       du <strong>___________</strong> au <strong>___________</strong>.</p>
       <p>Ce stage s'est déroulé dans de bonnes conditions. Cette attestation est délivrée pour servir et valoir ce que de droit.</p>`,
   };
@@ -680,7 +809,7 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
     <p style="margin: 20px 0; padding: 12px; background: #f8f9fa; border-left: 3px solid #4f46e5; font-size: 15px; font-weight: bold;">
       ${nom_complet} — Matricule : ${matricule}
     </p>
-    <p>en qualité de <strong>${fonction}</strong>, a droit au présent document : <em>${docName}</em>.</p>
+    <p>en qualité de <strong>${fonction}</strong>${matiereHtml}, a droit au présent document : <em>${docName}</em>.</p>
     <p>Cette attestation est délivrée pour servir et valoir ce que de droit.</p>`;
 
   return `<!DOCTYPE html>
@@ -696,8 +825,9 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
     .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #4f46e5; padding-bottom: 16px; margin-bottom: 24px; }
     .header-left { text-align: left; }
     .header-right { text-align: right; }
-    .country { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; font-weight: 600; }
-    .ministry { font-size: 12px; font-weight: 700; color: #1e293b; margin: 4px 0; }
+    .country { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #1e293b; font-weight: 700; }
+    .motto { font-size: 9.5px; font-style: italic; color: #64748b; margin: 2px 0 4px; }
+    .ministry { font-size: 11px; font-weight: 700; color: #1e293b; margin: 3px 0 3px; line-height: 1.35; }
     .school { font-size: 13px; font-weight: 600; color: #4f46e5; }
     .ref { font-size: 11px; color: #94a3b8; margin-top: 4px; }
     .doc-title { text-align: center; margin: 28px 0 24px; }
@@ -721,8 +851,9 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
   <div class="page">
     <div class="header">
       <div class="header-left">
-        <p class="country">République de Guinée</p>
-        <p class="ministry">Ministère de l'Éducation Nationale</p>
+        <p class="country">REPUBLIQUE DU TOGO</p>
+        <p class="motto">Travail — Liberté — Patrie</p>
+        <p class="ministry">${ministryHtml}</p>
         <p class="school">${etablissement}</p>
       </div>
       <div class="header-right">
@@ -742,8 +873,8 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
 
     <div class="signature">
       <div class="signature-block">
-        <p class="city-date">Fait à _____________, le ${today}</p>
-        <p class="name">Le Directeur</p>
+        <p class="city-date">Fait à ${city}, le ${today}</p>
+        <p class="name">${headTitle}</p>
         <p class="title">Cachet et signature</p>
       </div>
     </div>
@@ -760,13 +891,14 @@ function buildDocumentHTML(docName: string, staff: Staff): string {
 // ─────────────────────────────────────────────────────
 // Modal d'aperçu PDF
 // ─────────────────────────────────────────────────────
-function DocumentPreviewModal({ docName, staff, onClose, onDownload }: {
+function DocumentPreviewModal({ docName, staff, schoolSettings, onClose, onDownload }: {
   docName: string;
   staff: Staff;
+  schoolSettings?: SchoolSettingsInfo | null;
   onClose: () => void;
   onDownload: () => void;
 }) {
-  const htmlContent = buildDocumentHTML(docName, staff);
+  const htmlContent = buildDocumentHTML(docName, staff, schoolSettings);
   const blobUrl = useMemo(() => {
     const blob = new Blob([htmlContent], { type: 'text/html; charset=utf-8' });
     return URL.createObjectURL(blob);
@@ -802,9 +934,9 @@ function DocumentPreviewModal({ docName, staff, onClose, onDownload }: {
             </button>
             <button
               onClick={onDownload}
-              className="flex items-center gap-1.5 px-4 py-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white rounded-lg text-[12px] font-semibold transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white rounded-lg text-[12px] font-semibold transition-colors shadow-sm"
             >
-              <Download size={13} /> Télécharger
+              <Download size={13} /> Télécharger (PDF)
             </button>
             <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center transition-colors">
               <XCircle size={16} />
@@ -827,7 +959,7 @@ function DocumentPreviewModal({ docName, staff, onClose, onDownload }: {
         {/* Footer */}
         <div className="px-6 py-3 border-t border-slate-100 bg-slate-50 flex-shrink-0">
           <p className="text-[11px] text-slate-400 text-center">
-            Aperçu du document · Utilisez <strong>Imprimer / PDF</strong> pour enregistrer en PDF, ou <strong>Télécharger</strong> pour obtenir le fichier HTML.
+            Aperçu officiel · Utilisez <strong>Imprimer / PDF</strong> pour lancer l'impression, ou <strong>Télécharger (PDF)</strong> pour obtenir le document au format PDF.
           </p>
         </div>
       </div>
@@ -838,9 +970,37 @@ function DocumentPreviewModal({ docName, staff, onClose, onDownload }: {
 // ─────────────────────────────────────────────────────
 // Section Documents
 // ─────────────────────────────────────────────────────
-function SectionDocuments({ staff }: { staff: Staff }) {
+function SectionDocuments({
+  staff,
+  schoolSettings,
+}: {
+  staff: Staff;
+  schoolSettings?: SchoolSettingsInfo | null;
+}) {
   const [preview, setPreview] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState<Set<string>>(new Set());
+  const [localSettings, setLocalSettings] = useState<SchoolSettingsInfo | null>(schoolSettings ?? null);
+
+  useEffect(() => {
+    if (schoolSettings) {
+      setLocalSettings(schoolSettings);
+    } else if (staff.school_id) {
+      invoke<any>('get_school_settings', { schoolId: staff.school_id })
+        .then(s => {
+          if (s) {
+            setLocalSettings({
+              name: s.name,
+              short_name: s.short_name,
+              ministry_name: s.ministry_name,
+              city: s.city,
+              country: s.country,
+              head_title: s.head_title,
+            });
+          }
+        })
+        .catch(console.error);
+    }
+  }, [schoolSettings, staff.school_id]);
 
   const categories = [
     { label: 'Attestations de service', color: 'blue', docs: ['Attestation de service', 'Certificat de service', 'Attestation de prise de service', 'Attestation de reprise de service', 'Attestation de fin de contrat', 'Quitus administratif'] },
@@ -857,16 +1017,9 @@ function SectionDocuments({ staff }: { staff: Staff }) {
   };
 
   const handleDownload = (docName: string) => {
-    const html = buildDocumentHTML(docName, staff);
-    const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${docName.replace(/[\s']/g, '_')}_${staff.matricule ?? staff.id}.html`;
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a); URL.revokeObjectURL(url);
+    saveStaffDocumentPdf(docName, staff, localSettings);
     setDownloaded(prev => new Set([...prev, docName]));
-    setPreview(null);
+    if (preview) setPreview(null);
   };
 
   return (
@@ -876,8 +1029,7 @@ function SectionDocuments({ staff }: { staff: Staff }) {
         <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl flex items-start gap-2.5">
           <Info size={14} className="text-blue-400 flex-shrink-0 mt-0.5" />
           <p className="text-[12px] text-blue-600">
-            Cliquez sur <strong>Aperçu</strong> pour visualiser le document avant de le télécharger.
-            Utilisez <strong>Imprimer / PDF</strong> dans l'aperçu pour l'enregistrer en PDF.
+            Cliquez sur <strong>Aperçu</strong> pour visualiser le document, ou directement sur <strong>PDF</strong> pour télécharger le document au format PDF.
           </p>
         </div>
         <div className="space-y-5">
@@ -889,27 +1041,37 @@ function SectionDocuments({ staff }: { staff: Staff }) {
                   <FileText size={12} className={c.icon} />
                   <span className="text-[11px] font-bold uppercase tracking-wide">{cat.label}</span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                   {cat.docs.map(doc => {
                     const isDone = downloaded.has(doc);
                     return (
-                      <div key={doc} className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-xl hover:border-slate-300 hover:shadow-sm transition-all group">
-                        <div className="flex items-center gap-2.5 min-w-0">
+                      <div key={doc} className="flex items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-xl hover:border-slate-300 hover:shadow-sm transition-all group">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
                           <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isDone ? 'bg-green-50 text-green-500' : 'bg-slate-50 text-slate-400'}`}>
                             {isDone ? <CheckCircle size={13} /> : <FileText size={13} />}
                           </div>
-                          <span className="text-[12.5px] text-slate-700 font-medium truncate">{doc}</span>
+                          <span className="text-[12.5px] text-slate-800 font-medium leading-snug break-words" title={doc}>{doc}</span>
                         </div>
-                        <button
-                          onClick={() => setPreview(doc)}
-                          className={`flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition-all ml-2
-                            ${isDone
-                              ? 'bg-green-50 text-green-600 border-green-200 hover:bg-green-600 hover:text-white hover:border-green-600'
-                              : `bg-white text-slate-500 border-slate-200 ${c.btn} hover:text-white`}`}
-                        >
-                          <Eye size={11} />
-                          {isDone ? 'Revoir' : 'Aperçu'}
-                        </button>
+                        <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+                          <button
+                            onClick={() => handleDownload(doc)}
+                            title={`Télécharger ${doc} en PDF`}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-[#4f46e5] hover:border-[#4f46e5]/40 hover:bg-[#ede9fe]/30 text-[11px] font-semibold transition-all shadow-2xs"
+                          >
+                            <Download size={11} />
+                            <span>PDF</span>
+                          </button>
+                          <button
+                            onClick={() => setPreview(doc)}
+                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition-all
+                              ${isDone
+                                ? 'bg-green-50 text-green-600 border-green-200 hover:bg-green-600 hover:text-white hover:border-green-600'
+                                : `bg-white text-slate-500 border-slate-200 ${c.btn} hover:text-white`}`}
+                          >
+                            <Eye size={11} />
+                            {isDone ? 'Revoir' : 'Aperçu'}
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -924,6 +1086,7 @@ function SectionDocuments({ staff }: { staff: Staff }) {
         <DocumentPreviewModal
           docName={preview}
           staff={staff}
+          schoolSettings={localSettings}
           onClose={() => setPreview(null)}
           onDownload={() => handleDownload(preview)}
         />
@@ -932,36 +1095,6 @@ function SectionDocuments({ staff }: { staff: Staff }) {
   );
 }
 
-
-function SectionInfosSysteme({ staff }: { staff: Staff }) {
-  return (
-    <div className="space-y-6">
-      <SectionTitle title="Informations système" subtitle="Métadonnées et traçabilité" />
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {[
-          { label: 'Identifiant du personnel', value: staff.id || '—' },
-          { label: 'Date de creation du dossier', value: staff.created_at ? new Date(staff.created_at).toLocaleDateString('fr-FR') : '—' },
-          { label: 'Derniere modification', value: staff.updated_at ? new Date(staff.updated_at).toLocaleString('fr-FR') : '—' },
-          { label: 'Cree par', value: staff.created_by ?? '—' },
-          { label: 'Modifie par', value: staff.updated_by ?? '—' },
-        ].map(item => (
-          <div key={item.label} className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">{item.label}</p>
-            <p className="text-[13px] font-mono text-slate-600 break-all">{item.value}</p>
-          </div>
-        ))}
-      </div>
-      <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl">
-        <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Statut du dossier</p>
-        <div className="flex items-center gap-3">
-          <span className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold border ${staff.est_actif ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-600 border-red-200'}`}>
-            {staff.est_actif ? <><CheckCircle size={14} /> Dossier actif</> : <><XCircle size={14} /> Dossier inactif</>}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────
 // Modal Nouveau Personnel
@@ -1101,7 +1234,26 @@ export default function Personnel() {
   const [pendingDelete, setPendingDelete] = useState<Staff | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [schoolSettings, setSchoolSettings] = useState<SchoolSettingsInfo | null>(null);
   const toastTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    invoke<any>('get_school_settings', { schoolId })
+      .then(s => {
+        if (s) {
+          setSchoolSettings({
+            name: s.name,
+            short_name: s.short_name,
+            ministry_name: s.ministry_name,
+            city: s.city,
+            country: s.country,
+            head_title: s.head_title,
+          });
+        }
+      })
+      .catch(console.error);
+  }, [schoolId]);
 
   const showToast = useCallback((type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -1277,7 +1429,6 @@ export default function Personnel() {
       case 'enseignement':    return !!(f.matiere_principale || f.matieres_secondaires || f.classes_principales);
       case 'situation_admin': return f.statut_administratif !== 'Actif' || !!(f.date_debut_conge || f.date_depart || f.observations);
       case 'documents':       return true;
-      case 'infos_systeme':   return true;
       default:                return false;
     }
   };
@@ -1296,8 +1447,7 @@ export default function Personnel() {
       case 'affectation':     return <SectionAffectation form={form} set={setField} />;
       case 'enseignement':    return <SectionEnseignement form={form} set={setField} />;
       case 'situation_admin': return <SectionSituationAdmin form={form} set={setField} />;
-      case 'documents':       return <SectionDocuments staff={form} />;
-      case 'infos_systeme':   return <SectionInfosSysteme staff={form} />;
+      case 'documents':       return <SectionDocuments staff={form} schoolSettings={schoolSettings} />;
       default: return null;
     }
   };

@@ -12,6 +12,7 @@ import StaffIdentityModal from '../components/StaffIdentityModal';
 import StaffListModal from '../components/StaffListModal';
 import StudentIdentityModal from '../components/StudentIdentityModal';
 import BulletinModal from '../components/BulletinModal';
+import CarteScolaireModal from '../components/CarteScolaireModal';
 import NominalListModal from '../components/NominalListModal';
 import PresenceListModal from '../components/PresenceListModal';
 import TimetableModal from '../components/TimetableModal';
@@ -30,6 +31,11 @@ interface ClassRow {
   id: string; name: string; level: string | null; level_id: string | null;
   student_count: number; homeroom_teacher_name: string | null;
 }
+interface FeeStructureRow {
+  id: string; name: string; amount: number; fee_type: string; applies_to: string;
+  class_name: string | null; due_date: string | null; is_mandatory: boolean;
+}
+
 interface StudentRow {
   id: string; student_id: string; class_id: string | null; status: string;
   first_name: string | null; last_name: string | null; matricule: string | null;
@@ -69,11 +75,6 @@ interface FinancialDashboard {
     remaining_balance: number;
     status: string;
   }[];
-}
-
-interface FeeStructureRow {
-  id: string; name: string; amount: number; fee_type: string; applies_to: string;
-  class_name: string | null; due_date: string | null; is_mandatory: boolean;
 }
 
 interface StaffRow {
@@ -128,6 +129,7 @@ const FEE_TYPES = [
   { id: 'CANTINE', label: 'Cantine' },
   { id: 'AUTRE', label: 'Autre' },
 ];
+
 const PAYMENT_METHODS = [
   { id: 'ESPECES', label: 'Espèces' },
   { id: 'MOBILE_MONEY', label: 'Mobile Money' },
@@ -191,11 +193,6 @@ const RIGHT_ACTIONS_PERSONNEL: { label: string; icon: typeof Users; tint: string
   { label: 'Badge du personnel', icon: CreditCard, tint: 'bg-emerald-50 text-emerald-600' },
 ];
 
-interface FeeStructureRow {
-  id: string; name: string; amount: number; fee_type: string; applies_to: string;
-  class_name: string | null; due_date: string | null; is_mandatory: boolean;
-}
-
 type Tab = 'college' | 'lycee' | 'finances' | 'personnel';
 type Group = 'college' | 'lycee';
 
@@ -257,6 +254,7 @@ export default function Archives() {
   const [notesListOpen, setNotesListOpen] = useState(false);
   const [presenceListOpen, setPresenceListOpen] = useState(false);
   const [timetableOpen, setTimetableOpen] = useState(false);
+  const [carteScolaireOpen, setCarteScolaireOpen] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
   const showToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
@@ -484,6 +482,14 @@ export default function Archives() {
         exportedBy: user?.email ?? 'Orion ERP',
       });
     }, 'Rapport financier annuel téléchargé.');
+  };
+
+  const handleCarteScolaire = () => {
+    if (!selectedYear) { showToast('error', 'Aucune année scolaire sélectionnée.'); return; }
+    if (!groupStudents || groupStudents.length === 0) {
+      showToast('error', 'Aucun élève disponible pour cette année.'); return;
+    }
+    setCarteScolaireOpen(true);
   };
 
   const tabCount = (id: Tab): number | null => {
@@ -1357,6 +1363,10 @@ export default function Archives() {
                       setPresenceListOpen(true);
                       return;
                     }
+                    if (a.label === 'Carte scolaire') {
+                      handleCarteScolaire();
+                      return;
+                    }
                     showToast('info', `${a.label} — ${docScopeLabel} : fonctionnalité à venir.`);
                   }}
                   className="group flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-left transition-all duration-200 hover:border-slate-200 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-transparent disabled:hover:bg-transparent"
@@ -1498,10 +1508,27 @@ export default function Archives() {
         />
       )}
 
+      {/* ═══ MODAL : CARTE SCOLAIRE ═══ */}
+      {carteScolaireOpen && (
+        <CarteScolaireModal
+          students={groupStudents}
+          classes={groupClasses}
+          school={schoolInfo}
+          schoolId={schoolId}
+          yearId={selectedYear.id}
+          yearName={selectedYear.name}
+          groupLabel={groupLabel}
+          onClose={() => setCarteScolaireOpen(false)}
+          onError={msg => showToast('error', msg)}
+          onSuccess={msg => showToast('success', msg)}
+        />
+      )}
+
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
     </div>
   );
 }
+
 
 
 
