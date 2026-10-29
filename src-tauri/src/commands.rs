@@ -4,6 +4,8 @@ use rusqlite::Connection;
 use std::sync::Mutex;
 use sysinfo::System;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use reqwest::Client;
 use crate::models::AcademicYear;
 
 #[derive(Serialize, Deserialize)]
@@ -288,6 +290,55 @@ pub fn get_current_user_roles(state: State<'_, DbState>, user_id: String, school
 pub fn set_local_user_role(user_id: String, school_id: String, role_name: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
 
+    let is_target_super_admin = role_name.trim().eq_ignore_ascii_case("SUPER_ADMIN");
+
+    // (ORI-SEC-003) : L'attribution du rôle SUPER_ADMIN requiert d'être authentifié comme SUPER_ADMIN
+    if is_target_super_admin {
+        let auth_res = crate::auth_guard::require_super_admin(&conn);
+        if auth_res.is_err() {
+            // Seule exception : aucun SUPER_ADMIN n'existe encore en base locale (amorçage initial)
+            let existing_sa: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM user_roles ur
+                 JOIN roles r ON r.id = ur.role_id
+                 WHERE r.name = 'SUPER_ADMIN'",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(0);
+            if existing_sa > 0 {
+                return Err("Action refusée : seul un Super Administrateur peut attribuer le rôle SUPER_ADMIN.".to_string());
+            }
+        }
+    } else {
+        // Pour les autres rôles :
+        // L'appelant doit être Direction de cette école, Super Admin,
+        // OU s'il synchronise son propre compte lors de son login (en ligne ou hors-ligne).
+        let caller = crate::auth_guard::get_authenticated_user(&conn);
+        match caller {
+            Ok(ref sess) if sess.user_id == user_id => {
+                // Synchronisation de son propre rôle lors de la connexion
+            }
+            Ok(ref sess) if sess.is_super_admin => {
+                // Super admin autorisé sur tout
+            }
+            Ok(ref sess) if sess.roles.iter().any(|r| r == "DIRECTION") => {
+                if sess.school_id != school_id && school_id != "school-1" && school_id != "school-main" {
+                    return Err("Action refusée : vous n'avez pas autorité sur cet établissement.".to_string());
+                }
+            }
+            _ => {
+                // Si aucune session n'est encore enregistrée en mémoire, vérifier si l'utilisateur existe déjà
+                let user_exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM users WHERE id = ?1 AND status = 'ACTIVE'",
+                    rusqlite::params![user_id],
+                    |row| row.get(0),
+                ).unwrap_or(0);
+                if user_exists == 0 {
+                    return Err("Action refusée : session non authentifiée ou privilèges insuffisants.".to_string());
+                }
+            }
+        }
+    }
+
     // École : réutilise si déjà connue, sinon crée un libellé par défaut.
     conn.execute(
         "INSERT INTO schools (id, name) VALUES (?1, ?2) ON CONFLICT(id) DO NOTHING",
@@ -490,12 +541,26 @@ pub fn enqueue_full_resync(school_id: String, state: State<'_, DbState>) -> Resu
 // COMMANDE : Synchronisation manuelle (bouton utilisateur)
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub async fn trigger_sync(app: tauri::AppHandle) -> Result<SyncStatus, String> {
+pub async fn trigger_sync(
+    app: tauri::AppHandle,
+    access_token: Option<String>,
+) -> Result<SyncStatus, String> {
+    if let Some(token) = access_token.as_ref() {
+        crate::sync::set_sync_access_token(Some(token.clone()));
+    }
+
     let db_path = app.path().app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
 
     crate::sync::run_manual_sync(db_path).await
+}
+
+/// Enregistre le JWT utilisateur pour la synchronisation (jamais une clé service_role).
+#[tauri::command]
+pub fn set_sync_access_token(token: Option<String>) -> Result<(), String> {
+    crate::sync::set_sync_access_token(token);
+    Ok(())
 }
 
 // ──────────────────────────────────────────────
@@ -3706,42 +3771,154 @@ pub fn store_offline_credentials(user_id: String, email: String, password: Strin
 /// Supprime complètement une école et toutes ses données du SQLite local.
 /// Appelé quand le SUPER_ADMIN supprime un établissement depuis Supabase,
 /// pour que le SQLite de cette machine soit cohérent immédiatement.
-#[tauri::command]
-pub fn purge_local_school(school_id: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+pub const PURGE_TABLES_WHITELIST: &[&str] = &[
+    "library_penalties",
+    "library_loans",
+    "library_reservations",
+    "library_copies",
+    "library_readers",
+    "library_books",
+    "library_categories",
+    "library_settings",
+    "grades",
+    "teacher_assignments",
+    "class_subjects",
+    "grading_periods",
+    "grade_types",
+    "subjects",
+    "payments",
+    "fee_structures",
+    "enrollment_history",
+    "enrollments",
+    "timetable_slots",
+    "classes",
+    "students",
+    "academic_years",
+    "staff",
+    "pending_mutations",
+    "sync_inbox",
+    "audit_logs",
+    "devices",
+    "licenses",
+    "user_roles",
+    "profiles",
+    "schools",
+];
 
-    // Suppression dans l'ordre correct (enfants avant parents)
-    let tables = [
-        "grades", "teacher_assignments", "class_subjects",
-        "grading_periods", "grade_types", "subjects",
-        "payments", "fee_structures",
-        "enrollment_history", "enrollments",
-        "staff", "timetable_slots",
-        "classes", "students",
-        "academic_years",
-        "pending_mutations", "sync_inbox",
-        "audit_logs", "devices", "licenses",
-        "user_roles", "profiles", "users",
-        "schools",
+/// Valide le format strict de l'identifiant d'école (alphanumérique, tirets, underscores).
+pub fn validate_school_id(school_id: &str) -> Result<&str, String> {
+    let trimmed = school_id.trim();
+    if trimmed.is_empty() {
+        return Err("L'identifiant d'établissement ne peut pas être vide.".to_string());
+    }
+    if trimmed.len() > 64 {
+        return Err("L'identifiant d'établissement est trop long (maximum 64 caractères).".to_string());
+    }
+    let is_valid = trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !is_valid {
+        return Err(format!(
+            "Format d'identifiant d'établissement invalide : caractères interdits détectés dans '{}'.",
+            trimmed
+        ));
+    }
+    Ok(trimmed)
+}
+
+/// Supprime de façon atomique (transactionnelle) et paramétrée toutes les données d'une école.
+pub fn purge_school_data(conn: &mut rusqlite::Connection, school_id: &str) -> Result<(), String> {
+    let valid_school_id = validate_school_id(school_id)?;
+
+    let tx = conn.transaction().map_err(|e| format!("Erreur ouverture transaction: {}", e))?;
+
+    // 1. Module Bibliothèque (si tables présentes)
+    let library_tables = [
+        "library_penalties", "library_loans", "library_reservations",
+        "library_copies", "library_readers", "library_books",
+        "library_categories", "library_settings"
     ];
-
-    for table in &tables {
-        // Certaines tables n'ont pas de colonne school_id → on ignore l'erreur
-        let sql = if *table == "enrollment_history" {
-            // enrollment_history n'a pas school_id, on passe par enrollments
-            format!(
-                "DELETE FROM enrollment_history WHERE enrollment_id IN \
-                 (SELECT id FROM enrollments WHERE school_id = '{}')",
-                school_id
-            )
-        } else {
-            format!("DELETE FROM {} WHERE school_id = '{}'", table, school_id)
-        };
-        // On ignore silencieusement si la colonne n'existe pas dans cette table
-        let _ = conn.execute(&sql, []);
+    for table in &library_tables {
+        if PURGE_TABLES_WHITELIST.contains(table) {
+            let sql = format!("DELETE FROM {} WHERE school_id = ?1", table);
+            let _ = tx.execute(&sql, rusqlite::params![valid_school_id]);
+        }
     }
 
+    // 2. Module Pédagogique & Notes
+    for table in &["grades", "teacher_assignments", "class_subjects", "grading_periods", "grade_types", "subjects"] {
+        if PURGE_TABLES_WHITELIST.contains(table) {
+            let sql = format!("DELETE FROM {} WHERE school_id = ?1", table);
+            let _ = tx.execute(&sql, rusqlite::params![valid_school_id]);
+        }
+    }
+
+    // 3. Module Financier
+    for table in &["payments", "fee_structures"] {
+        if PURGE_TABLES_WHITELIST.contains(table) {
+            let sql = format!("DELETE FROM {} WHERE school_id = ?1", table);
+            let _ = tx.execute(&sql, rusqlite::params![valid_school_id]);
+        }
+    }
+
+    // 4. Inscriptions & Élèves
+    // enrollment_history pointe vers enrollments.id (pas de colonne school_id directe)
+    let _ = tx.execute(
+        "DELETE FROM enrollment_history WHERE enrollment_id IN (SELECT id FROM enrollments WHERE school_id = ?1)",
+        rusqlite::params![valid_school_id],
+    );
+    for table in &["enrollments", "timetable_slots", "classes", "students", "academic_years", "staff"] {
+        if PURGE_TABLES_WHITELIST.contains(table) {
+            let sql = format!("DELETE FROM {} WHERE school_id = ?1", table);
+            let _ = tx.execute(&sql, rusqlite::params![valid_school_id]);
+        }
+    }
+
+    // 5. Synchronisation, Devices, Licences
+    for table in &["pending_mutations", "sync_inbox", "audit_logs", "devices", "licenses"] {
+        if PURGE_TABLES_WHITELIST.contains(table) {
+            let sql = format!("DELETE FROM {} WHERE school_id = ?1", table);
+            let _ = tx.execute(&sql, rusqlite::params![valid_school_id]);
+        }
+    }
+
+    // 6. Utilisateurs exclusifs à cette école (qui n'appartiennent à aucune autre école et ne sont pas SUPER_ADMIN)
+    let _ = tx.execute(
+        "DELETE FROM users WHERE id IN (
+            SELECT ur.user_id FROM user_roles ur WHERE ur.school_id = ?1
+        ) AND id NOT IN (
+            SELECT ur2.user_id FROM user_roles ur2 WHERE ur2.school_id <> ?1
+        ) AND id NOT IN (
+            SELECT ur3.user_id FROM user_roles ur3
+            JOIN roles r ON r.id = ur3.role_id
+            WHERE r.name = 'SUPER_ADMIN'
+        )",
+        rusqlite::params![valid_school_id],
+    );
+
+    // 7. Rôles et profils de l'école
+    let _ = tx.execute("DELETE FROM user_roles WHERE school_id = ?1", rusqlite::params![valid_school_id]);
+    let _ = tx.execute("DELETE FROM profiles WHERE school_id = ?1", rusqlite::params![valid_school_id]);
+
+    // 8. École elle-même
+    tx.execute("DELETE FROM schools WHERE id = ?1", rusqlite::params![valid_school_id])
+        .map_err(|e| format!("Erreur suppression école: {}", e))?;
+
+    tx.commit().map_err(|e| format!("Erreur validation transaction purge: {}", e))?;
+
     Ok(())
+}
+
+/// Supprime complètement une école et toutes ses données du SQLite local.
+/// (ORI-SEC-004) : Exécution sécurisée avec paramètres bindés rusqlite, validation
+/// du format de school_id et atomicité via transaction (rollback automatique en cas d'erreur).
+#[tauri::command]
+pub fn purge_local_school(school_id: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    // (ORI-SEC-003) : Seul le Super Administrateur peut déclencher la purge locale
+    crate::auth_guard::require_super_admin(&conn)?;
+
+    // (ORI-SEC-004) : Purge transactionnelle sécurisée
+    purge_school_data(&mut conn, &school_id)
 }
 
 /// Vérifie si une école existe encore dans la base SQLite locale.
@@ -4032,13 +4209,16 @@ pub fn create_local_user(
     last_name: String,
     phone: Option<String>,
     role_id: String,
-    actor_id: String,
+    _actor_id: String,
     staff_id: Option<String>,
     state: State<'_, DbState>
 ) -> Result<LocalUserInfo, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
 
-    guard_super_admin_assignment(&conn, &actor_id, &role_id)?;
+    // (ORI-SEC-003) : Exiger les droits de Direction sur school_id ou SUPER_ADMIN
+    let caller = crate::auth_guard::require_direction_or_super_admin(&conn, Some(&school_id))?;
+
+    guard_super_admin_assignment(&conn, &caller.user_id, &role_id)?;
 
     let username = username.trim().to_string();
     if username.is_empty() {
@@ -4174,6 +4354,45 @@ fn uuid_v4() -> String {
 #[tauri::command]
 pub fn toggle_user_status(user_id: String, new_status: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+
+    // 1. Trouver l'établissement et les rôles de l'utilisateur cible
+    let target_school_id: Option<String> = conn.query_row(
+        "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).ok();
+
+    let target_is_super: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM user_roles ur
+         JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    // 2. Vérification des permissions de l'appelant
+    let caller = crate::auth_guard::require_direction_or_super_admin(&conn, target_school_id.as_deref())?;
+
+    // 3. Un compte SUPER_ADMIN ne peut être modifié QUE par un SUPER_ADMIN
+    if target_is_super > 0 && !caller.is_super_admin {
+        return Err("Action refusée : seul un Super Administrateur peut modifier le statut d'un compte Super Admin.".to_string());
+    }
+
+    // 4. Empêcher l'auto-suspension du dernier administrateur actif de l'école
+    if caller.user_id == user_id && new_status != "ACTIVE" {
+        let active_admins: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT ur.user_id) FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             JOIN users u ON u.id = ur.user_id
+             WHERE ur.school_id = ?1 AND (r.name = 'DIRECTION' OR r.name = 'SUPER_ADMIN') AND u.status = 'ACTIVE'",
+            rusqlite::params![caller.school_id],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        if active_admins <= 1 {
+            return Err("Action refusée : impossible de suspendre l'unique administrateur actif de l'établissement.".to_string());
+        }
+    }
+
     conn.execute(
         "UPDATE users SET status = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
         rusqlite::params![new_status, user_id]
@@ -4182,16 +4401,35 @@ pub fn toggle_user_status(user_id: String, new_status: String, state: State<'_, 
 }
 
 #[tauri::command]
-pub fn assign_user_role(user_id: String, school_id: String, role_id: String, actor_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn assign_user_role(
+    user_id: String,
+    school_id: String,
+    role_id: String,
+    _actor_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
 
-    guard_super_admin_assignment(&conn, &actor_id, &role_id)?;
+    // (ORI-SEC-003) : Vérification d'autorisation centralisée
+    let caller = crate::auth_guard::require_direction_or_super_admin(&conn, Some(&school_id))?;
 
-    // Supprimer l'ancien rôle pour cet école
+    let target_role_name: Option<String> = conn.query_row(
+        "SELECT name FROM roles WHERE id = ?1",
+        rusqlite::params![role_id],
+        |row| row.get(0),
+    ).ok();
+
+    // Seul un SUPER_ADMIN peut attribuer le rôle SUPER_ADMIN
+    if target_role_name.as_deref() == Some("SUPER_ADMIN") && !caller.is_super_admin {
+        return Err("Action refusée : seul un Super Administrateur peut attribuer le rôle SUPER_ADMIN.".to_string());
+    }
+
+    // Supprimer l'ancien rôle pour cette école
     conn.execute(
         "DELETE FROM user_roles WHERE user_id = ?1 AND school_id = ?2",
         rusqlite::params![user_id, school_id]
     ).map_err(|e| e.to_string())?;
+
     // Attribuer le nouveau
     let id = format!("ur-{}-{}", user_id, role_id);
     conn.execute(
@@ -4204,6 +4442,33 @@ pub fn assign_user_role(user_id: String, school_id: String, role_id: String, act
 #[tauri::command]
 pub fn delete_local_user(user_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+
+    let target_school_id: Option<String> = conn.query_row(
+        "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).ok();
+
+    let target_is_super: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM user_roles ur
+         JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    // (ORI-SEC-003) : Vérification d'autorisation centralisée
+    let caller = crate::auth_guard::require_direction_or_super_admin(&conn, target_school_id.as_deref())?;
+
+    if target_is_super > 0 && !caller.is_super_admin {
+        return Err("Action refusée : seul un Super Administrateur peut supprimer un compte Super Admin.".to_string());
+    }
+
+    // Empêcher l'auto-suppression de son propre compte connecté
+    if caller.user_id == user_id {
+        return Err("Action refusée : vous ne pouvez pas supprimer votre propre compte connecté.".to_string());
+    }
+
     // Supprimer les dépendances dans l'ordre (user_roles, profiles, users)
     conn.execute("DELETE FROM user_roles WHERE user_id = ?1", rusqlite::params![user_id])
         .map_err(|e| format!("Erreur suppression rôles: {}", e))?;
@@ -4229,7 +4494,7 @@ pub struct LoginProfile {
     pub role_name: Option<String>,
 }
 
-/// Définit ou change le mot de passe d'un utilisateur (réservé à la Direction)
+/// Définit ou change le mot de passe d'un utilisateur (réservé à l'utilisateur lui-même, à sa Direction ou au Super Admin)
 #[tauri::command]
 pub fn set_user_password(user_id: String, password: String, state: State<'_, DbState>) -> Result<(), String> {
     use bcrypt::{hash, DEFAULT_COST};
@@ -4239,6 +4504,28 @@ pub fn set_user_password(user_id: String, password: String, state: State<'_, DbS
     }
 
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+
+    let target_school_id: Option<String> = conn.query_row(
+        "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).ok();
+
+    let target_is_super: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM user_roles ur
+         JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    // (ORI-SEC-003) : Soit l'utilisateur lui-même, soit la Direction de son école, soit le Super Admin
+    let caller = crate::auth_guard::require_self_or_direction(&conn, &user_id, target_school_id.as_deref())?;
+
+    if target_is_super > 0 && !caller.is_super_admin && caller.user_id != user_id {
+        return Err("Action refusée : seul un Super Administrateur peut modifier le mot de passe d'un Super Admin.".to_string());
+    }
+
     let hashed = hash(&password, DEFAULT_COST).map_err(|e| format!("Erreur hash: {}", e))?;
 
     conn.execute(
@@ -4249,135 +4536,18 @@ pub fn set_user_password(user_id: String, password: String, state: State<'_, DbS
     Ok(())
 }
 
-/// Identifiant maître pour accéder au compte SUPER_ADMIN.
-pub const SUPER_ADMIN_IDENTIFIER: &str = "Admin";
-
-/// Mot de passe maître Super Admin, lu depuis la configuration (jamais en dur).
-///
-/// Ordre de résolution :
-///   1. variable d'environnement `ORION_SUPER_ADMIN_MASTER_PASSWORD` (runtime) ;
-///   2. valeur embarquée à la compilation via `option_env!` (build CI/CD) ;
-///   3. fichier `.env` (dev / à côté de l'exécutable).
-///
-/// Si aucune valeur n'est définie, la connexion par mot de passe maître est
-/// désactivée : seul un mot de passe déjà défini permet d'entrer.
-fn super_admin_master_password() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    std::env::var("ORION_SUPER_ADMIN_MASTER_PASSWORD")
-        .ok()
-        .or_else(|| option_env!("ORION_SUPER_ADMIN_MASTER_PASSWORD").map(String::from))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Connexion locale par identifiant (nom d'utilisateur ou email) + mot de passe
-#[tauri::command]
-pub fn login_local(identifier: String, password: String, school_id: String, state: State<'_, DbState>) -> Result<LoginProfile, String> {
+/// Vérifie les identifiants individuels contre la base SQLite sans aucun mot de passe maître
+pub fn login_local_conn(
+    conn: &rusqlite::Connection,
+    identifier: &str,
+    password: &str,
+    school_id: &str,
+) -> Result<LoginProfile, String> {
     use bcrypt::verify;
-
-    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
 
     let ident = identifier.trim();
     if ident.is_empty() || password.is_empty() {
         return Err("Identifiant ou mot de passe incorrect.".to_string());
-    }
-
-    // ─── Règle SUPER_ADMIN : identifiant « Admin » ou mot de passe maître ───
-    if ident.eq_ignore_ascii_case(SUPER_ADMIN_IDENTIFIER) {
-        let is_master_pw = super_admin_master_password().as_deref() == Some(password.trim());
-
-        let existing_sa: Result<(String, String, Option<String>, Option<String>), _> = conn.query_row(
-            "SELECT u.id, u.email, u.username, u.password_hash
-             FROM users u
-             JOIN user_roles ur ON ur.user_id = u.id
-             JOIN roles r ON r.id = ur.role_id
-             WHERE r.name = 'SUPER_ADMIN' AND u.status = 'ACTIVE'
-             ORDER BY CASE WHEN ur.school_id = ?1 THEN 0 ELSE 1 END
-             LIMIT 1",
-            rusqlite::params![school_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        );
-
-        let (sa_id, sa_email, sa_username) = match existing_sa {
-            Ok((id, email, username, hash)) => {
-                let valid = is_master_pw || hash.as_deref().map(|h| verify(&password, h).unwrap_or(false)).unwrap_or(false);
-                if !valid {
-                    return Err("Mot de passe incorrect.".to_string());
-                }
-                (id, email, username)
-            }
-            Err(_) => {
-                if !is_master_pw {
-                    return Err("Mot de passe incorrect. Pour initialiser le Super Admin, utilisez le mot de passe maître.".to_string());
-                }
-
-                // Initialisation automatique du compte SUPER_ADMIN local
-                let sa_user_id = "user-superadmin-master".to_string();
-                let sa_email_val = "admin@orion.local".to_string();
-                let sa_user_name = Some("Admin".to_string());
-
-                conn.execute(
-                    "INSERT INTO roles (id, name, description) VALUES ('role_admin', 'SUPER_ADMIN', 'Administrateur système')
-                     ON CONFLICT(name) DO NOTHING",
-                    [],
-                ).ok();
-
-                let role_id: String = conn.query_row(
-                    "SELECT id FROM roles WHERE name = 'SUPER_ADMIN' LIMIT 1",
-                    [],
-                    |r| r.get(0),
-                ).unwrap_or_else(|_| "role_admin".to_string());
-
-                let target_school_id = if school_id.trim().is_empty() { "school-1" } else { &school_id };
-                conn.execute(
-                    "INSERT INTO schools (id, name) VALUES (?1, 'Établissement Principal') ON CONFLICT(id) DO NOTHING",
-                    rusqlite::params![target_school_id],
-                ).ok();
-
-                conn.execute(
-                    "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?3, 'ACTIVE')
-                     ON CONFLICT(id) DO UPDATE SET status = 'ACTIVE', username = ?3",
-                    rusqlite::params![sa_user_id, sa_email_val, sa_user_name],
-                ).map_err(|e| format!("Erreur création utilisateur superadmin: {}", e))?;
-
-                let link_id = format!("ur-{}-{}-{}", sa_user_id, target_school_id, role_id);
-                conn.execute(
-                    "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT(id) DO NOTHING",
-                    rusqlite::params![link_id, sa_user_id, target_school_id, role_id],
-                ).map_err(|e| format!("Erreur liaison rôle superadmin: {}", e))?;
-
-                let prof_id = format!("prof-{}", sa_user_id);
-                conn.execute(
-                    "INSERT INTO profiles (id, user_id, school_id, first_name, last_name) VALUES (?1, ?2, ?3, 'Super', 'Admin')
-                     ON CONFLICT(id) DO NOTHING",
-                    rusqlite::params![prof_id, sa_user_id, target_school_id],
-                ).ok();
-
-                (sa_user_id, sa_email_val, sa_user_name)
-            }
-        };
-
-        let (sa_first, sa_last, sa_role): (Option<String>, Option<String>, Option<String>) = conn.query_row(
-            "SELECT p.first_name, p.last_name, r.name
-             FROM users u
-             LEFT JOIN profiles p ON p.user_id = u.id AND p.deleted_at IS NULL
-             LEFT JOIN user_roles ur ON ur.user_id = u.id
-             LEFT JOIN roles r ON r.id = ur.role_id
-             WHERE u.id = ?1
-             LIMIT 1",
-            rusqlite::params![sa_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).unwrap_or((Some("Super".to_string()), Some("Admin".to_string()), Some("SUPER_ADMIN".to_string())));
-
-        return Ok(LoginProfile {
-            user_id: sa_id,
-            email: sa_email,
-            username: sa_username,
-            first_name: sa_first,
-            last_name: sa_last,
-            role_name: Some(sa_role.unwrap_or_else(|| "SUPER_ADMIN".to_string())),
-        });
     }
 
     let (user_id, email, username, status, hash_str): (String, String, Option<String>, String, Option<String>) = conn.query_row(
@@ -4392,6 +4562,16 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
         return Err("Ce compte est suspendu. Contactez la direction.".to_string());
     }
 
+    match hash_str {
+        None => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
+        Some(ref s) if s.is_empty() => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
+        Some(h) => {
+            if !verify(password, &h).unwrap_or(false) {
+                return Err("Identifiant ou mot de passe incorrect.".to_string());
+            }
+        }
+    }
+
     let is_super: i64 = conn.query_row(
         "SELECT COUNT(*) FROM user_roles ur
          JOIN roles r ON r.id = ur.role_id
@@ -4400,26 +4580,7 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
         |row| row.get(0),
     ).unwrap_or(0);
 
-    let is_master_pw = is_super > 0 && super_admin_master_password().as_deref() == Some(password.trim());
-
-    if !is_master_pw {
-        match hash_str {
-            None => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
-            Some(ref s) if s.is_empty() => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
-            Some(h) => {
-                if !verify(&password, &h).unwrap_or(false) {
-                    return Err("Identifiant ou mot de passe incorrect.".to_string());
-                }
-            }
-        }
-    }
-
     // ─── Vérification de l'établissement ─────────────────────────────────────
-    // Pour un utilisateur non Super Admin : si un établissement précis est
-    // demandé et qu'il n'existe plus localement (supprimé par le Super Admin),
-    // on refuse la connexion — même hors-ligne. Empêche un compte rattaché à
-    // une école supprimée de se connecter tant que des données locales
-    // résiduelles subsistent sur cette machine.
     if is_super == 0 && !school_id.trim().is_empty() && school_id != "school-1" {
         let school_exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schools WHERE id = ?1",
@@ -4435,10 +4596,11 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
     let (first_name, last_name, mut role_name): (Option<String>, Option<String>, Option<String>) = if !school_id.trim().is_empty() {
         conn.query_row(
             "SELECT p.first_name, p.last_name, r.name
-             FROM profiles p
-             LEFT JOIN user_roles ur ON ur.user_id = p.user_id AND ur.school_id = ?2
+             FROM users u
+             LEFT JOIN profiles p ON p.user_id = u.id AND (p.school_id = ?2 OR p.school_id IS NULL)
+             LEFT JOIN user_roles ur ON ur.user_id = u.id AND (ur.school_id = ?2 OR ur.school_id IS NULL)
              LEFT JOIN roles r ON r.id = ur.role_id
-             WHERE p.user_id = ?1 AND p.school_id = ?2
+             WHERE u.id = ?1
              LIMIT 1",
             rusqlite::params![user_id, school_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -4446,10 +4608,11 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
     } else {
         conn.query_row(
             "SELECT p.first_name, p.last_name, r.name
-             FROM profiles p
-             LEFT JOIN user_roles ur ON ur.user_id = p.user_id
+             FROM users u
+             LEFT JOIN profiles p ON p.user_id = u.id
+             LEFT JOIN user_roles ur ON ur.user_id = u.id
              LEFT JOIN roles r ON r.id = ur.role_id
-             WHERE p.user_id = ?1
+             WHERE u.id = ?1
              LIMIT 1",
             rusqlite::params![user_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -4460,6 +4623,10 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
         role_name = Some("SUPER_ADMIN".to_string());
     }
 
+    // (ORI-SEC-003) : Enregistrer la session active en mémoire Rust
+    let target_school_id = if school_id.trim().is_empty() { "school-1" } else { school_id };
+    let _ = crate::auth_guard::establish_local_session(conn, &user_id, target_school_id);
+
     Ok(LoginProfile {
         user_id,
         email,
@@ -4468,6 +4635,59 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
         last_name,
         role_name,
     })
+}
+
+/// Connexion locale par identifiant (nom d'utilisateur ou email) + mot de passe individuel
+#[tauri::command]
+pub fn login_local(identifier: String, password: String, school_id: String, state: State<'_, DbState>) -> Result<LoginProfile, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    login_local_conn(&conn, &identifier, &password, &school_id)
+}
+
+/// Restaure la session locale en vérifiant dans SQLite que le compte est toujours actif
+#[tauri::command]
+pub fn restore_local_session(
+    user_id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<LoginProfile, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let session = crate::auth_guard::establish_local_session(&conn, &user_id, &school_id)?;
+
+    let (first_name, last_name, role_name): (Option<String>, Option<String>, Option<String>) = conn.query_row(
+        "SELECT p.first_name, p.last_name, r.name
+         FROM users u
+         LEFT JOIN profiles p ON p.user_id = u.id AND (p.school_id = ?2 OR p.school_id IS NULL)
+         LEFT JOIN user_roles ur ON ur.user_id = u.id AND (ur.school_id = ?2 OR ur.school_id IS NULL)
+         LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE u.id = ?1
+         LIMIT 1",
+        rusqlite::params![user_id, school_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap_or((None, None, None));
+
+    let username: Option<String> = conn.query_row(
+        "SELECT username FROM users WHERE id = ?1",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    ).ok().flatten();
+
+    Ok(LoginProfile {
+        user_id,
+        email: session.email.unwrap_or_default(),
+        username,
+        first_name,
+        last_name,
+        role_name: if session.is_super_admin { Some("SUPER_ADMIN".to_string()) } else { role_name },
+    })
+}
+
+/// Ferme la session locale courante
+#[tauri::command]
+pub fn clear_local_session() -> Result<(), String> {
+    crate::auth_guard::clear_session();
+    crate::sync::set_sync_access_token(None);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -4762,5 +4982,217 @@ pub fn get_school_dashboard_stats(
     })
 }
 
+// Les opérations Auth admin (création / suppression / liste / MAJ)
+// passent par des Edge Functions Supabase authentifiées.
+// La clé service_role ne doit jamais être lue par ce binaire.
 
+#[cfg(test)]
+mod purge_tests {
+    use super::*;
+    use rusqlite::Connection;
 
+    fn setup_two_schools_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             CREATE TABLE schools (id TEXT PRIMARY KEY, name TEXT);
+             CREATE TABLE academic_years (id TEXT PRIMARY KEY, school_id TEXT, name TEXT);
+             CREATE TABLE classes (id TEXT PRIMARY KEY, school_id TEXT, name TEXT);
+             CREATE TABLE students (id TEXT PRIMARY KEY, school_id TEXT, first_name TEXT);
+             CREATE TABLE enrollments (id TEXT PRIMARY KEY, school_id TEXT, student_id TEXT);
+             CREATE TABLE enrollment_history (id TEXT PRIMARY KEY, enrollment_id TEXT, status TEXT);
+             CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT);
+             CREATE TABLE user_roles (id TEXT PRIMARY KEY, user_id TEXT, school_id TEXT, role_id TEXT);
+             CREATE TABLE roles (id TEXT PRIMARY KEY, name TEXT);
+             CREATE TABLE profiles (id TEXT PRIMARY KEY, user_id TEXT, school_id TEXT);
+
+             INSERT INTO roles (id, name) VALUES ('r1', 'DIRECTION'), ('r2', 'SUPER_ADMIN');
+
+             -- École 1 et ses données
+             INSERT INTO schools (id, name) VALUES ('school-1', 'École Alpha');
+             INSERT INTO academic_years (id, school_id, name) VALUES ('ay-1', 'school-1', '2025-2026');
+             INSERT INTO classes (id, school_id, name) VALUES ('c-1', 'school-1', '6ème A');
+             INSERT INTO students (id, school_id, first_name) VALUES ('s-1', 'school-1', 'Alice');
+             INSERT INTO enrollments (id, school_id, student_id) VALUES ('e-1', 'school-1', 's-1');
+             INSERT INTO enrollment_history (id, enrollment_id, status) VALUES ('eh-1', 'e-1', 'CONFIRME');
+             INSERT INTO users (id, email) VALUES ('u-1', 'user1@alpha.com');
+             INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-1', 'u-1', 'school-1', 'r1');
+             INSERT INTO profiles (id, user_id, school_id) VALUES ('p-1', 'u-1', 'school-1');
+
+             -- École 2 et ses données
+             INSERT INTO schools (id, name) VALUES ('school-2', 'École Bêta');
+             INSERT INTO academic_years (id, school_id, name) VALUES ('ay-2', 'school-2', '2025-2026');
+             INSERT INTO classes (id, school_id, name) VALUES ('c-2', 'school-2', '5ème B');
+             INSERT INTO students (id, school_id, first_name) VALUES ('s-2', 'school-2', 'Bob');
+             INSERT INTO enrollments (id, school_id, student_id) VALUES ('e-2', 'school-2', 's-2');
+             INSERT INTO enrollment_history (id, enrollment_id, status) VALUES ('eh-2', 'e-2', 'CONFIRME');
+             INSERT INTO users (id, email) VALUES ('u-2', 'user2@beta.com');
+             INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-2', 'u-2', 'school-2', 'r1');
+             INSERT INTO profiles (id, user_id, school_id) VALUES ('p-2', 'u-2', 'school-2');
+            "
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_purge_school_success_and_isolation() {
+        let mut conn = setup_two_schools_db();
+
+        // Purge de school-1
+        let res = purge_school_data(&mut conn, "school-1");
+        assert!(res.is_ok(), "La purge doit réussir: {:?}", res.err());
+
+        // Vérifier que school-1 et ses données sont supprimées
+        let s1_count: i64 = conn.query_row("SELECT COUNT(*) FROM schools WHERE id = 'school-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s1_count, 0);
+        let s1_students: i64 = conn.query_row("SELECT COUNT(*) FROM students WHERE school_id = 'school-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s1_students, 0);
+        let s1_classes: i64 = conn.query_row("SELECT COUNT(*) FROM classes WHERE school_id = 'school-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s1_classes, 0);
+        let s1_history: i64 = conn.query_row("SELECT COUNT(*) FROM enrollment_history WHERE id = 'eh-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s1_history, 0);
+        let s1_users: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE id = 'u-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s1_users, 0);
+
+        // Vérifier que school-2 et ses données restent STRICTEMENT intactes
+        let s2_count: i64 = conn.query_row("SELECT COUNT(*) FROM schools WHERE id = 'school-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s2_count, 1);
+        let s2_students: i64 = conn.query_row("SELECT COUNT(*) FROM students WHERE school_id = 'school-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s2_students, 1);
+        let s2_classes: i64 = conn.query_row("SELECT COUNT(*) FROM classes WHERE school_id = 'school-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s2_classes, 1);
+        let s2_history: i64 = conn.query_row("SELECT COUNT(*) FROM enrollment_history WHERE id = 'eh-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s2_history, 1);
+        let s2_users: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE id = 'u-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s2_users, 1);
+    }
+
+    #[test]
+    fn test_purge_sql_injection_attempts_are_blocked() {
+        let mut conn = setup_two_schools_db();
+
+        let malicious_payloads = [
+            "school-1' OR '1'='1",
+            "school-1'; DROP TABLE students; --",
+            "' OR 1=1 --",
+            "school-1' UNION SELECT * FROM users --",
+            "school-1\" OR \"1\"=\"1",
+            "school-1\0evil",
+        ];
+
+        for payload in &malicious_payloads {
+            let res = purge_school_data(&mut conn, payload);
+            assert!(res.is_err(), "Le payload malveillant '{}' doit être rejeté par validate_school_id", payload);
+        }
+
+        // Vérifier qu'absolument AUCUNE donnée n'a été altérée
+        let s1_count: i64 = conn.query_row("SELECT COUNT(*) FROM schools WHERE id = 'school-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s1_count, 1, "school-1 doit être intact");
+        let s2_count: i64 = conn.query_row("SELECT COUNT(*) FROM schools WHERE id = 'school-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s2_count, 1, "school-2 doit être intact");
+        let students_count: i64 = conn.query_row("SELECT COUNT(*) FROM students", [], |r| r.get(0)).unwrap();
+        assert_eq!(students_count, 2, "La table students ne doit pas avoir été vidée ni altérée");
+    }
+
+    #[test]
+    fn test_purge_empty_school_id_is_rejected() {
+        let mut conn = setup_two_schools_db();
+        assert!(purge_school_data(&mut conn, "").is_err());
+        assert!(purge_school_data(&mut conn, "   ").is_err());
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_test_auth_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-1', 'École de test')", []).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_super_admin_individual_password_login() {
+        let conn = setup_test_auth_db();
+        let hashed = bcrypt::hash("PersonalPassword2026!", bcrypt::DEFAULT_COST).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, username, password_hash, status) VALUES ('u-sa', 'superadmin@orion.app', 'SuperAdmin', ?1, 'ACTIVE')",
+            rusqlite::params![hashed],
+        ).unwrap();
+
+        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa', 'u-sa', 'school-1', ?1)",
+            rusqlite::params![sa_role_id],
+        ).unwrap();
+
+        // 1. Connexion réussie avec mot de passe individuel via username
+        let profile = login_local_conn(&conn, "SuperAdmin", "PersonalPassword2026!", "school-1").unwrap();
+        assert_eq!(profile.user_id, "u-sa");
+        assert_eq!(profile.role_name, Some("SUPER_ADMIN".to_string()));
+
+        // Connexion réussie via email
+        let profile_email = login_local_conn(&conn, "superadmin@orion.app", "PersonalPassword2026!", "school-1").unwrap();
+        assert_eq!(profile_email.user_id, "u-sa");
+
+        // 2. Échec avec l'ancien mot de passe maître (rejeté car aucun mot de passe maître n'existe)
+        let err_master = login_local_conn(&conn, "SuperAdmin", "@admin@//10", "school-1");
+        assert!(err_master.is_err(), "L'ancien mot de passe maître doit être rejeté");
+
+        // 3. Échec avec un mauvais mot de passe
+        let err_wrong = login_local_conn(&conn, "SuperAdmin", "WrongPassword", "school-1");
+        assert!(err_wrong.is_err(), "Un mauvais mot de passe doit être rejeté");
+
+        // 4. Tentative avec 'Admin' sans compte correspondant échoue
+        let err_unknown = login_local_conn(&conn, "Admin", "@admin@//10", "school-1");
+        assert!(err_unknown.is_err(), "Un identifiant inexistant doit être rejeté");
+    }
+
+    #[test]
+    fn test_user_without_password_hash_cannot_login() {
+        let conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, username, password_hash, status) VALUES ('u-sa2', 'sa2@orion.app', 'sa2', NULL, 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa2', 'u-sa2', 'school-1', ?1)",
+            rusqlite::params![sa_role_id],
+        ).unwrap();
+
+        let res = login_local_conn(&conn, "sa2", "AnyPassword", "school-1");
+        assert!(res.is_err(), "Un compte sans hash de mot de passe ne doit pas pouvoir se connecter");
+    }
+
+    #[test]
+    fn test_standard_user_cannot_get_super_admin_role() {
+        let conn = setup_test_auth_db();
+        let hashed = bcrypt::hash("UserPassword123!", bcrypt::DEFAULT_COST).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, username, password_hash, status) VALUES ('u-std', 'user@school.com', 'stduser', ?1, 'ACTIVE')",
+            rusqlite::params![hashed],
+        ).unwrap();
+
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-std', 'u-std', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO profiles (id, user_id, school_id, first_name, last_name) VALUES ('p-std', 'u-std', 'school-1', 'Standard', 'User')",
+            [],
+        ).unwrap();
+
+        let profile = login_local_conn(&conn, "stduser", "UserPassword123!", "school-1").unwrap();
+        assert_eq!(profile.role_name, Some("DIRECTION".to_string()));
+        assert_ne!(profile.role_name, Some("SUPER_ADMIN".to_string()));
+    }
+}

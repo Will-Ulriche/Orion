@@ -145,8 +145,8 @@ export default function Login({
     setError('');
 
     try {
-      // Règle SUPER_ADMIN : identifiant « Admin » + mot de passe maître.
-      // Se lie au compte SUPER_ADMIN déjà activé localement.
+      // Si l'utilisateur saisit un nom d'utilisateur local (ex: « Admin ») plutôt qu'un email complet,
+      // on délègue directement à l'authentification locale individuelle.
       if (email.trim().toLowerCase() === 'admin') {
         const res = await invoke<{ user_id: string; email: string }>('login_local', {
           identifier: email.trim(),

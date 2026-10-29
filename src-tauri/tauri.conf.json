@@ -19,7 +19,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' asset: http://asset.localhost tauri: data: blob: https://*.supabase.co https://api.dicebear.com; connect-src 'self' ipc: http://ipc.localhost tauri: asset: http://asset.localhost https://*.supabase.co wss://*.supabase.co; frame-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
+      "devCsp": "default-src 'self' http://localhost:1420; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420 https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' asset: http://asset.localhost tauri: data: blob: https://*.supabase.co https://api.dicebear.com http://localhost:1420; connect-src 'self' ipc: http://ipc.localhost tauri: asset: http://asset.localhost https://*.supabase.co wss://*.supabase.co http://localhost:1420 ws://localhost:1420; frame-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
     }
   },
   "bundle": {
