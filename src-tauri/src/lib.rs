@@ -3,6 +3,7 @@ pub mod commands;
 pub mod library;
 pub mod models;
 pub mod sync;
+pub mod auth_guard;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -187,7 +188,10 @@ pub fn run() {
             library::fulfill_library_reservation,
             library::get_library_dashboard,
             library::seed_library_demo_data,
-            library::clear_library_data
+            library::clear_library_data,
+            commands::set_sync_access_token,
+            commands::restore_local_session,
+            commands::clear_local_session,
         ])
         .run(tauri::generate_context!())
         .expect("Erreur lors du lancement de l'application Tauri");

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { KeyRound, RefreshCw, ShieldOff, Clock, Ban, AlertTriangle, Key, CheckCircle, LogIn } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabaseAdmin } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
 
 function normalizeLicenseKey(input: string): string {
@@ -74,7 +74,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         if (metaSchoolId) targetId = metaSchoolId;
       }
       try {
-        const { data: prof } = await supabaseAdmin
+        const { data: prof } = await supabase
           .from('profiles')
           .select('school_id')
           .eq('user_id', user.id)
@@ -82,8 +82,8 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         if (prof?.school_id) targetId = prof.school_id;
       } catch (_) {}
 
-      // Interroger Supabase via supabaseAdmin (contourne le RLS pour vérifier la licence)
-      const { data: lics, error } = await supabaseAdmin
+      // Interroger Supabase via le client anon (RLS appliqué)
+      const { data: lics, error } = await supabase
         .from('licenses')
         .select('id, school_id, license_key, status, starts_at, expires_at, max_devices')
         .eq('school_id', targetId)
@@ -96,7 +96,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
 
       // Fallback si l'école utilise encore school-1
       if (cloudLics.length === 0 && targetId !== 'school-1') {
-        const { data: fallbackLics } = await supabaseAdmin
+        const { data: fallbackLics } = await supabase
           .from('licenses')
           .select('id, school_id, license_key, status, starts_at, expires_at, max_devices')
           .eq('school_id', 'school-1')
@@ -262,7 +262,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
     setActivationError('');
     setActivationSuccess('');
     try {
-      const { data: lic, error } = await supabaseAdmin
+      const { data: lic, error } = await supabase
         .from('licenses')
         .select('*')
         .eq('license_key', cleanKey)
@@ -280,7 +280,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         localStorage.setItem('current_school_id', effectiveId);
         window.dispatchEvent(new Event('orion:school-changed'));
       } else if (!lic.school_id || lic.school_id === 'unassigned') {
-        await supabaseAdmin
+        await supabase
           .from('licenses')
           .update({ school_id: effectiveId, status: 'ACTIVE' })
           .eq('id', lic.id);

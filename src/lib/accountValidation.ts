@@ -1,4 +1,4 @@
-import { supabaseAdmin } from './supabaseClient';
+import { supabase } from './supabaseClient';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -22,7 +22,7 @@ export type CloudAccountState = 'active' | 'missing' | 'unknown';
 export async function verifyCloudAccount(userId: string): Promise<CloudAccountState> {
   if (!isCloudManagedUserId(userId)) return 'unknown';
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('users')
       .select('id, status')
       .eq('id', userId)
@@ -47,7 +47,7 @@ export async function verifyCloudAccount(userId: string): Promise<CloudAccountSt
 export async function verifyCloudSchool(schoolId: string): Promise<CloudAccountState> {
   if (!isCloudManagedUserId(schoolId)) return 'unknown';
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('schools')
       .select('id, status')
       .eq('id', schoolId)

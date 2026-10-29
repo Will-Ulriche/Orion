@@ -21,11 +21,16 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 use reqwest::Client;
 use serde_json::Value;
 use dotenvy::dotenv;
 use std::env;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+/// JWT utilisateur courant pour les appels REST (jamais persisté, jamais service_role).
+static SYNC_ACCESS_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 
 /// Identifiant canonique de la ligne d'état du moteur.
 /// Toutes les lectures/écritures sur `sync_state` ciblent cette ligne, ce qui
@@ -105,31 +110,80 @@ pub struct InboxConflict {
 // Tournera en arrière-plan toutes les 5 minutes
 // ──────────────────────────────────────────────
 
-fn get_supabase_config() -> (String, String) {
+/// Refuse une clé JWT dont le claim `role` est `service_role`.
+/// Une variable d'environnement non préfixée `VITE_` n'est pas secrète
+/// dans un binaire Tauri distribué : on ne l'utilise jamais si elle est privilégiée.
+fn jwt_role_claim(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let padded = match payload.len() % 4 {
+        2 => format!("{}==", payload.replace('-', "+").replace('_', "/")),
+        3 => format!("{}=", payload.replace('-', "+").replace('_', "/")),
+        0 => payload.replace('-', "+").replace('_', "/"),
+        _ => return None,
+    };
+    let bytes = STANDARD.decode(padded).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("role").and_then(|r| r.as_str()).map(str::to_string)
+}
+
+fn reject_privileged_jwt(token: &str) -> Result<(), String> {
+    if jwt_role_claim(token).as_deref() == Some("service_role") {
+        Err("Clé Supabase privilégiée refusée. Utilisez uniquement la clé anon et le JWT utilisateur.".into())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn set_sync_access_token(token: Option<String>) {
+    let sanitized = token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty() && t != "offline");
+    if let Some(ref t) = sanitized {
+        if reject_privileged_jwt(t).is_err() {
+            if let Ok(mut guard) = SYNC_ACCESS_TOKEN.lock() {
+                *guard = None;
+            }
+            return;
+        }
+    }
+    if let Ok(mut guard) = SYNC_ACCESS_TOKEN.lock() {
+        *guard = sanitized;
+    }
+}
+
+pub fn current_sync_access_token() -> Option<String> {
+    SYNC_ACCESS_TOKEN.lock().ok().and_then(|g| g.clone())
+}
+
+fn get_supabase_config() -> Result<(String, String), String> {
     let _ = dotenv();
+    // Compile-time : uniquement les variables publiques VITE_*.
+    // Runtime : URL + clé anon. Jamais SUPABASE_SERVICE_ROLE_KEY.
     let supabase_url = env::var("VITE_SUPABASE_URL")
         .ok()
+        .or_else(|| env::var("SUPABASE_URL").ok())
         .or_else(|| option_env!("VITE_SUPABASE_URL").map(String::from))
-        .unwrap_or_else(|| "https://reyxonfhvlybjhxlthvy.supabase.co".to_string());
+        .ok_or_else(|| "VITE_SUPABASE_URL (ou SUPABASE_URL) doit être définie pour la sync".to_string())?;
 
-    let supabase_key = env::var("SUPABASE_SERVICE_ROLE_KEY")
-        .or_else(|_| env::var("VITE_SUPABASE_ANON_KEY"))
+    let supabase_anon_key = env::var("VITE_SUPABASE_ANON_KEY")
         .ok()
-        .or_else(|| option_env!("SUPABASE_SERVICE_ROLE_KEY").map(String::from))
+        .or_else(|| env::var("SUPABASE_ANON_KEY").ok())
         .or_else(|| option_env!("VITE_SUPABASE_ANON_KEY").map(String::from))
-        .unwrap_or_else(|| "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA1NDg1MDIsImV4cCI6MjEwNjEyNDUwMn0.E1r_pWl09sqbr0pjakApgC2YgSXzfsuOLoSFmk5efaw".to_string());
+        .ok_or_else(|| "VITE_SUPABASE_ANON_KEY (ou SUPABASE_ANON_KEY) doit être définie pour la sync".to_string())?;
 
-    (supabase_url, supabase_key)
+    reject_privileged_jwt(&supabase_anon_key)?;
+    Ok((supabase_url, supabase_anon_key))
 }
 
 pub fn start_sync_loop(db_path: PathBuf) {
     tauri::async_runtime::spawn(async move {
-        let (supabase_url, supabase_key) = get_supabase_config();
-
-        if supabase_url.is_empty() || supabase_key.is_empty() {
-            println!("[Sync] Configuration Supabase absente. Moteur en attente.");
-            return;
-        }
+        let (supabase_url, supabase_anon_key) = match get_supabase_config() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                println!("[Sync] Configuration Supabase absente ({}). Moteur en attente.", e);
+                return;
+            }
+        };
 
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -143,7 +197,8 @@ pub fn start_sync_loop(db_path: PathBuf) {
             tokio::time::sleep(Duration::from_secs(300)).await;
 
             println!("[Sync] Cycle automatique démarré.");
-            run_sync_cycle(&db_path, &client, &supabase_url, &supabase_key).await;
+            let access_token = current_sync_access_token();
+            run_sync_cycle(&db_path, &client, &supabase_url, &supabase_anon_key, access_token.as_deref()).await;
         }
     });
 }
@@ -157,12 +212,26 @@ pub async fn run_sync_cycle(
     db_path: &PathBuf,
     client: &Client,
     supabase_url: &str,
-    supabase_key: &str,
+    supabase_anon_key: &str,
+    // JWT de l'utilisateur connecté. Utilisé dans Authorization pour que RLS
+    // s'applique avec l'identité réelle de l'utilisateur (pas le rôle anon).
+    // Si absent (hors-ligne ou session expirée), le cycle est annulé.
+    access_token: Option<&str>,
 ) {
     ensure_sync_state(db_path);
 
+    // Sans JWT utilisateur, impossible de respecter RLS — on ne synchronise pas.
+    let bearer_token = match access_token {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            update_engine_status(db_path, "OFFLINE", Some("Session utilisateur absente. Connectez-vous pour synchroniser."));
+            println!("[Sync] Pas de JWT utilisateur. Cycle annulé.");
+            return;
+        }
+    };
+
     // 1. Vérifier la connectivité avant de commencer
-    if !check_connectivity(client, supabase_url, supabase_key).await {
+    if !check_connectivity(client, supabase_url, supabase_anon_key).await {
         update_engine_status(db_path, "OFFLINE", Some("Supabase inaccessible."));
         println!("[Sync] Hors ligne. Cycle annulé.");
         return;
@@ -171,10 +240,10 @@ pub async fn run_sync_cycle(
     update_engine_status(db_path, "SYNCING", None);
 
     // 2. Outbound : envoyer les mutations locales vers Supabase
-    let outbound_result = process_outbox(db_path, client, supabase_url, supabase_key).await;
+    let outbound_result = process_outbox(db_path, client, supabase_url, supabase_anon_key, bearer_token).await;
 
     // 3. Inbound : récupérer les changements distants depuis Supabase
-    let inbound_result = process_inbox(db_path, client, supabase_url, supabase_key).await;
+    let inbound_result = process_inbox(db_path, client, supabase_url, supabase_anon_key, bearer_token).await;
 
     // 4. Résumer les échecs résiduels : le cycle peut être « réussi » côté
     //    réseau tout en laissant des mutations en FAILED. Sans ça, `last_error`
@@ -223,7 +292,8 @@ async fn process_outbox(
     db_path: &PathBuf,
     client: &Client,
     supabase_url: &str,
-    supabase_key: &str,
+    supabase_anon_key: &str,
+    bearer_token: &str,
 ) -> Result<(), String> {
     let mutations = load_pending_mutations(db_path)?;
 
@@ -264,8 +334,10 @@ async fn process_outbox(
         let endpoint = format!("{}/rest/v1/{}", supabase_url, entity_type);
 
         let headers = |b: reqwest::RequestBuilder| {
-            b.header("apikey", supabase_key)
-                .header("Authorization", format!("Bearer {}", supabase_key))
+            // apikey : clé anon publique (identificateur du projet Supabase).
+            // Authorization : JWT utilisateur → RLS s'applique avec son identité réelle.
+            b.header("apikey", supabase_anon_key)
+                .header("Authorization", format!("Bearer {}", bearer_token))
                 .header("Content-Type", "application/json")
                 .header("Prefer", "return=minimal")
                 // En-tête d'idempotence : permet au serveur d'ignorer un doublon
@@ -369,7 +441,8 @@ async fn process_inbox(
     db_path: &PathBuf,
     client: &Client,
     supabase_url: &str,
-    supabase_key: &str,
+    supabase_anon_key: &str,
+    bearer_token: &str,
 ) -> Result<Option<String>, String> {
     // Pour l'instant, on récupère les données marquées comme modifiées
     // après le cursor de la dernière sync (via la colonne de version)
@@ -414,8 +487,9 @@ async fn process_inbox(
 
         let res = client
             .get(&url)
-            .header("apikey", supabase_key)
-            .header("Authorization", format!("Bearer {}", supabase_key))
+            // apikey : clé anon publique. Authorization : JWT utilisateur pour RLS.
+            .header("apikey", supabase_anon_key)
+            .header("Authorization", format!("Bearer {}", bearer_token))
             .send()
             .await;
 
@@ -1438,9 +1512,9 @@ pub fn retry_failed_mutations_internal(db_path: &PathBuf) -> Result<usize, Strin
 
 /// Synchronisation manuelle déclenchée par le bouton utilisateur
 pub async fn run_manual_sync(db_path: PathBuf) -> Result<SyncStatus, String> {
-    let (supabase_url, supabase_key) = get_supabase_config();
+    let (supabase_url, supabase_anon_key) = get_supabase_config()?;
 
-    if supabase_url.is_empty() || supabase_key.is_empty() {
+    if supabase_url.is_empty() || supabase_anon_key.is_empty() {
         return Err("Configuration Supabase absente. Vérifiez le fichier .env.".to_string());
     }
 
@@ -1454,7 +1528,9 @@ pub async fn run_manual_sync(db_path: PathBuf) -> Result<SyncStatus, String> {
     ensure_sync_state(&db_path);
     reset_exhausted_mutations(&db_path);
 
-    run_sync_cycle(&db_path, &client, &supabase_url, &supabase_key).await;
+    // Utiliser le JWT utilisateur courant pour que RLS s'applique correctement.
+    let access_token = current_sync_access_token();
+    run_sync_cycle(&db_path, &client, &supabase_url, &supabase_anon_key, access_token.as_deref()).await;
 
     get_sync_status_internal(&db_path)
 }

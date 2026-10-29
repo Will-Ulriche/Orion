@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
-import { supabaseAdmin, listSchools, type School } from './superAdminApi';
+import { listSchools, type School } from './superAdminApi';
+import { supabase } from './supabaseClient';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -64,7 +65,7 @@ async function fetchAll<T extends JsonRow>(table: string, schoolIds: string[]): 
   const page = 1000;
   let from = 0;
   for (;;) {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from(table as any)
       .select('*')
       .in('school_id', schoolIds)
@@ -142,7 +143,7 @@ function yearFolderName(y: AcademicYear): string {
 
 export async function loadAcademicYears(schoolIds: string[]): Promise<AcademicYear[]> {
   if (schoolIds.length === 0) return [];
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await supabase
     .from('academic_years')
     .select('*')
     .in('school_id', schoolIds)
@@ -445,7 +446,7 @@ interface ProfessorRow {
 
 async function fetchProfessors(schoolIds: string[]): Promise<ProfessorRow[]> {
   if (schoolIds.length === 0) return [];
-  const { data: ur, error } = await supabaseAdmin
+  const { data: ur, error } = await supabase
     .from('user_roles')
     .select('user_id, school_id, roles(name)')
     .in('school_id', schoolIds);
@@ -457,8 +458,8 @@ async function fetchProfessors(schoolIds: string[]): Promise<ProfessorRow[]> {
   if (profUserIds.length === 0) return [];
 
   const [profilesRes, usersRes] = await Promise.all([
-    supabaseAdmin.from('profiles').select('user_id, first_name, last_name, phone'),
-    supabaseAdmin.from('users').select('id, email'),
+    supabase.from('profiles').select('user_id, first_name, last_name, phone'),
+    supabase.from('users').select('id, email'),
   ]);
   if (profilesRes.error) throw new Error(`profiles: ${profilesRes.error.message}`);
   if (usersRes.error) throw new Error(`users: ${usersRes.error.message}`);

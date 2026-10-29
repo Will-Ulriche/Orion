@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
-import { supabase, supabaseAdmin } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
 import { verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation';
 
@@ -162,7 +162,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // `schools`, la direction ne peut donc pas le lire avec le client anon.
           if (schoolId) {
             try {
-              const { data: sch } = await supabaseAdmin
+              const { data: sch } = await supabase
                 .from('schools')
                 .select('name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone, logo_url')
                 .eq('id', schoolId)
@@ -346,6 +346,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const fakeSession = { access_token: 'offline', user: fakeUser } as Session;
     setSession(fakeSession);
     setUser(fakeUser);
+    // (ORI-SEC-003) : Notifier Rust pour activer la session locale
+    invoke('restore_local_session', { userId, schoolId: getCurrentSchoolId() }).catch(() => {});
     fetchUserRoles(userId, getCurrentSchoolId());
   }
 
@@ -356,6 +358,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     localStorage.removeItem('orion_offline_session');
+    // (ORI-SEC-003) : Invalider la session active côté Rust
+    try { await invoke('clear_local_session'); } catch (_) {}
     if (session?.access_token === 'offline') {
       setSession(null);
       setUser(null);

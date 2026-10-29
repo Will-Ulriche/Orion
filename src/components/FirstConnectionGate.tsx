@@ -4,7 +4,7 @@ import {
   CheckCircle2, RefreshCw, Globe, LogIn,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabaseAdmin } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
 
 const LS_ONBOARDED = 'orion_lic_onboarded';
@@ -49,7 +49,7 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
     const meta = (user?.user_metadata as any)?.school_id;
     if (meta) return meta;
     try {
-      const { data: prof } = await supabaseAdmin
+      const { data: prof } = await supabase
         .from('profiles')
         .select('school_id')
         .eq('user_id', user?.id)
@@ -63,7 +63,7 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
   const probeOnline = useCallback(async (): Promise<boolean> => {
     try {
       // Requête minimale : si elle répond (même vide), le réseau est joignable.
-      const { error } = await supabaseAdmin
+      const { error } = await supabase
         .from('licenses')
         .select('id')
         .limit(1);
@@ -123,7 +123,7 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
       const meta = (user?.user_metadata as any)?.school_id;
       if ((!targetId || targetId === 'school-1') && meta) targetId = meta;
       try {
-        const { data: prof } = await supabaseAdmin
+        const { data: prof } = await supabase
           .from('profiles')
           .select('school_id')
           .eq('user_id', user?.id)
@@ -131,7 +131,7 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
         if (prof?.school_id) targetId = prof.school_id;
       } catch (_) {}
 
-      const { data: lic, error } = await supabaseAdmin
+      const { data: lic, error } = await supabase
         .from('licenses')
         .select('*')
         .eq('license_key', cleanKey)
@@ -147,7 +147,7 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
       }
 
       if (!lic.school_id || lic.school_id === 'unassigned') {
-        await supabaseAdmin
+        await supabase
           .from('licenses')
           .update({ school_id: targetId, status: 'ACTIVE' })
           .eq('id', lic.id);

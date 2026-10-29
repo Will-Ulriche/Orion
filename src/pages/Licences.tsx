@@ -5,7 +5,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabaseAdmin } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient';
 
 function normalizeLicenseKey(input: string): string {
   let cleaned = input.trim().toUpperCase().replace(/[\s_]+/g, '-');
@@ -355,7 +355,7 @@ export default function Licences() {
         if (metaSchoolId) targetId = metaSchoolId;
       }
       if (user?.id) {
-        const { data: prof } = await supabaseAdmin
+        const { data: prof } = await supabase
           .from('profiles')
           .select('school_id')
           .eq('user_id', user.id)
@@ -365,7 +365,7 @@ export default function Licences() {
         }
       }
 
-      const { data: cloudLics, error } = await supabaseAdmin
+      const { data: cloudLics, error } = await supabase
         .from('licenses')
         .select('*')
         .eq('school_id', targetId)
@@ -382,7 +382,7 @@ export default function Licences() {
         }
       } else if (targetId !== 'school-1') {
         // Fallback si la licence était enregistrée sous school-1
-        const { data: fallbackLics } = await supabaseAdmin
+        const { data: fallbackLics } = await supabase
           .from('licenses')
           .select('*')
           .eq('school_id', 'school-1')
@@ -445,8 +445,8 @@ export default function Licences() {
     setActivationSuccess('');
 
     try {
-      // 1. Vérifier la clé sur Supabase via supabaseAdmin (bypass RLS)
-      const { data: lic, error } = await supabaseAdmin
+      // 1. Vérifier la clé sur Supabase via le client anon (RLS appliqué)
+      const { data: lic, error } = await supabase
         .from('licenses')
         .select('*')
         .eq('license_key', cleanKey)
@@ -466,7 +466,7 @@ export default function Licences() {
         localStorage.setItem('current_school_id', currentId);
         window.dispatchEvent(new Event('orion:school-changed'));
       } else if (!lic.school_id || lic.school_id === 'unassigned') {
-        await supabaseAdmin
+        await supabase
           .from('licenses')
           .update({ school_id: currentId, status: 'ACTIVE' })
           .eq('id', lic.id);

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  KeyRound, Plus, RefreshCw, Copy, Check, Eye, EyeOff,
+  KeyRound, Plus, RefreshCw, Copy, Check,
   Building2, UserCheck, Power, Trash2,
   Sparkles, AlertCircle, Users, GraduationCap,
-  ClipboardList, ArrowRight, Search,
+  ClipboardList, ArrowRight, Search, Eye, EyeOff,
 } from 'lucide-react';
 import { Badge, Btn, EmptyState, Field, Modal, SearchInput, Select, TableShell, Td, Th, TextInput, type Tone } from '../../components/ui';
 import SuperAdminShell from './SuperAdminShell';
@@ -448,27 +448,20 @@ export default function ComptesSuperAdmin() {
   const [search, setSearch] = useState('');
   const [filterSchoolId, setFilterSchoolId] = useState<string>('ALL');
 
-  // Cache des mots de passe en session
-  const [passwordsMap, setPasswordsMap] = useState<Record<string, string>>({});
-  const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
-
-  // Modale création
+  // Modales et actions
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [defaultSchoolForCreate, setDefaultSchoolForCreate] = useState('');
-
-  // Modale réinitialisation
-  const [resetTarget, setResetTarget] = useState<SchoolCredential | null>(null);
-  const [newPasswordValue, setNewPasswordValue] = useState(generateSecurePassword());
-  const [showResetPassword, setShowResetPassword] = useState(false);
-
-  // Modale succès
   const [resultModal, setResultModal] = useState<{ email: string; pass: string; schoolName: string } | null>(null);
-
-  // Modale suppression
+  const [resetTarget, setResetTarget] = useState<SchoolCredential | null>(null);
+  const [newPasswordValue, setNewPasswordValue] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SchoolCredential | null>(null);
-
-  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // (ORI-SEC-002) : le cache passwordsMap (mots de passe lus depuis les
+  // métadonnées Auth) est supprimé. Le mot de passe temporaire est uniquement
+  // affiché une fois dans resultModal, en mémoire, jamais récupéré du serveur.
 
   const load = async () => {
     setLoading(true);
@@ -477,16 +470,6 @@ export default function ComptesSuperAdmin() {
       const [creds, schs] = await Promise.all([listSchoolCredentials(), listSchools()]);
       setCredentials(creds);
       setSchools(schs);
-      setPasswordsMap(prev => {
-        const next = { ...prev };
-        creds.forEach(c => {
-          if (c.initialPassword) {
-            next[c.userId] = c.initialPassword;
-            next[c.email] = c.initialPassword;
-          }
-        });
-        return next;
-      });
     } catch (e: any) {
       setError(e.message ?? String(e));
     } finally {
@@ -541,11 +524,8 @@ export default function ComptesSuperAdmin() {
     setError('');
     try {
       await resetSchoolAdminPassword(resetTarget.userId, newPasswordValue);
-      setPasswordsMap(prev => ({
-        ...prev,
-        [resetTarget.userId]: newPasswordValue,
-        [resetTarget.email]: newPasswordValue,
-      }));
+      // (ORI-SEC-002) : le mot de passe est affiché une seule fois dans resultModal,
+      // en mémoire. Il n'est plus stocké ni récupéré depuis le serveur.
       setResultModal({ email: resetTarget.email, pass: newPasswordValue, schoolName: resetTarget.schoolName });
       setResetTarget(null);
     } catch (e: any) {
@@ -690,7 +670,6 @@ export default function ComptesSuperAdmin() {
                   <Th>Utilisateur</Th>
                   <Th className="text-center">Rôle</Th>
                   <Th>Identifiant (Email)</Th>
-                  <Th>Mot de passe</Th>
                   <Th className="text-center">Statut</Th>
                   <Th className="text-right">Actions</Th>
                 </tr>
@@ -698,8 +677,6 @@ export default function ComptesSuperAdmin() {
               <tbody>
                 {filtered.map(c => {
                 const isActive = c.status === 'ACTIVE';
-                const cachedPass = passwordsMap[c.email] || passwordsMap[c.userId];
-                const isRevealed = revealedPasswords[c.userId] ?? false;
 
                 const roleTone: Tone =
                   c.role === 'DIRECTION' ? 'brand' :
@@ -752,43 +729,6 @@ export default function ComptesSuperAdmin() {
                           {copiedId === `email-${c.userId}` ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
                         </button>
                       </div>
-                    </Td>
-
-                    <Td>
-                      {cachedPass ? (
-                        <div className="flex items-center gap-1.5 bg-slate-100/80 px-2 py-1 rounded-lg border border-slate-200/60 max-w-fit">
-                          <span className="font-mono text-[12px] font-semibold text-slate-800 select-all">
-                            {isRevealed ? cachedPass : '••••••••••'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setRevealedPasswords(prev => ({ ...prev, [c.userId]: !isRevealed }))}
-                            className="p-0.5 text-slate-400 hover:text-slate-600 rounded cursor-pointer"
-                            title={isRevealed ? 'Masquer' : 'Afficher'}
-                          >
-                            {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => copyText(cachedPass, `pass-${c.userId}`)}
-                            className="p-0.5 text-slate-400 hover:text-slate-600 rounded cursor-pointer"
-                            title="Copier"
-                          >
-                            {copiedId === `pass-${c.userId}` ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                          <span className="italic">Chiffré</span>
-                          <button
-                            type="button"
-                            onClick={() => { setResetTarget(c); setNewPasswordValue(generateSecurePassword()); setShowResetPassword(false); }}
-                            className="text-[11px] text-indigo-600 hover:underline font-medium cursor-pointer"
-                          >
-                            Définir
-                          </button>
-                        </div>
-                      )}
                     </Td>
 
                     <Td className="text-center">
@@ -849,7 +789,8 @@ export default function ComptesSuperAdmin() {
           initialSchoolId={defaultSchoolForCreate}
           onClose={() => setCreateModalOpen(false)}
           onCreated={(email, pass, schoolName) => {
-            setPasswordsMap(prev => ({ ...prev, [email]: pass }));
+            // (ORI-SEC-002) : le mot de passe temporaire est passé directement
+            // à resultModal (mémoire uniquement), sans mise en cache persistant.
             setResultModal({ email, pass, schoolName });
             load();
           }}

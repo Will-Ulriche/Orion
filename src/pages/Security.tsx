@@ -4,7 +4,7 @@ import { ShieldCheck, Calendar, Key, Hourglass } from 'lucide-react';
 import Appareils from './Appareils';
 import Licences from './Licences';
 import { useAuth } from '../contexts/AuthContext';
-import { supabaseAdmin } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
 
 export default function Security() {
@@ -23,7 +23,7 @@ export default function Security() {
         let targetId = schoolId || localStorage.getItem('current_school_id') || '';
         if (user?.id) {
           try {
-            const { data: prof } = await supabaseAdmin
+            const { data: prof } = await supabase
               .from('profiles')
               .select('school_id')
               .eq('user_id', user.id)
@@ -39,7 +39,7 @@ export default function Security() {
         let cloudReachable = false;
         let found: { expires_at: string | null; status: string } | null = null;
         try {
-          const { data: lics, error } = await supabaseAdmin
+          const { data: lics, error } = await supabase
             .from('licenses')
             .select('status, expires_at, school_id, created_at')
             .eq('school_id', targetId)
@@ -49,7 +49,7 @@ export default function Security() {
 
           let rows: any[] = lics ?? [];
           if (rows.length === 0 && targetId && targetId !== 'school-1') {
-            const { data: fb } = await supabaseAdmin
+            const { data: fb } = await supabase
               .from('licenses')
               .select('status, expires_at, school_id, created_at')
               .eq('school_id', 'school-1')

@@ -1042,7 +1042,7 @@ export function generateDataset(options = {}) {
       password,
       phone: ad.phone,
       staff_id: ad.staff_id ?? null,
-      metadata: { school_id: school.id, first_name: ad.first, last_name: ad.last, role: ad.role, initial_password: password },
+      metadata: { school_id: school.id, first_name: ad.first, last_name: ad.last, role: ad.role },
     });
   }
 

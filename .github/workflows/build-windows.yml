@@ -39,10 +39,8 @@ jobs:
           # Clé privée de signature des mises à jour (OBLIGATOIRE).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || 'https://reyxonfhvlybjhxlthvy.supabase.co' }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA1NDg1MDIsImV4cCI6MjEwNjEyNDUwMn0.E1r_pWl09sqbr0pjakApgC2YgSXzfsuOLoSFmk5efaw' }}
-          VITE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.VITE_SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDU0ODUwMiwiZXhwIjoyMTA2MTI0NTAyfQ.EGNHM3sq_EtjBALI0qt1augVEYntd7f4p2u-IYWwn0Q' }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDU0ODUwMiwiZXhwIjoyMTA2MTI0NTAyfQ.EGNHM3sq_EtjBALI0qt1augVEYntd7f4p2u-IYWwn0Q' }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         with:
           tagName: v__VERSION__
           releaseName: 'Orion v__VERSION__'

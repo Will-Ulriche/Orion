@@ -101,8 +101,8 @@ export default function Account() {
       const data: any = {};
       if (password) {
         updates.password = password;
-        // Conserver le dernier mot de passe connu pour l'espace super-admin
-        data.initial_password = password;
+        // (ORI-SEC-002) : initial_password supprimé — le nouveau mot de passe
+        // n'est plus persisté dans les métadonnées Auth.
       }
       if (avatarUrl !== user?.user_metadata?.avatar_url) {
         data.avatar_url = avatarUrl;
