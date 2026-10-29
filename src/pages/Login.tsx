@@ -148,12 +148,17 @@ export default function Login({
       // Si l'utilisateur saisit un nom d'utilisateur local (ex: « Admin ») plutôt qu'un email complet,
       // on délègue directement à l'authentification locale individuelle.
       if (email.trim().toLowerCase() === 'admin') {
-        const res = await invoke<{ user_id: string; email: string }>('login_local', {
+        const res = await invoke<{
+          user_id: string;
+          email: string;
+          school_id: string;
+          session_token: string;
+        }>('login_local', {
           identifier: email.trim(),
           password,
           schoolId,
         });
-        setOfflineSession(res.user_id, res.email);
+        setOfflineSession(res.user_id, res.email, res.session_token, res.school_id);
         return;
       }
 
@@ -167,8 +172,13 @@ export default function Login({
           !navigator.onLine
         ) {
           try {
-            const userId = await invoke<string>('login_offline', { email, password });
-            setOfflineSession(userId, email);
+            const res = await invoke<{
+              user_id: string;
+              email: string;
+              school_id: string;
+              session_token: string;
+            }>('login_offline', { email, password, schoolId });
+            setOfflineSession(res.user_id, res.email, res.session_token, res.school_id);
           } catch (offlineErr) {
             setError(offlineErr as string);
           }

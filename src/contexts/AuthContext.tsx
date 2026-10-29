@@ -22,13 +22,21 @@ interface AuthContextType {
   exitSchoolMode: () => void;
   activated: boolean;
   signOut: () => Promise<void>;
-  setOfflineSession: (userId: string, email: string) => void;
+  setOfflineSession: (userId: string, email: string, sessionToken: string, schoolId: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const getCurrentSchoolId = (): string =>
   localStorage.getItem('current_school_id') || 'school-1';
+
+interface RestoredLoginProfile {
+  user_id: string;
+  email: string;
+  school_id: string;
+  session_token: string;
+  session_expires_at: number;
+}
 
 const LS_SCHOOL_ID = 'current_school_id';
 const LS_FORCED_ID = 'orion_forced_school_id';
@@ -76,6 +84,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener(SCHOOL_CHANGED_EVENT, handler);
     return () => window.removeEventListener(SCHOOL_CHANGED_EVENT, handler);
   }, []);
+
+  // Révoque le jeton de restauration avant de supprimer la session locale.
+  const revokeStoredOfflineToken = async () => {
+    const raw = localStorage.getItem('orion_offline_session');
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.token) {
+        await invoke('revoke_local_session', { token: parsed.token });
+      }
+    } catch (_) { /* session locale déjà invalide */ }
+    localStorage.removeItem('orion_offline_session');
+  };
 
   // Ouvre l'espace direction d'un établissement (le SUPER_ADMIN "devient" la direction).
   const enterSchoolMode = (nextSchoolId: string, nextSchoolName?: string | null) => {
@@ -267,33 +288,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSession(session);
         setUser(session.user ?? null);
         syncUserToLocalDb(session);
-        localStorage.removeItem('orion_offline_session'); // Nettoyer si on est connecté en ligne
+        void revokeStoredOfflineToken(); // Nettoyer si on est connecté en ligne
       } else if (localOfflineStr) {
         try {
           const parsed = JSON.parse(localOfflineStr);
-          const offlineSchoolId = localStorage.getItem('current_school_id') || 'school-1';
-
+          if (!parsed || typeof parsed.token !== 'string' || !parsed.token) {
+            localStorage.removeItem('orion_offline_session');
+            setLoading(false);
+            return;
+          }
           // ── Vérification de sécurité ──────────────────────────────────────
           // Si l'école associée à la session hors-ligne n'existe plus dans la
           // base locale (supprimée par le SUPER_ADMIN), on refuse l'accès.
-          invoke<boolean>('check_local_school_exists', { schoolId: offlineSchoolId })
-            .then((exists) => {
-              if (exists) {
-                setOfflineSessionState(parsed.id, parsed.email);
+          invoke<RestoredLoginProfile>('restore_local_session', { token: parsed.token })
+            .then(async (restored) => {
+              if (restored) {
+                const profile = await setOfflineSessionState(
+                  restored.user_id,
+                  restored.email,
+                  parsed.token,
+                  restored.school_id
+                );
                 // Vérifier en arrière-plan que le compte ET l'établissement
                 // n'ont pas été supprimés/suspendus côté cloud par
                 // l'administration (ne bloque pas le démarrage).
                 Promise.all([
-                  verifyCloudAccount(parsed.id),
-                  verifyCloudSchool(offlineSchoolId),
-                ]).then(([accountState, schoolState]) => {
+                  verifyCloudAccount(profile.user_id),
+                  verifyCloudSchool(profile.school_id),
+                ]).then(async ([accountState, schoolState]) => {
                   if (accountState === 'missing' || schoolState === 'missing') {
                     console.warn('[Auth] Session hors-ligne rejetée : compte ou établissement supprimé.');
-                    localStorage.removeItem('orion_offline_session');
+                    void revokeStoredOfflineToken();
+                    try { await invoke('clear_local_session'); } catch (_) {}
                     localStorage.removeItem('current_school_id');
-                    try { invoke('delete_local_user', { userId: parsed.id }); } catch (_) {}
+                    try { invoke('delete_local_user', { userId: profile.user_id }); } catch (_) {}
                     if (schoolState === 'missing') {
-                      try { invoke('purge_local_school', { schoolId: offlineSchoolId }); } catch (_) {}
+                      try { invoke('purge_local_school', { schoolId: profile.school_id }); } catch (_) {}
                     }
                     setSession(null);
                     setUser(null);
@@ -308,8 +338,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               }
             })
             .catch(() => {
-              // En cas d'erreur Tauri, on laisse passer pour ne pas bloquer l'app
-              setOfflineSessionState(parsed.id, parsed.email);
+              // Jeton absent, expire ou revoque : aucune session n'est restauree.
+              localStorage.removeItem('orion_offline_session');
+              localStorage.removeItem('current_school_id');
+              setSession(null);
+              setUser(null);
+              setRoles([]);
             })
             .finally(() => setLoading(false));
           return; // setLoading(false) géré dans .finally()
@@ -326,7 +360,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSession(session);
         setUser(session.user ?? null);
         syncUserToLocalDb(session);
-        localStorage.removeItem('orion_offline_session');
+        void revokeStoredOfflineToken();
       } else {
         // En cas de déconnexion, vérifier si on n'est pas en train de passer en mode offline
         // (géré par signOut)
@@ -341,24 +375,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  const setOfflineSessionState = (userId: string, email: string) => {
-    const fakeUser = { id: userId, email } as User;
+  const setOfflineSessionState = async (
+    userId: string,
+    email: string,
+    sessionToken: string,
+    schoolId: string
+  ) => {
+    const restored = await invoke<RestoredLoginProfile>('restore_local_session', {
+      token: sessionToken,
+    });
+    // En mode "visite" du SUPER_ADMIN, l'ecole ouverte reste prioritaire.
+    const forcedSchool = localStorage.getItem(LS_FORCED_ID);
+    const validatedSchoolId = forcedSchool || restored.school_id || schoolId;
+    localStorage.setItem(LS_SCHOOL_ID, validatedSchoolId);
+    setSchoolId(validatedSchoolId);
+
+    const fakeUser = { id: restored.user_id || userId, email: restored.email || email } as User;
     const fakeSession = { access_token: 'offline', user: fakeUser } as Session;
     setSession(fakeSession);
     setUser(fakeUser);
-    // (ORI-SEC-003) : Notifier Rust pour activer la session locale
-    invoke('restore_local_session', { userId, schoolId: getCurrentSchoolId() }).catch(() => {});
-    fetchUserRoles(userId, getCurrentSchoolId());
+    fetchUserRoles(restored.user_id || userId, validatedSchoolId);
+    return { ...restored, school_id: validatedSchoolId };
   }
 
-  const setOfflineSession = (userId: string, email: string) => {
-    setOfflineSessionState(userId, email);
-    localStorage.setItem('orion_offline_session', JSON.stringify({ id: userId, email }));
+  const setOfflineSession = (
+    userId: string,
+    email: string,
+    sessionToken: string,
+    schoolId: string
+  ) => {
+    void setOfflineSessionState(userId, email, sessionToken, schoolId).catch((err) => {
+      console.error('[Auth] Restauration de session locale impossible:', err);
+      localStorage.removeItem('orion_offline_session');
+      setSession(null);
+      setUser(null);
+      setRoles([]);
+    });
+    localStorage.setItem(
+      'orion_offline_session',
+      JSON.stringify({ id: userId, email, token: sessionToken })
+    );
   };
 
   const signOut = async () => {
-    localStorage.removeItem('orion_offline_session');
-    // (ORI-SEC-003) : Invalider la session active côté Rust
+    await revokeStoredOfflineToken();
+    // (ORI-SEC-003) : Invalider la session active cote Rust
     try { await invoke('clear_local_session'); } catch (_) {}
     if (session?.access_token === 'offline') {
       setSession(null);

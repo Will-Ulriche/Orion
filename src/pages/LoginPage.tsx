@@ -12,6 +12,9 @@ interface LoginResult {
   first_name: string | null;
   last_name: string | null;
   role_name: string | null;
+  school_id: string;
+  session_token: string;
+  session_expires_at: number;
 }
 
 interface LoginPageProps {
@@ -66,7 +69,7 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
 
       // 3. Mettre à jour le contexte global → accès direct à l'interface
       //    de travail correspondant au profil (rôle) de l'utilisateur.
-      setOfflineSession(res.user_id, res.email);
+      setOfflineSession(res.user_id, res.email, res.session_token, res.school_id);
 
     } catch (err: any) {
       setError(String(err));

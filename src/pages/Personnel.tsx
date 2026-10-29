@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
-import { uploadStaffPhoto, deleteStaffPhoto, isLocalBase64 } from '../lib/photoStorage';
+import { uploadStaffPhoto, deleteStaffPhoto, isLocalBase64, resolvePhotoUrl } from '../lib/photoStorage';
 import { saveStaffDocumentPdf, SchoolSettingsInfo } from '../utils/staffDocumentPdf';
 import { ConfirmDialog } from '../components/ui';
 import {
@@ -1266,7 +1266,8 @@ export default function Personnel() {
   /** Charge la photo complète d'un membre (la liste n'embarque plus les photos). */
   const loadPhoto = async (s: Staff): Promise<Staff | null> => {
     try {
-      const photo_url = await invoke<Staff['photo_url']>('get_staff_photo', { staffId: s.id });
+      const raw_photo_url = await invoke<Staff['photo_url']>('get_staff_photo', { staffId: s.id });
+      const photo_url = await resolvePhotoUrl(raw_photo_url, 'staff-photos');
       return { ...s, photo_url };
     } catch (e: any) {
       showToast('error', `Impossible de charger la photo : ${e.toString()}`);

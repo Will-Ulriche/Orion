@@ -3897,6 +3897,7 @@ pub fn purge_school_data(conn: &mut rusqlite::Connection, school_id: &str) -> Re
     // 7. Rôles et profils de l'école
     let _ = tx.execute("DELETE FROM user_roles WHERE school_id = ?1", rusqlite::params![valid_school_id]);
     let _ = tx.execute("DELETE FROM profiles WHERE school_id = ?1", rusqlite::params![valid_school_id]);
+    let _ = tx.execute("DELETE FROM local_session_tokens WHERE school_id = ?1", rusqlite::params![valid_school_id]);
 
     // 8. École elle-même
     tx.execute("DELETE FROM schools WHERE id = ?1", rusqlite::params![valid_school_id])
@@ -3935,24 +3936,14 @@ pub fn check_local_school_exists(school_id: String, state: tauri::State<'_, DbSt
 }
 
 #[tauri::command]
-pub fn login_offline(email: String, password: String, state: tauri::State<'_, DbState>) -> Result<String, String> {
+pub fn login_offline(
+    email: String,
+    password: String,
+    school_id: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<LoginProfile, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-
-    let (user_id, hash_str): (String, Option<String>) = conn.query_row(
-        "SELECT id, password_hash FROM users WHERE email = ?1",
-        rusqlite::params![email],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(|_| "Utilisateur non trouvé hors-ligne".to_string())?;
-
-    if let Some(h) = hash_str {
-        if verify(&password, &h).unwrap_or(false) {
-            Ok(user_id)
-        } else {
-            Err("Mot de passe incorrect".to_string())
-        }
-    } else {
-        Err("Aucune connexion hors-ligne préalablement enregistrée pour cet utilisateur".to_string())
-    }
+    login_local_conn(&conn, &email, &password, &school_id)
 }
 
 // ── NOUVELLES COMMANDES POUR LE DASHBOARD DE SÉCURITÉ ──
@@ -4469,7 +4460,9 @@ pub fn delete_local_user(user_id: String, state: State<'_, DbState>) -> Result<(
         return Err("Action refusée : vous ne pouvez pas supprimer votre propre compte connecté.".to_string());
     }
 
-    // Supprimer les dépendances dans l'ordre (user_roles, profiles, users)
+    // Supprimer les dépendances dans l'ordre (tokens, user_roles, profiles, users)
+    conn.execute("DELETE FROM local_session_tokens WHERE user_id = ?1", rusqlite::params![user_id])
+        .map_err(|e| format!("Erreur suppression sessions: {}", e))?;
     conn.execute("DELETE FROM user_roles WHERE user_id = ?1", rusqlite::params![user_id])
         .map_err(|e| format!("Erreur suppression rôles: {}", e))?;
     conn.execute("DELETE FROM profiles WHERE user_id = ?1", rusqlite::params![user_id])
@@ -4492,6 +4485,9 @@ pub struct LoginProfile {
     pub first_name: Option<String>,
     pub last_name: Option<String>,
     pub role_name: Option<String>,
+    pub school_id: String,
+    pub session_token: String,
+    pub session_expires_at: i64,
 }
 
 /// Définit ou change le mot de passe d'un utilisateur (réservé à l'utilisateur lui-même, à sa Direction ou au Super Admin)
@@ -4532,6 +4528,9 @@ pub fn set_user_password(user_id: String, password: String, state: State<'_, DbS
         "UPDATE users SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
         rusqlite::params![hashed, user_id],
     ).map_err(|e| e.to_string())?;
+
+    // Un changement de mot de passe invalide toutes les restaurations différées.
+    crate::auth_guard::revoke_user_session_tokens(&conn, &user_id)?;
 
     Ok(())
 }
@@ -4625,7 +4624,11 @@ pub fn login_local_conn(
 
     // (ORI-SEC-003) : Enregistrer la session active en mémoire Rust
     let target_school_id = if school_id.trim().is_empty() { "school-1" } else { school_id };
-    let _ = crate::auth_guard::establish_local_session(conn, &user_id, target_school_id);
+    crate::auth_guard::establish_local_session(conn, &user_id, target_school_id)?;
+
+    // (SEC-01) : émettre un jeton opaque servant uniquement à restaurer
+    // cette session après redémarrage. Sans ce jeton, aucune restauration.
+    let issued = crate::auth_guard::issue_local_session_token(conn, &user_id, target_school_id)?;
 
     Ok(LoginProfile {
         user_id,
@@ -4634,6 +4637,9 @@ pub fn login_local_conn(
         first_name,
         last_name,
         role_name,
+        school_id: target_school_id.to_string(),
+        session_token: issued.token,
+        session_expires_at: issued.expires_at,
     })
 }
 
@@ -4644,15 +4650,16 @@ pub fn login_local(identifier: String, password: String, school_id: String, stat
     login_local_conn(&conn, &identifier, &password, &school_id)
 }
 
-/// Restaure la session locale en vérifiant dans SQLite que le compte est toujours actif
+/// Restaure la session locale uniquement à partir d'un jeton opaque valide.
+/// Aucun user_id/school_id fourni par le frontend n'est accepté.
 #[tauri::command]
 pub fn restore_local_session(
-    user_id: String,
-    school_id: String,
+    token: String,
     state: State<'_, DbState>,
 ) -> Result<LoginProfile, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let session = crate::auth_guard::establish_local_session(&conn, &user_id, &school_id)?;
+    let (session, session_expires_at) =
+        crate::auth_guard::restore_session_from_token(&conn, &token)?;
 
     let (first_name, last_name, role_name): (Option<String>, Option<String>, Option<String>) = conn.query_row(
         "SELECT p.first_name, p.last_name, r.name
@@ -4662,24 +4669,34 @@ pub fn restore_local_session(
          LEFT JOIN roles r ON r.id = ur.role_id
          WHERE u.id = ?1
          LIMIT 1",
-        rusqlite::params![user_id, school_id],
+        rusqlite::params![session.user_id, session.school_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).unwrap_or((None, None, None));
 
     let username: Option<String> = conn.query_row(
         "SELECT username FROM users WHERE id = ?1",
-        rusqlite::params![user_id],
+        rusqlite::params![session.user_id],
         |row| row.get(0),
     ).ok().flatten();
 
     Ok(LoginProfile {
-        user_id,
+        user_id: session.user_id,
         email: session.email.unwrap_or_default(),
         username,
         first_name,
         last_name,
         role_name: if session.is_super_admin { Some("SUPER_ADMIN".to_string()) } else { role_name },
+        school_id: session.school_id,
+        session_token: token,
+        session_expires_at,
     })
+}
+
+/// Révoque un jeton de session lors de la déconnexion.
+#[tauri::command]
+pub fn revoke_local_session(token: String, state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::revoke_local_session_token(&conn, &token)
 }
 
 /// Ferme la session locale courante
@@ -5116,6 +5133,7 @@ mod auth_tests {
 
     #[test]
     fn test_super_admin_individual_password_login() {
+        let _guard = crate::auth_guard::lock_test_session();
         let conn = setup_test_auth_db();
         let hashed = bcrypt::hash("PersonalPassword2026!", bcrypt::DEFAULT_COST).unwrap();
 
@@ -5154,6 +5172,7 @@ mod auth_tests {
 
     #[test]
     fn test_user_without_password_hash_cannot_login() {
+        let _guard = crate::auth_guard::lock_test_session();
         let conn = setup_test_auth_db();
 
         conn.execute(
@@ -5173,6 +5192,7 @@ mod auth_tests {
 
     #[test]
     fn test_standard_user_cannot_get_super_admin_role() {
+        let _guard = crate::auth_guard::lock_test_session();
         let conn = setup_test_auth_db();
         let hashed = bcrypt::hash("UserPassword123!", bcrypt::DEFAULT_COST).unwrap();
 

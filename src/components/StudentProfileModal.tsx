@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, User, Phone, Mail, MapPin, Activity, FileText, Save, Check, ArrowRight, Camera, Trash2, Loader2, KeyRound, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { uploadStudentPhoto, deleteStudentPhoto, isLocalBase64 } from '../lib/photoStorage';
+import { uploadStudentPhoto, deleteStudentPhoto, isLocalBase64, resolvePhotoUrl } from '../lib/photoStorage';
 
 export interface Student {
   id: string;
@@ -69,7 +69,8 @@ export default function StudentProfileModal({ studentId, className, onClose, onU
   const loadStudent = async () => {
     try {
       const data: Student = await invoke('get_student_details', { studentId });
-      setStudent(data);
+      const resolvedPhoto = await resolvePhotoUrl(data.photo_url, 'student-photos');
+      setStudent({ ...data, photo_url: resolvedPhoto });
     } catch (err: any) {
       setError(err.toString());
     } finally {

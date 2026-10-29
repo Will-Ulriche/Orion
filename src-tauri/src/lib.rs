@@ -191,6 +191,7 @@ pub fn run() {
             library::clear_library_data,
             commands::set_sync_access_token,
             commands::restore_local_session,
+            commands::revoke_local_session,
             commands::clear_local_session,
         ])
         .run(tauri::generate_context!())

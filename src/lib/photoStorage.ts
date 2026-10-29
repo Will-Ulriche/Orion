@@ -85,12 +85,85 @@ async function uploadPhoto(file: File, bucket: string, path: string): Promise<{ 
     return { url: base64Fallback, base64Fallback };
   }
 
-  // 3. Récupérer l'URL publique
-  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
-  // Ajouter un cache-buster pour forcer le rechargement de la photo si mise à jour
-  const publicUrl = `${data.publicUrl}?t=${Date.now()}`;
+  // 3. Récupérer l'URL signée temporaire (bucket privé sécurisé SEC-03)
+  const { data: signedData, error: signError } = await supabase.storage
+    .from(bucket)
+    .createSignedUrl(path, 60 * 60 * 24); // Valide 24 heures
 
-  return { url: publicUrl, base64Fallback };
+  if (signError || !signedData?.signedUrl) {
+    console.warn('[photoStorage] createSignedUrl échoué, fallback base64:', signError?.message);
+    return { url: base64Fallback, base64Fallback };
+  }
+
+  return { url: signedData.signedUrl, base64Fallback };
+}
+
+/**
+ * Cache en mémoire des URLs signées pour éviter de solliciter Supabase Storage à chaque render.
+ * Format clé: `${bucket}:${path}` -> { url: string, expiresAt: number }
+ */
+const signedUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
+/**
+ * Résout une référence de photo (base64, chemin relatif ou URL Supabase)
+ * en une URL directement affichable de manière sécurisée.
+ * 
+ * - Si `photoUrl` est un data:image/ ou blob:, il est retourné immédiatement.
+ * - Si le bucket est privé, une URL signée temporaire est demandée avec le JWT utilisateur.
+ */
+export async function resolvePhotoUrl(
+  photoUrl: string | null | undefined,
+  bucket: 'staff-photos' | 'student-photos' = 'student-photos',
+  expiresInSeconds = 60 * 60 * 24 // 24 heures
+): Promise<string | null> {
+  if (!photoUrl) return null;
+  if (isLocalBase64(photoUrl) || photoUrl.startsWith('blob:')) {
+    return photoUrl;
+  }
+
+  // Si c'est déjà une URL signée encore valide, la conserver
+  if (photoUrl.includes('/object/sign/') && photoUrl.includes('token=')) {
+    return photoUrl;
+  }
+
+  // Extraire le chemin relatif de l'objet dans le bucket
+  let objectPath = photoUrl;
+  const publicMarker = `/storage/v1/object/public/${bucket}/`;
+  const signMarker = `/storage/v1/object/sign/${bucket}/`;
+
+  if (photoUrl.includes(publicMarker)) {
+    objectPath = photoUrl.split(publicMarker)[1]?.split('?')[0] || photoUrl;
+  } else if (photoUrl.includes(signMarker)) {
+    objectPath = photoUrl.split(signMarker)[1]?.split('?')[0] || photoUrl;
+  }
+
+  const cacheKey = `${bucket}:${objectPath}`;
+  const now = Date.now();
+  const cached = signedUrlCache.get(cacheKey);
+  if (cached && cached.expiresAt > now + 60_000) {
+    return cached.url;
+  }
+
+  try {
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .createSignedUrl(objectPath, expiresInSeconds);
+
+    if (error || !data?.signedUrl) {
+      console.warn('[photoStorage] Impossible de générer l\'URL signée:', error?.message);
+      return photoUrl;
+    }
+
+    signedUrlCache.set(cacheKey, {
+      url: data.signedUrl,
+      expiresAt: now + expiresInSeconds * 1000,
+    });
+
+    return data.signedUrl;
+  } catch (err) {
+    console.warn('[photoStorage] Erreur résolution photo:', err);
+    return photoUrl;
+  }
 }
 
 /**
