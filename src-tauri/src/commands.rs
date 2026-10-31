@@ -4,8 +4,6 @@ use rusqlite::Connection;
 use std::sync::Mutex;
 use sysinfo::System;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use reqwest::Client;
 use crate::models::AcademicYear;
 
 #[derive(Serialize, Deserialize)]
@@ -3749,7 +3747,7 @@ pub fn save_timetable_slot(
 // ──────────────────────────────────────────────
 // COMMANDE : Offline Auth
 // ──────────────────────────────────────────────
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::{hash, DEFAULT_COST};
 
 #[tauri::command]
 pub fn store_offline_credentials(user_id: String, email: String, password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {

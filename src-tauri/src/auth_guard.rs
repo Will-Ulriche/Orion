@@ -28,6 +28,9 @@ pub(crate) fn lock_test_session() -> std::sync::MutexGuard<'static, ()> {
 struct JwtClaims {
     sub: Option<String>,
     email: Option<String>,
+    // Conservé pour la sémantique JWT (expiration portée par le claim) ;
+    // la validation effective est déléguée à jsonwebtoken via Validation.
+    #[allow(dead_code)]
     exp: Option<i64>,
     // Claims Supabase standard — présents dans chaque JWT émis par Supabase Auth.
     // On ne les exige pas tous (certains projets les omettent) mais on les valide
