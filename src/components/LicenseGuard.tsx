@@ -118,15 +118,51 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       );
 
       if (validCloud) {
-        // [LIC-01B] Obtenir un token de licence signé côté serveur
+        // [LIC-01C] Obtenir un jeton signé RS256 et le valider impérativement via Rust
+        let tokenVerified = false;
         try {
-          const { data: tokenRes } = await supabase.functions.invoke('issue-license-token', {
+          const { data: tokenRes, error: tokenErr } = await supabase.functions.invoke('issue-license-token', {
             body: { license_id: validCloud.id, school_id: targetId },
           });
-          if (tokenRes?.token) {
-            localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
+          if (!tokenErr && tokenRes?.token) {
+            const verifyRes = await invoke<{ valid: boolean; reason?: string; claims?: any }>(
+              'verify_license_token',
+              { token: tokenRes.token, schoolId: targetId }
+            );
+            if (verifyRes.valid) {
+              localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
+              tokenVerified = true;
+            } else {
+              console.warn('[LicenseGuard] Jeton émis rejeté par Rust:', verifyRes.reason);
+            }
           }
-        } catch (_) {}
+        } catch (e) {
+          console.warn('[LicenseGuard] Erreur appel issue-license-token:', e);
+        }
+
+        // Si l'émission a échoué, vérifier si un jeton antérieur est encore valide
+        if (!tokenVerified) {
+          const existingToken = localStorage.getItem(LS_LIC_TOKEN);
+          if (existingToken) {
+            try {
+              const verifyRes = await invoke<{ valid: boolean; reason?: string; claims?: any }>(
+                'verify_license_token',
+                { token: existingToken, schoolId: targetId }
+              );
+              if (verifyRes.valid) {
+                tokenVerified = true;
+              }
+            } catch (_) {}
+          }
+        }
+
+        // Règle stricte LIC-01C : ne jamais accorder l'accès si l'émission échoue
+        // sans qu'un jeton antérieur et encore valide soit vérifié
+        if (!tokenVerified) {
+          setCheckStatus('missing');
+          return;
+        }
+
         try {
           await invoke('save_license', { license: validCloud });
         } catch (_) {}
@@ -290,15 +326,28 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         lic.school_id = effectiveId;
       }
 
-      // [LIC-01B] Obtenir le token de licence signé après activation
+      // [LIC-01C] Obtenir le jeton signé RS256 et le valider impérativement
+      let activatedTokenOk = false;
       try {
-        const { data: tokenRes } = await supabase.functions.invoke('issue-license-token', {
+        const { data: tokenRes, error: tokenErr } = await supabase.functions.invoke('issue-license-token', {
           body: { license_id: lic.id, school_id: effectiveId },
         });
-        if (tokenRes?.token) {
-          localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
+        if (!tokenErr && tokenRes?.token) {
+          const verifyRes = await invoke<{ valid: boolean; reason?: string; claims?: any }>(
+            'verify_license_token',
+            { token: tokenRes.token, schoolId: effectiveId }
+          );
+          if (verifyRes.valid) {
+            localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
+            activatedTokenOk = true;
+          }
         }
       } catch (_) {}
+
+      if (!activatedTokenOk) {
+        throw new Error("Impossible d'émettre une preuve de licence signée valide.");
+      }
+
       try {
         await invoke('save_license', { license: lic });
       } catch (_) {}

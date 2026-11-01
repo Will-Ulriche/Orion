@@ -1,33 +1,28 @@
 /**
- * issue-license-token
+ * issue-license-token (LIC-01C)
  * ─────────────────────────────────────────────────────────────
- * Émet un JWT de preuve de licence pour le mode hors ligne.
+ * Émet un JWT de preuve de licence signé en RS256 pour le mode hors ligne.
  *
- * Flux :
- *  1. L'application envoie son Bearer JWT utilisateur + { license_id, school_id }.
- *  2. La fonction vérifie que la licence existe, est ACTIVE, non expirée,
- *     et que son school_id correspond.
- *  3. Si tout est valide, elle signe un token HS256 (SUPABASE_JWT_SECRET)
- *     avec exp = now + 7 jours, contenant :
- *     { iss, sub (license_id), school_id, status, starts_at, expires_at }
- *  4. L'application stocke ce token localement et l'utilise hors ligne.
- *     La vérification hors ligne est effectuée côté Rust (commande
- *     verify_license_token) avec la même clé — jamais côté JS.
+ * Sécurité des clés :
+ *  - La clé privée RSA est conservée EXCLUSIVEMENT dans les secrets Supabase
+ *    (secret ORION_LICENSE_PRIVATE_KEY_PEM).
+ *  - Aucune clé privée ni SUPABASE_JWT_SECRET n'est distribuée dans Orion.
+ *  - L'application Tauri vérifie la signature à l'aide de sa clé publique RSA
+ *    intégrée (RS256).
  *
- * Limites connues (documentées, non simulées) :
- *  - Une révocation survenant PENDANT la période de grâce (≤ 7 j) ne peut
- *    pas être appliquée instantanément sans connexion. Le token reste valide
- *    jusqu'à son expiration. La connexion en ligne suivante invalide le token.
- *  - La clé SUPABASE_JWT_SECRET est partagée avec les JWT utilisateur Supabase.
- *    Ce n'est pas idéal mais c'est le seul secret disponible sans nouvelle
- *    infrastructure. Pour un secret dédié, ajouter ORION_LICENSE_SECRET dans
- *    les secrets Supabase Edge Functions et dans le .env Tauri.
+ * Validations effectuées avant signature :
+ *  1. Appelant authentifié via son Bearer token Supabase.
+ *  2. Licence existante en base (table licenses).
+ *  3. school_id de la licence correspondant exactement à l'établissement demandé.
+ *  4. Statut == 'ACTIVE'.
+ *  5. starts_at absent ou déjà atteint (<= now).
+ *  6. expires_at absent ou non dépassé (> now).
+ *  7. Durée du jeton strictement limitée à 7 jours maximum (exp = iat + 7j),
+ *     ou à la date d'expiration de la licence si celle-ci expire plus tôt.
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders, jsonResponse } from "../_shared/adminAuth.ts";
-
-// ─── Helpers JWT HS256 (Web Crypto, disponible dans Deno Deploy) ───────────
 
 function base64url(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
@@ -36,24 +31,45 @@ function base64url(buf: ArrayBuffer): string {
   return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
-async function signHS256(payload: object, secret: string): Promise<string> {
-  const enc = new TextEncoder();
-  const header = base64url(enc.encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
-  const body   = base64url(enc.encode(JSON.stringify(payload)));
-  const data   = `${header}.${body}`;
+function pemToPkcs8(pem: string): ArrayBuffer {
+  const b64 = pem
+    .replace(/-----BEGIN[ A-Z0-9_-]+-----/g, "")
+    .replace(/-----END[ A-Z0-9_-]+-----/g, "")
+    .replace(/\s+/g, "");
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
 
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
+async function signRS256(payload: object, privateKeyPem: string): Promise<string> {
+  const enc = new TextEncoder();
+  const header = base64url(enc.encode(JSON.stringify({ alg: "RS256", typ: "JWT" })));
+  const body = base64url(enc.encode(JSON.stringify(payload)));
+  const data = `${header}.${body}`;
+
+  const keyBuffer = pemToPkcs8(privateKeyPem);
+  const cryptoKey = await crypto.subtle.importKey(
+    "pkcs8",
+    keyBuffer,
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      hash: "SHA-256",
+    },
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(data));
+
+  const sig = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    cryptoKey,
+    enc.encode(data),
+  );
+
   return `${data}.${base64url(sig)}`;
 }
-
-// ─── Handler ────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -67,16 +83,23 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Unauthorized" }, 401);
     }
 
-    const url        = Deno.env.get("SUPABASE_URL");
-    const anonKey    = Deno.env.get("SUPABASE_ANON_KEY");
+    const url = Deno.env.get("SUPABASE_URL");
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    const jwtSecret  = Deno.env.get("SUPABASE_JWT_SECRET");
+    // Clé privée RSA dédiée à Orion (conservée exclusivement côté serveur)
+    const privateKeyPem = Deno.env.get("ORION_LICENSE_PRIVATE_KEY_PEM");
 
-    if (!url || !anonKey || !serviceKey || !jwtSecret) {
-      return jsonResponse({ error: "Server misconfigured" }, 500);
+    if (!url || !anonKey || !serviceKey) {
+      return jsonResponse({ error: "Server misconfigured: Supabase credentials missing" }, 500);
     }
 
-    // Vérifier que l'appelant est bien authentifié
+    if (!privateKeyPem || !privateKeyPem.includes("PRIVATE KEY")) {
+      return jsonResponse({
+        error: "Server misconfigured: ORION_LICENSE_PRIVATE_KEY_PEM absent ou non configuré dans les secrets Supabase",
+      }, 500);
+    }
+
+    // Vérifier que l'utilisateur est authentifié
     const userClient = createClient(url, anonKey, {
       global: { headers: { Authorization: authHeader } },
     });
@@ -85,7 +108,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Unauthorized" }, 401);
     }
 
-    // 2. Lire le corps de la requête
+    // 2. Paramètres de la demande
     const { license_id, school_id } = await req.json() as {
       license_id?: string;
       school_id?: string;
@@ -95,7 +118,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "license_id et school_id sont requis" }, 400);
     }
 
-    // 3. Vérifier la licence via le client service_role (contourne RLS)
+    // 3. Vérifier la licence en base (via service_role)
     const adminClient = createClient(url, serviceKey);
     const { data: lic, error: licErr } = await adminClient
       .from("licenses")
@@ -107,29 +130,38 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Licence introuvable" }, 404);
     }
 
-    // 4. Valider le school_id
+    // 4. Vérifier que la licence appartient bien à l'établissement demandé
     if (lic.school_id !== school_id) {
       return jsonResponse({ error: "Licence non associée à cet établissement" }, 403);
     }
 
-    // 5. Valider le statut et les dates
+    // 5. Valider le statut actif et les dates de validité
     const now = new Date();
     if (lic.status !== "ACTIVE") {
       return jsonResponse({ error: `Licence ${lic.status.toLowerCase()}` }, 403);
     }
     if (lic.starts_at && new Date(lic.starts_at) > now) {
-      return jsonResponse({ error: "Licence pas encore active" }, 403);
+      return jsonResponse({ error: "Licence pas encore active (date de début non atteinte)" }, 403);
     }
     if (lic.expires_at && new Date(lic.expires_at) <= now) {
       return jsonResponse({ error: "Licence expirée" }, 403);
     }
 
-    // 6. Émettre le token (durée de grâce hors ligne = 7 jours)
-    const GRACE_SECONDS = 7 * 24 * 60 * 60;
-    const iat = Math.floor(Date.now() / 1000);
-    const exp = iat + GRACE_SECONDS;
+    // 6. Calcul de la durée de grâce du jeton (maximum 7 jours imposé par le serveur)
+    const MAX_GRACE_SECONDS = 7 * 24 * 60 * 60;
+    const iat = Math.floor(now.getTime() / 1000);
+    let exp = iat + MAX_GRACE_SECONDS;
 
-    const token = await signHS256(
+    // Si la licence expire avant les 7 jours de grâce, le jeton ne peut pas dépasser cette expiration
+    if (lic.expires_at) {
+      const licExpSec = Math.floor(new Date(lic.expires_at).getTime() / 1000);
+      if (licExpSec < exp) {
+        exp = licExpSec;
+      }
+    }
+
+    // 7. Signature du jeton RS256
+    const token = await signRS256(
       {
         iss: "orion-license",
         sub: lic.id,
@@ -141,13 +173,12 @@ Deno.serve(async (req: Request) => {
         iat,
         exp,
       },
-      jwtSecret,
+      privateKeyPem,
     );
 
     return jsonResponse({ token });
-  } catch (err) {
+  } catch (err: any) {
     console.error("[issue-license-token]", err);
-    return jsonResponse({ error: "Erreur interne" }, 500);
+    return jsonResponse({ error: err?.message || "Erreur interne" }, 500);
   }
 });
-

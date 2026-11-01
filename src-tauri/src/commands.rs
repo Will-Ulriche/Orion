@@ -4062,22 +4062,18 @@ pub fn purge_local_licenses(school_id: String, state: State<'_, DbState>) -> Res
 }
 
 // ──────────────────────────────────────────────
-// COMMANDE : Vérification d'un token de licence hors ligne (LIC-01B)
+// COMMANDE : Vérification d'un token de licence hors ligne (LIC-01C)
 // ──────────────────────────────────────────────
 //
-// La clé de signature (SUPABASE_JWT_SECRET) est lue depuis le fichier .env
-// au démarrage, identiquement à la synchronisation. Elle n'est jamais exposée
-// au frontend. La vérification est effectuée ici, côté Rust, pour empêcher
-// toute falsification côté JavaScript.
-//
-// Algorithme : HMAC-SHA256 (HS256), compatible avec l'Edge Function
-// `issue-license-token` qui produit ces tokens.
-//
-// Limite connue : si une révocation survient pendant la période de grâce
-// (≤ 7 jours), le token reste valide jusqu'à son expiration. La prochaine
-// connexion en ligne invalide le cache et recalcule un nouveau token.
+// Algorithme : RS256 (RSA avec SHA-256).
+// Seule la clé publique RSA est intégrée au client Orion.
+// La clé privée reste exclusivement conservée dans les secrets Supabase
+// (ORION_LICENSE_PRIVATE_KEY_PEM).
+// Aucune clé privée ni SUPABASE_JWT_SECRET n'est utilisée dans le client.
 
-#[derive(Debug, Serialize, Deserialize)]
+const EMBEDDED_LICENSE_PUBLIC_KEY: &str = include_str!("../license_public_key.pem");
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LicenseClaims {
     pub iss: String,
     pub sub: String,          // license_id
@@ -4090,41 +4086,58 @@ pub struct LicenseClaims {
     pub exp: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VerifyTokenResult {
     pub valid: bool,
     pub reason: Option<String>,
     pub claims: Option<LicenseClaims>,
 }
 
-#[tauri::command]
-pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResult {
+fn parse_license_date(raw: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    let s = raw.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&chrono::Utc));
+    }
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc));
+    }
+    if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        if let Some(naive_dt) = naive_date.and_hms_opt(0, 0, 0) {
+            return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_dt, chrono::Utc));
+        }
+    }
+    Err(format!("Date mal formée : {}", raw))
+}
+
+pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pem: &str) -> VerifyTokenResult {
     use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
-    use dotenvy::dotenv;
-    use std::env;
 
-    // Charger .env si pas encore fait
-    let _ = dotenv();
+    if public_key_pem.trim().is_empty()
+        || (!public_key_pem.contains("BEGIN PUBLIC KEY") && !public_key_pem.contains("BEGIN RSA PUBLIC KEY"))
+        || public_key_pem.contains("# Configurer ici") {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some("Clé publique RSA Orion non configurée — vérification hors ligne impossible".to_string()),
+            claims: None,
+        };
+    }
 
-    let secret = match env::var("SUPABASE_JWT_SECRET") {
-        Ok(s) if !s.trim().is_empty() => s,
-        _ => {
+    let key = match DecodingKey::from_rsa_pem(public_key_pem.as_bytes()) {
+        Ok(k) => k,
+        Err(e) => {
             return VerifyTokenResult {
                 valid: false,
-                reason: Some("SUPABASE_JWT_SECRET absent — vérification hors ligne impossible".to_string()),
+                reason: Some(format!("Clé publique RSA invalide : {}", e)),
                 claims: None,
             };
         }
     };
 
-    let mut validation = Validation::new(Algorithm::HS256);
+    let mut validation = Validation::new(Algorithm::RS256);
     validation.set_issuer(&["orion-license"]);
-    // L'expiration est vérifiée automatiquement par jsonwebtoken (champ `exp`)
     validation.validate_exp = true;
 
-    let key = DecodingKey::from_secret(secret.as_bytes());
-
-    let token_data = match decode::<LicenseClaims>(&token, &key, &validation) {
+    let token_data = match decode::<LicenseClaims>(token, &key, &validation) {
         Ok(d) => d,
         Err(e) => {
             return VerifyTokenResult {
@@ -4137,6 +4150,34 @@ pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResu
 
     let claims = token_data.claims;
 
+    // Cohérence des claims exp et iat
+    if claims.exp <= claims.iat {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some("Incohérence des claims du jeton (exp <= iat)".to_string()),
+            claims: None,
+        };
+    }
+
+    // Durée maximale autorisée : 7 jours (+ 60s marge de dérive d'horloge)
+    const MAX_GRACE_SECONDS: i64 = 7 * 24 * 60 * 60 + 60;
+    if claims.exp - claims.iat > MAX_GRACE_SECONDS {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some("Durée de validité du jeton supérieure à 7 jours".to_string()),
+            claims: None,
+        };
+    }
+
+    // Vérifier l'émetteur
+    if claims.iss != "orion-license" {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some("Émetteur de jeton inattendu".to_string()),
+            claims: None,
+        };
+    }
+
     // Vérifier que le school_id du token correspond bien à l'école demandée
     if claims.school_id != school_id {
         return VerifyTokenResult {
@@ -4146,37 +4187,61 @@ pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResu
         };
     }
 
-    // Vérifier le statut (la révocation post-émission ne peut pas être détectée hors ligne)
+    // Vérifier le statut
     if claims.status != "ACTIVE" {
         return VerifyTokenResult {
             valid: false,
-            reason: Some(format!("Statut de licence dans le token : {}", claims.status)),
+            reason: Some(format!("Statut de licence non actif dans le jeton : {}", claims.status)),
             claims: None,
         };
     }
 
+    let now = chrono::Utc::now();
+
     // Vérifier starts_at (date de début)
     if let Some(ref starts) = claims.starts_at {
-        if let Ok(start_dt) = chrono::DateTime::parse_from_rfc3339(starts) {
-            if start_dt > chrono::Utc::now() {
-                return VerifyTokenResult {
-                    valid: false,
-                    reason: Some("Licence pas encore active (starts_at)".to_string()),
-                    claims: None,
-                };
+        if !starts.trim().is_empty() {
+            match parse_license_date(starts) {
+                Ok(start_dt) => {
+                    if start_dt > now {
+                        return VerifyTokenResult {
+                            valid: false,
+                            reason: Some("Licence pas encore active (date de début dans le futur)".to_string()),
+                            claims: None,
+                        };
+                    }
+                }
+                Err(e) => {
+                    return VerifyTokenResult {
+                        valid: false,
+                        reason: Some(e),
+                        claims: None,
+                    };
+                }
             }
         }
     }
 
-    // Vérifier expires_at de la licence elle-même (en plus de l'exp du JWT)
+    // Vérifier expires_at (date d'expiration)
     if let Some(ref expires) = claims.expires_at {
-        if let Ok(exp_dt) = chrono::DateTime::parse_from_rfc3339(expires) {
-            if exp_dt <= chrono::Utc::now() {
-                return VerifyTokenResult {
-                    valid: false,
-                    reason: Some("Licence expirée (expires_at dans le token)".to_string()),
-                    claims: None,
-                };
+        if !expires.trim().is_empty() {
+            match parse_license_date(expires) {
+                Ok(exp_dt) => {
+                    if exp_dt <= now {
+                        return VerifyTokenResult {
+                            valid: false,
+                            reason: Some("Licence expirée".to_string()),
+                            claims: None,
+                        };
+                    }
+                }
+                Err(e) => {
+                    return VerifyTokenResult {
+                        valid: false,
+                        reason: Some(e),
+                        claims: None,
+                    };
+                }
             }
         }
     }
@@ -4188,6 +4253,55 @@ pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResu
     }
 }
 
+#[tauri::command]
+pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResult {
+    use dotenvy::dotenv;
+    use std::env;
+
+    let _ = dotenv();
+    let pub_key_pem = env::var("ORION_LICENSE_PUBLIC_KEY_PEM")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| EMBEDDED_LICENSE_PUBLIC_KEY.to_string());
+
+    verify_license_token_internal(&token, &school_id, &pub_key_pem)
+}
+
+#[cfg(test)]
+mod license_tests {
+    use super::*;
+
+    #[test]
+    fn test_unconfigured_key_rejected() {
+        let res = verify_license_token_internal("sample.token.here", "school-1", "");
+        assert!(!res.valid);
+        assert!(res.reason.unwrap().contains("non configurée"));
+    }
+
+    #[test]
+    fn test_placeholder_key_rejected() {
+        let res = verify_license_token_internal("sample.token.here", "school-1", EMBEDDED_LICENSE_PUBLIC_KEY);
+        assert!(!res.valid);
+        assert!(res.reason.unwrap().contains("non configurée"));
+    }
+
+    #[test]
+    fn test_date_parser() {
+        assert!(parse_license_date("not-a-date").is_err());
+        assert!(parse_license_date("2026-99-99").is_err());
+        assert!(parse_license_date("2026-11-01T20:00:00Z").is_ok());
+        assert!(parse_license_date("2026-11-01 20:00:00").is_ok());
+        assert!(parse_license_date("2026-11-01").is_ok());
+    }
+
+    #[test]
+    fn test_malformed_token_rejected() {
+        // Un token altéré ou malformé doit être rejeté
+        let res = verify_license_token_internal("invalid.token.payload", "school-1", "");
+        assert!(!res.valid);
+        assert!(res.claims.is_none());
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct RoleRec {
