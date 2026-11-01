@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+﻿import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { KeyRound, RefreshCw, ShieldOff, Clock, Ban, AlertTriangle, Key, CheckCircle, LogIn } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -45,7 +45,7 @@ const STATUS_CFG: Record<CheckStatus, { icon: typeof ShieldOff; title: string; d
 
 // ─── Composant ────────────────────────────────────────────────
 export default function LicenseGuard({ children }: { children: React.ReactNode }) {
-  const { roles, rolesLoaded, user, schoolId, signOut, activated } = useAuth();
+  const { roles, rolesLoaded, user, schoolId, signOut } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -109,6 +109,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       // Chercher une licence valide parmi les résultats cloud
       const validCloud = cloudLics.find(l =>
         l.status === 'ACTIVE' &&
+        (!l.starts_at || new Date(l.starts_at) <= now) &&
         (!l.expires_at || new Date(l.expires_at) > now)
       );
 
@@ -141,7 +142,9 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       try {
         const localLics = await invoke<LicenseInfo[]>('get_licenses', { schoolId: targetId });
         const validLocal = (localLics ?? []).find(l =>
-          l.status === 'ACTIVE' && (!l.expires_at || new Date(l.expires_at) > now)
+          l.status === 'ACTIVE' &&
+          (!l.starts_at || new Date(l.starts_at) <= now) &&
+          (!l.expires_at || new Date(l.expires_at) > now)
         );
         if (validLocal) {
           localStorage.setItem(LS_LAST_OK, Date.now().toString());
@@ -182,14 +185,13 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
     // Le SUPER_ADMIN passe toujours
     if (!rolesLoaded) return;
     if (roles.includes('SUPER_ADMIN')) return;
-    // Installation déjà activée : plus de re-vérification de licence à chaque ouverture.
-    // L'application fonctionne désormais en local (connexion par PIN).
-    if (activated) return;
-
+    // [LIC-01] ctivated est uniquement un flag UX (routage login vs PIN).
+    // Il ne constitue PAS une preuve de licence valide et ne doit PAS court-circuiter
+    // la vérification. La licence est toujours re-validée ici.
     checkLicense();
     const timer = setInterval(checkLicense, RECHECK_MS);
     return () => clearInterval(timer);
-  }, [rolesLoaded, roles, checkLicense, activated]);
+  }, [rolesLoaded, roles, checkLicense]);
 
   // Re-vérifier dès qu'une licence est activée/renouvelée depuis la page Licence
   useEffect(() => {
@@ -209,13 +211,6 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
 
   // ── Bypass Super Admin ───────────────────────────────────────
   if (!rolesLoaded || roles.includes('SUPER_ADMIN')) {
-    return <>{children}</>;
-  }
-
-  // ── Installation déjà activée ────────────────────────────────
-  // Une fois l'installation activée (1ère connexion en ligne réussie), l'application
-  // bascule sur le login local par PIN : on ne revient plus sur l'écran de licence.
-  if (activated) {
     return <>{children}</>;
   }
 

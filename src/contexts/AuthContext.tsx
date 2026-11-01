@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+﻿import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
@@ -60,8 +60,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [forcedSchoolName, setForcedSchoolName] = useState<string | null>(
     () => localStorage.getItem(LS_FORCED_NAME)
   );
-  // Une fois l'installation activée (1ère connexion en ligne réussie),
-  // l'application bascule sur la connexion locale par PIN.
+  // [LIC-01] `activated` est un FLAG UX UNIQUEMENT — il indique si l'installation
+  // a déjà été activée pour basculer la page de login de `connexion en ligne`
+  // vers `connexion locale par PIN` (App.tsx / LoginEntry).
+  // Ce flag NE constitue PAS une preuve de licence valide.
+  // La validation réelle de la licence est effectuée dans LicenseGuard via Supabase.
   const [activated, setActivated] = useState(
     () => localStorage.getItem('orion_activated') === '1'
   );
