@@ -4061,6 +4061,132 @@ pub fn purge_local_licenses(school_id: String, state: State<'_, DbState>) -> Res
     Ok(())
 }
 
+// ──────────────────────────────────────────────
+// COMMANDE : Vérification d'un token de licence hors ligne (LIC-01B)
+// ──────────────────────────────────────────────
+//
+// La clé de signature (SUPABASE_JWT_SECRET) est lue depuis le fichier .env
+// au démarrage, identiquement à la synchronisation. Elle n'est jamais exposée
+// au frontend. La vérification est effectuée ici, côté Rust, pour empêcher
+// toute falsification côté JavaScript.
+//
+// Algorithme : HMAC-SHA256 (HS256), compatible avec l'Edge Function
+// `issue-license-token` qui produit ces tokens.
+//
+// Limite connue : si une révocation survient pendant la période de grâce
+// (≤ 7 jours), le token reste valide jusqu'à son expiration. La prochaine
+// connexion en ligne invalide le cache et recalcule un nouveau token.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LicenseClaims {
+    pub iss: String,
+    pub sub: String,          // license_id
+    pub school_id: String,
+    pub license_key: String,
+    pub status: String,
+    pub starts_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+#[derive(Serialize)]
+pub struct VerifyTokenResult {
+    pub valid: bool,
+    pub reason: Option<String>,
+    pub claims: Option<LicenseClaims>,
+}
+
+#[tauri::command]
+pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResult {
+    use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+    use dotenvy::dotenv;
+    use std::env;
+
+    // Charger .env si pas encore fait
+    let _ = dotenv();
+
+    let secret = match env::var("SUPABASE_JWT_SECRET") {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => {
+            return VerifyTokenResult {
+                valid: false,
+                reason: Some("SUPABASE_JWT_SECRET absent — vérification hors ligne impossible".to_string()),
+                claims: None,
+            };
+        }
+    };
+
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_issuer(&["orion-license"]);
+    // L'expiration est vérifiée automatiquement par jsonwebtoken (champ `exp`)
+    validation.validate_exp = true;
+
+    let key = DecodingKey::from_secret(secret.as_bytes());
+
+    let token_data = match decode::<LicenseClaims>(&token, &key, &validation) {
+        Ok(d) => d,
+        Err(e) => {
+            return VerifyTokenResult {
+                valid: false,
+                reason: Some(format!("Token invalide ou expiré : {}", e)),
+                claims: None,
+            };
+        }
+    };
+
+    let claims = token_data.claims;
+
+    // Vérifier que le school_id du token correspond bien à l'école demandée
+    if claims.school_id != school_id {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some("Token émis pour un autre établissement".to_string()),
+            claims: None,
+        };
+    }
+
+    // Vérifier le statut (la révocation post-émission ne peut pas être détectée hors ligne)
+    if claims.status != "ACTIVE" {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some(format!("Statut de licence dans le token : {}", claims.status)),
+            claims: None,
+        };
+    }
+
+    // Vérifier starts_at (date de début)
+    if let Some(ref starts) = claims.starts_at {
+        if let Ok(start_dt) = chrono::DateTime::parse_from_rfc3339(starts) {
+            if start_dt > chrono::Utc::now() {
+                return VerifyTokenResult {
+                    valid: false,
+                    reason: Some("Licence pas encore active (starts_at)".to_string()),
+                    claims: None,
+                };
+            }
+        }
+    }
+
+    // Vérifier expires_at de la licence elle-même (en plus de l'exp du JWT)
+    if let Some(ref expires) = claims.expires_at {
+        if let Ok(exp_dt) = chrono::DateTime::parse_from_rfc3339(expires) {
+            if exp_dt <= chrono::Utc::now() {
+                return VerifyTokenResult {
+                    valid: false,
+                    reason: Some("Licence expirée (expires_at dans le token)".to_string()),
+                    claims: None,
+                };
+            }
+        }
+    }
+
+    VerifyTokenResult {
+        valid: true,
+        reason: None,
+        claims: Some(claims),
+    }
+}
 
 
 #[derive(Serialize, Deserialize)]

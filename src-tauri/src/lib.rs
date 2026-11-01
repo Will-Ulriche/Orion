@@ -38,6 +38,7 @@ pub fn run() {
             commands::save_license,
             commands::delete_local_license,
             commands::purge_local_licenses,
+            commands::verify_license_token,
             commands::get_roles,
             commands::check_user_role,
             commands::get_current_user_roles,

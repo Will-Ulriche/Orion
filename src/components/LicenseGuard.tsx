@@ -27,10 +27,13 @@ interface LicenseInfo {
 }
 
 // ─── Constantes ───────────────────────────────────────────────
-const GRACE_MS     = 7 * 24 * 60 * 60 * 1000; // 7 jours hors-ligne toléré
 const RECHECK_MS   = 5 * 60 * 1000;            // revérification toutes les 5 minutes
-const LS_LAST_OK   = 'orion_lic_ok_at';
-const LS_CACHED    = 'orion_lic_cache';
+// [LIC-01B] Le token signé (JWT HS256, vérifié côté Rust) remplace
+// l'ancien timestamp localStorage non protégé (orion_lic_ok_at).
+// Il est émis par l'Edge Function issue-license-token et son
+// expiration (7 jours) est vérifiée cryptographiquement par Rust,
+// jamais par JS. Modifier ce token dans localStorage le rend invalide.
+const LS_LIC_TOKEN = 'orion_lic_token';
 
 // ─── Helpers UI ───────────────────────────────────────────────
 const STATUS_CFG: Record<CheckStatus, { icon: typeof ShieldOff; title: string; desc: string; color: string; bg: string; border: string }> = {
@@ -66,13 +69,14 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
 
     setCheckStatus('checking');
 
+    // Déterminer le school_id réel (accessible aussi en catch)
+    let targetId = schoolId;
+    if (!targetId || targetId === 'school-1') {
+      const metaSchoolId = (user?.user_metadata as any)?.school_id;
+      if (metaSchoolId) targetId = metaSchoolId;
+    }
+
     try {
-      // Déterminer le school_id réel
-      let targetId = schoolId;
-      if (!targetId || targetId === 'school-1') {
-        const metaSchoolId = (user?.user_metadata as any)?.school_id;
-        if (metaSchoolId) targetId = metaSchoolId;
-      }
       try {
         const { data: prof } = await supabase
           .from('profiles')
@@ -114,8 +118,15 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       );
 
       if (validCloud) {
-        localStorage.setItem(LS_LAST_OK, Date.now().toString());
-        localStorage.setItem(LS_CACHED, JSON.stringify(validCloud));
+        // [LIC-01B] Obtenir un token de licence signé côté serveur
+        try {
+          const { data: tokenRes } = await supabase.functions.invoke('issue-license-token', {
+            body: { license_id: validCloud.id, school_id: targetId },
+          });
+          if (tokenRes?.token) {
+            localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
+          }
+        } catch (_) {}
         try {
           await invoke('save_license', { license: validCloud });
         } catch (_) {}
@@ -127,10 +138,8 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       if (cloudLics.length > 0) {
         const latest = cloudLics[0];
         setLicenseInfo(latest);
-        // Réponse cloud sans licence valide : le cache local encore présent est périmé
-        localStorage.removeItem(LS_CACHED);
-        localStorage.removeItem(LS_LAST_OK);
-        // Déterminer le statut précis
+        // Réponse cloud sans licence valide : purger le token hors ligne
+        localStorage.removeItem(LS_LIC_TOKEN);
         if (latest.status === 'SUSPENDED') { setCheckStatus('suspended'); return; }
         if (latest.status === 'REVOKED')   { setCheckStatus('revoked');   return; }
         if (latest.expires_at && new Date(latest.expires_at) <= now) { setCheckStatus('expired'); return; }
@@ -138,46 +147,45 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         return;
       }
 
-      // Rien en cloud → essayer SQLite local
-      try {
-        const localLics = await invoke<LicenseInfo[]>('get_licenses', { schoolId: targetId });
-        const validLocal = (localLics ?? []).find(l =>
-          l.status === 'ACTIVE' &&
-          (!l.starts_at || new Date(l.starts_at) <= now) &&
-          (!l.expires_at || new Date(l.expires_at) > now)
-        );
-        if (validLocal) {
-          localStorage.setItem(LS_LAST_OK, Date.now().toString());
-          localStorage.setItem(LS_CACHED, JSON.stringify(validLocal));
-          setLicenseInfo(validLocal);
-          setCheckStatus('valid');
-          return;
-        }
-        if (localLics && localLics.length > 0) {
-          setLicenseInfo(localLics[0]);
-          const s = localLics[0].status;
-          if (s === 'SUSPENDED') setCheckStatus('suspended');
-          else if (s === 'REVOKED') setCheckStatus('revoked');
-          else setCheckStatus('expired');
-          return;
-        }
-      } catch (_) {}
-
-      // Le cloud (joignable) ne renvoie aucune licence : on purge le cache local périmé
-      localStorage.removeItem(LS_CACHED);
-      localStorage.removeItem(LS_LAST_OK);
+      // Le cloud (joignable) ne renvoie aucune licence : purger le token hors ligne
+      localStorage.removeItem(LS_LIC_TOKEN);
       setCheckStatus('missing');
 
     } catch (_networkErr) {
-      // Réseau inaccessible → période de grâce
-      const lastOkStr = localStorage.getItem(LS_LAST_OK);
-      const cached    = localStorage.getItem(LS_CACHED);
-      if (lastOkStr && Date.now() - parseInt(lastOkStr) < GRACE_MS) {
-        if (cached) setLicenseInfo(JSON.parse(cached));
-        setCheckStatus('offline_grace');
-      } else {
-        setCheckStatus('missing');
+      // [LIC-01B] Réseau inaccessible → validation obligatoire par token signé vérifié côté Rust.
+      // Une modification de localStorage ou du cache SQLite ne suffit plus : seul un JWT
+      // intègre et non expiré (HS256 via Rust) accorde l'accès hors ligne.
+      const licToken = localStorage.getItem(LS_LIC_TOKEN);
+      if (licToken) {
+        try {
+          const res = await invoke<{
+            valid: boolean;
+            reason?: string;
+            claims?: {
+              sub: string;
+              school_id: string;
+              license_key: string;
+              status: string;
+              starts_at: string | null;
+              expires_at: string | null;
+            };
+          }>('verify_license_token', { token: licToken, schoolId: targetId });
+
+          if (res.valid && res.claims) {
+            setLicenseInfo({
+              id: res.claims.sub,
+              license_key: res.claims.license_key,
+              status: res.claims.status,
+              expires_at: res.claims.expires_at,
+              starts_at: res.claims.starts_at,
+              max_devices: null,
+            });
+            setCheckStatus('offline_grace');
+            return;
+          }
+        } catch (_) {}
       }
+      setCheckStatus('missing');
     }
   }, [user, schoolId]);
 
@@ -282,8 +290,15 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         lic.school_id = effectiveId;
       }
 
-      localStorage.setItem(LS_LAST_OK, Date.now().toString());
-      localStorage.setItem(LS_CACHED, JSON.stringify(lic));
+      // [LIC-01B] Obtenir le token de licence signé après activation
+      try {
+        const { data: tokenRes } = await supabase.functions.invoke('issue-license-token', {
+          body: { license_id: lic.id, school_id: effectiveId },
+        });
+        if (tokenRes?.token) {
+          localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
+        }
+      } catch (_) {}
       try {
         await invoke('save_license', { license: lic });
       } catch (_) {}
