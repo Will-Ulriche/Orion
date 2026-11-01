@@ -9,7 +9,7 @@
 
 DO $$
 DECLARE
-  v_email     text := 'admin@orion.app';      -- ← à changer
+  v_email     text := 'admin@orion.app';      -- ← à changer si souhaité
   v_password  text := 'ChangeMoi!2026';       -- ← à changer (min. 6 caractères)
   v_first     text := 'Super';
   v_last      text := 'Admin';
@@ -17,6 +17,9 @@ DECLARE
   v_school_id uuid;
   v_role_id   text;
 BEGIN
+  -- Nettoyage préventif au cas où l'utilisateur existe déjà
+  DELETE FROM auth.users WHERE email = v_email;
+
   -- 1) Établissement de rattachement (technique).
   --    profiles.user_id et user_roles.school_id sont NOT NULL : on réutilise
   --    une école existante, sinon on en crée une dédiée à l'administration.
@@ -66,13 +69,13 @@ BEGIN
   VALUES (v_user_id, v_email, 'ACTIVE')
   ON CONFLICT (id) DO NOTHING;
 
-  -- 6) Profil.
-  INSERT INTO public.profiles (user_id, school_id, first_name, last_name)
-  VALUES (v_user_id, v_school_id, v_first, v_last);
+  -- 6) Profil (génération d'un id explicite pour respecter la contrainte NOT NULL).
+  INSERT INTO public.profiles (id, user_id, school_id, first_name, last_name)
+  VALUES (gen_random_uuid()::text, v_user_id, v_school_id, v_first, v_last);
 
-  -- 7) Attribution du rôle SUPER_ADMIN.
-  INSERT INTO public.user_roles (user_id, school_id, role_id)
-  VALUES (v_user_id, v_school_id, v_role_id);
+  -- 7) Attribution du rôle SUPER_ADMIN (génération d'un id explicite).
+  INSERT INTO public.user_roles (id, user_id, school_id, role_id)
+  VALUES (gen_random_uuid()::text, v_user_id, v_school_id, v_role_id);
 
   RAISE NOTICE 'Super-admin créé : % (id = %)', v_email, v_user_id;
 END $$;

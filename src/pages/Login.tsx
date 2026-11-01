@@ -216,7 +216,8 @@ export default function Login({
         }
       }
     } catch (err: any) {
-      setError(err.message || 'Une erreur est survenue');
+      const msg = typeof err === 'string' ? err : (err?.message || 'Une erreur est survenue');
+      setError(msg);
     } finally {
       setLoading(false);
     }
