@@ -4,6 +4,8 @@ pub mod library;
 pub mod models;
 pub mod sync;
 pub mod auth_guard;
+#[cfg(test)]
+pub mod test_keys;
 
 use std::sync::Mutex;
 use tauri::Manager;

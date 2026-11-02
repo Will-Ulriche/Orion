@@ -4114,7 +4114,9 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
 
     if public_key_pem.trim().is_empty()
         || (!public_key_pem.contains("BEGIN PUBLIC KEY") && !public_key_pem.contains("BEGIN RSA PUBLIC KEY"))
-        || public_key_pem.contains("# Configurer ici") {
+        || public_key_pem.contains("Configurer ici")
+        || public_key_pem.contains("YOUR_PUBLIC_KEY")
+        || public_key_pem.contains("PLACEHOLDER") {
         return VerifyTokenResult {
             valid: false,
             reason: Some("Clé publique RSA Orion non configurée — vérification hors ligne impossible".to_string()),
@@ -4149,8 +4151,25 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
     };
 
     let claims = token_data.claims;
+    let now = chrono::Utc::now();
+    let now_ts = now.timestamp();
 
-    // Cohérence des claims exp et iat
+    // Règle temporelle stricte et documentée :
+    // - Durée max autorisée du jeton : 7 jours (604 800 secondes)
+    // - Tolérance de dérive d'horloge autorisée (clock skew RFC 7519) : 60 secondes
+    const MAX_TOKEN_DURATION_SECS: i64 = 7 * 24 * 60 * 60; // 7 jours
+    const CLOCK_SKEW_TOLERANCE_SECS: i64 = 60;              // 60 secondes
+
+    // 1. Vérification d'un iat futur (au-delà de la tolérance de 60s pour dérive d'horloge)
+    if claims.iat > now_ts + CLOCK_SKEW_TOLERANCE_SECS {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some("Jeton émis dans le futur (iat futur non autorisé)".to_string()),
+            claims: None,
+        };
+    }
+
+    // 2. Cohérence des claims exp et iat
     if claims.exp <= claims.iat {
         return VerifyTokenResult {
             valid: false,
@@ -4159,9 +4178,8 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
         };
     }
 
-    // Durée maximale autorisée : 7 jours (+ 60s marge de dérive d'horloge)
-    const MAX_GRACE_SECONDS: i64 = 7 * 24 * 60 * 60 + 60;
-    if claims.exp - claims.iat > MAX_GRACE_SECONDS {
+    // 3. Durée maximale autorisée : 7 jours (+ 60s tolérance dérive d'horloge)
+    if claims.exp - claims.iat > MAX_TOKEN_DURATION_SECS + CLOCK_SKEW_TOLERANCE_SECS {
         return VerifyTokenResult {
             valid: false,
             reason: Some("Durée de validité du jeton supérieure à 7 jours".to_string()),
@@ -4270,19 +4288,150 @@ pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResu
 #[cfg(test)]
 mod license_tests {
     use super::*;
+    use crate::test_keys::*;
+    use jsonwebtoken::{encode, EncodingKey, Header, Algorithm};
+
+    fn create_test_token(claims: &LicenseClaims, private_key_pem: &str) -> String {
+        let key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
+            .expect("Clé RSA privée de test valide");
+        encode(&Header::new(Algorithm::RS256), claims, &key)
+            .expect("Signature du jeton RS256 de test")
+    }
+
+    fn sample_valid_claims() -> LicenseClaims {
+        let now = chrono::Utc::now().timestamp();
+        LicenseClaims {
+            iss: "orion-license".to_string(),
+            sub: "lic-001".to_string(),
+            school_id: "school-abc".to_string(),
+            license_key: "ORION-TEST-1234".to_string(),
+            status: "ACTIVE".to_string(),
+            starts_at: Some("2026-01-01T00:00:00Z".to_string()),
+            expires_at: Some("2026-12-31T23:59:59Z".to_string()),
+            iat: now,
+            exp: now + 5 * 86400, // 5 jours
+        }
+    }
 
     #[test]
-    fn test_unconfigured_key_rejected() {
-        let res = verify_license_token_internal("sample.token.here", "school-1", "");
-        assert!(!res.valid);
-        assert!(res.reason.unwrap().contains("non configurée"));
+    fn test_valid_token_accepted() {
+        let claims = sample_valid_claims();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(res.valid, "Le jeton valide doit être accepté: {:?}", res.reason);
+        assert_eq!(res.claims.unwrap().school_id, "school-abc");
+    }
+
+    #[test]
+    fn test_wrong_key_rejected() {
+        let claims = sample_valid_claims();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        // Vérification avec une autre clé publique (Clé B)
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_B);
+        assert!(!res.valid, "Un jeton signé avec une autre clé doit être rejeté");
+    }
+
+    #[test]
+    fn test_tampered_token_rejected() {
+        let claims = sample_valid_claims();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        // Altération d'un caractère dans la signature
+        let tampered = if token.ends_with('A') {
+            format!("{}B", &token[..token.len() - 1])
+        } else {
+            format!("{}A", &token[..token.len() - 1])
+        };
+        let res = verify_license_token_internal(&tampered, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Un jeton altéré doit être rejeté");
+    }
+
+    #[test]
+    fn test_expired_token_rejected() {
+        let now = chrono::Utc::now().timestamp();
+        let mut claims = sample_valid_claims();
+        claims.iat = now - 7200;
+        claims.exp = now - 3600; // expiré il y a 1 heure
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Un jeton expiré doit être rejeté");
+    }
+
+    #[test]
+    fn test_different_school_id_rejected() {
+        let claims = sample_valid_claims();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-pirate", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Un jeton pour un autre établissement doit être rejeté");
+        assert!(res.reason.unwrap().contains("autre établissement"));
+    }
+
+    #[test]
+    fn test_suspended_license_rejected() {
+        let mut claims = sample_valid_claims();
+        claims.status = "SUSPENDED".to_string();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Une licence suspendue doit être rejetée");
+    }
+
+    #[test]
+    fn test_future_starts_at_rejected() {
+        let mut claims = sample_valid_claims();
+        claims.starts_at = Some("2035-01-01T00:00:00Z".to_string());
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Une licence dont la date de début est future doit être rejetée");
+    }
+
+    #[test]
+    fn test_past_expires_at_rejected() {
+        let mut claims = sample_valid_claims();
+        claims.expires_at = Some("2020-01-01T00:00:00Z".to_string());
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Une licence dont expires_at est dépassé doit être rejetée");
+    }
+
+    #[test]
+    fn test_future_iat_rejected() {
+        let now = chrono::Utc::now().timestamp();
+        let mut claims = sample_valid_claims();
+        claims.iat = now + 3600;
+        claims.exp = claims.iat + 5 * 86400;
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Un jeton émis dans le futur doit être rejeté");
+        assert!(res.reason.unwrap().contains("iat futur"));
+    }
+
+    #[test]
+    fn test_token_duration_exceeding_seven_days_rejected() {
+        let now = chrono::Utc::now().timestamp();
+        let mut claims = sample_valid_claims();
+        claims.iat = now;
+        claims.exp = now + 8 * 86400; // 8 jours > 7 jours
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Un jeton de plus de 7 jours doit être rejeté");
+        assert!(res.reason.unwrap().contains("supérieure à 7 jours"));
     }
 
     #[test]
     fn test_placeholder_key_rejected() {
-        let res = verify_license_token_internal("sample.token.here", "school-1", EMBEDDED_LICENSE_PUBLIC_KEY);
-        assert!(!res.valid);
+        let claims = sample_valid_claims();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        const PLACEHOLDER_KEY: &str = "-----BEGIN PUBLIC KEY-----\n# Configurer ici la cle publique RSA correspondant au secret Supabase ORION_LICENSE_PRIVATE_KEY_PEM\n-----END PUBLIC KEY-----";
+        let res = verify_license_token_internal(&token, "school-abc", PLACEHOLDER_KEY);
+        assert!(!res.valid, "Un placeholder de clé publique doit faire échouer la vérification");
         assert!(res.reason.unwrap().contains("non configurée"));
+    }
+
+    #[test]
+    fn test_unconfigured_key_rejected() {
+        let claims = sample_valid_claims();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "");
+        assert!(!res.valid, "Une clé publique vide doit être rejetée");
     }
 
     #[test]
@@ -4292,14 +4441,6 @@ mod license_tests {
         assert!(parse_license_date("2026-11-01T20:00:00Z").is_ok());
         assert!(parse_license_date("2026-11-01 20:00:00").is_ok());
         assert!(parse_license_date("2026-11-01").is_ok());
-    }
-
-    #[test]
-    fn test_malformed_token_rejected() {
-        // Un token altéré ou malformé doit être rejeté
-        let res = verify_license_token_internal("invalid.token.payload", "school-1", "");
-        assert!(!res.valid);
-        assert!(res.claims.is_none());
     }
 }
 
