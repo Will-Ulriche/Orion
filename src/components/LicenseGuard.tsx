@@ -1,18 +1,14 @@
-﻿import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { KeyRound, RefreshCw, ShieldOff, Clock, Ban, AlertTriangle, Key, CheckCircle, LogIn } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
-
-function normalizeLicenseKey(input: string): string {
-  let cleaned = input.trim().toUpperCase().replace(/[\s_]+/g, '-');
-  if (!cleaned.startsWith('ORION-') && cleaned.replace(/-/g, '').length === 12) {
-    const raw = cleaned.replace(/-/g, '');
-    cleaned = `ORION-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
-  }
-  return cleaned;
-}
+import {
+  activateSchoolLicense,
+  normalizeLicenseKey,
+  LS_LIC_TOKEN,
+} from '../lib/licenseActivation';
 
 // ─── Types ────────────────────────────────────────────────────
 type CheckStatus = 'checking' | 'valid' | 'expired' | 'suspended' | 'revoked' | 'missing' | 'offline_grace';
@@ -27,13 +23,7 @@ interface LicenseInfo {
 }
 
 // ─── Constantes ───────────────────────────────────────────────
-const RECHECK_MS   = 5 * 60 * 1000;            // revérification toutes les 5 minutes
-// [LIC-01B] Le token signé (JWT HS256, vérifié côté Rust) remplace
-// l'ancien timestamp localStorage non protégé (orion_lic_ok_at).
-// Il est émis par l'Edge Function issue-license-token et son
-// expiration (7 jours) est vérifiée cryptographiquement par Rust,
-// jamais par JS. Modifier ce token dans localStorage le rend invalide.
-const LS_LIC_TOKEN = 'orion_lic_token';
+const RECHECK_MS = 5 * 60 * 1000; // revérification toutes les 5 minutes
 
 // ─── Helpers UI ───────────────────────────────────────────────
 const STATUS_CFG: Record<CheckStatus, { icon: typeof ShieldOff; title: string; desc: string; color: string; bg: string; border: string }> = {
@@ -190,7 +180,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
     } catch (_networkErr) {
       // [LIC-01B] Réseau inaccessible → validation obligatoire par token signé vérifié côté Rust.
       // Une modification de localStorage ou du cache SQLite ne suffit plus : seul un JWT
-      // intègre et non expiré (HS256 via Rust) accorde l'accès hors ligne.
+      // intègre et non expiré (RS256 via Rust) accorde l'accès hors ligne.
       const licToken = localStorage.getItem(LS_LIC_TOKEN);
       if (licToken) {
         try {
@@ -229,9 +219,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
     // Le SUPER_ADMIN passe toujours
     if (!rolesLoaded) return;
     if (roles.includes('SUPER_ADMIN')) return;
-    // [LIC-01] ctivated est uniquement un flag UX (routage login vs PIN).
-    // Il ne constitue PAS une preuve de licence valide et ne doit PAS court-circuiter
-    // la vérification. La licence est toujours re-validée ici.
+    // La licence est toujours re-validée ici.
     checkLicense();
     const timer = setInterval(checkLicense, RECHECK_MS);
     return () => clearInterval(timer);
@@ -300,62 +288,40 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
     setActivating(true);
     setActivationError('');
     setActivationSuccess('');
+
     try {
-      const { data: lic, error } = await supabase
-        .from('licenses')
-        .select('*')
-        .eq('license_key', cleanKey)
-        .maybeSingle();
-
-      if (error || !lic) throw new Error('Clé de licence invalide ou introuvable.');
-      if (lic.status === 'REVOKED') throw new Error('Cette clé a été révoquée.');
-      if (lic.status === 'SUSPENDED') throw new Error('Cette clé est suspendue.');
-      if (lic.expires_at && new Date(lic.expires_at) < new Date()) throw new Error('Cette clé est expirée.');
-
       // Déterminer le school_id effectif
       let effectiveId = schoolId;
-      if ((!effectiveId || effectiveId === 'school-1') && lic.school_id && lic.school_id !== 'unassigned') {
-        effectiveId = lic.school_id;
-        localStorage.setItem('current_school_id', effectiveId);
-        window.dispatchEvent(new Event('orion:school-changed'));
-      } else if (!lic.school_id || lic.school_id === 'unassigned') {
-        await supabase
-          .from('licenses')
-          .update({ school_id: effectiveId, status: 'ACTIVE' })
-          .eq('id', lic.id);
-        lic.school_id = effectiveId;
+      if (!effectiveId || effectiveId === 'school-1') {
+        const metaSchoolId = (user?.user_metadata as any)?.school_id;
+        if (metaSchoolId) effectiveId = metaSchoolId;
       }
-
-      // [LIC-01C] Obtenir le jeton signé RS256 et le valider impérativement
-      let activatedTokenOk = false;
       try {
-        const { data: tokenRes, error: tokenErr } = await supabase.functions.invoke('issue-license-token', {
-          body: { license_id: lic.id, school_id: effectiveId },
-        });
-        if (!tokenErr && tokenRes?.token) {
-          const verifyRes = await invoke<{ valid: boolean; reason?: string; claims?: any }>(
-            'verify_license_token',
-            { token: tokenRes.token, schoolId: effectiveId }
-          );
-          if (verifyRes.valid) {
-            localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
-            activatedTokenOk = true;
-          }
-        }
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('school_id')
+          .eq('user_id', user?.id)
+          .maybeSingle();
+        if (prof?.school_id) effectiveId = prof.school_id;
       } catch (_) {}
 
-      if (!activatedTokenOk) {
-        throw new Error("Impossible d'émettre une preuve de licence signée valide.");
+      if (!effectiveId || effectiveId === 'school-1') {
+        throw new Error("Impossible d'identifier l'établissement rattaché à ce compte. Veuillez contacter l'administrateur.");
       }
 
-      try {
-        await invoke('save_license', { license: lic });
-      } catch (_) {}
+      // [LIC-01] Parcours d'activation unifié et sécurisé :
+      // - Aucun UPDATE direct sur la table licenses
+      // - Contrôle strict de l'appartenance à l'établissement (school_id)
+      // - Statut ACTIVE obligatoire, rejet des clés suspendues/expirées/révoquées
+      // - Jeton JWT RS256 émis par l'Edge Function et validé par Rust
+      const res = await activateSchoolLicense({
+        licenseKey: cleanKey,
+        schoolId: effectiveId,
+      });
 
-      setLicenseInfo(lic);
+      setLicenseInfo(res.license as LicenseInfo);
       setActivationSuccess('Licence vérifiée et activée avec succès !');
       setActivationKey('');
-      window.dispatchEvent(new Event('orion:license-updated'));
       setTimeout(() => {
         setShowActivation(false);
         setActivationSuccess('');
@@ -492,7 +458,6 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
             <span className="text-[11px] font-semibold text-slate-400 tracking-wide">ORION School Management</span>
           </div>
         </div>
-
 
       </div>
     </div>

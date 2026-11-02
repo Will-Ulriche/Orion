@@ -5,20 +5,9 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabaseClient';
-import { invoke } from '@tauri-apps/api/core';
+import { activateSchoolLicense, normalizeLicenseKey } from '../lib/licenseActivation';
 
 const LS_ONBOARDED = 'orion_lic_onboarded';
-const LS_LAST_OK   = 'orion_lic_ok_at';
-const LS_CACHED    = 'orion_lic_cache';
-
-function normalizeLicenseKey(input: string): string {
-  let cleaned = input.trim().toUpperCase().replace(/[\s_]+/g, '-');
-  if (!cleaned.startsWith('ORION-') && cleaned.replace(/-/g, '').length === 12) {
-    const raw = cleaned.replace(/-/g, '');
-    cleaned = `ORION-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
-  }
-  return cleaned;
-}
 
 type GateState = 'checking' | 'ready' | 'need-key' | 'offline-error';
 
@@ -92,15 +81,15 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
         const online = await probeOnline();
         if (cancelled) return;
         if (online) {
-          setHelperText('Saisissez la clé de licence fournie par votre administrateur pour déverrouiller l\'application.');
+          setHelperText("Saisissez la clé de licence fournie par votre administrateur pour déverrouiller l'application.");
           setState('need-key');
         } else {
-          setHelperText('Impossible de joindre le serveur de licence. Une connexion internet est requise lors de la toute première connexion.');
+          setHelperText("Impossible de joindre le serveur de licence. Une connexion internet est requise lors de la toute première connexion.");
           setState('offline-error');
         }
       } catch (_) {
         if (cancelled) return;
-        setHelperText('Impossible de vérifier la licence. Une connexion internet est requise lors de la toute première connexion.');
+        setHelperText("Impossible de vérifier la licence. Une connexion internet est requise lors de la toute première connexion.");
         setState('offline-error');
       }
     })();
@@ -131,36 +120,23 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
         if (prof?.school_id) targetId = prof.school_id;
       } catch (_) {}
 
-      const { data: lic, error } = await supabase
-        .from('licenses')
-        .select('*')
-        .eq('license_key', cleanKey)
-        .maybeSingle();
-      if (error || !lic) throw new Error('Clé de licence invalide ou introuvable.');
-      if (lic.status === 'REVOKED') throw new Error('Cette clé a été révoquée.');
-      if (lic.status === 'SUSPENDED') throw new Error('Cette clé est suspendue.');
-      if (lic.expires_at && new Date(lic.expires_at) < new Date()) {
-        throw new Error('Cette clé est expirée.');
-      }
-      if (lic.school_id && lic.school_id !== 'unassigned' && lic.school_id !== targetId) {
-        throw new Error('Cette clé est déjà attribuée à un autre établissement.');
+      if (!targetId || targetId === 'school-1') {
+        throw new Error("Impossible d'identifier l'établissement rattaché à ce compte. Veuillez contacter l'administrateur.");
       }
 
-      if (!lic.school_id || lic.school_id === 'unassigned') {
-        await supabase
-          .from('licenses')
-          .update({ school_id: targetId, status: 'ACTIVE' })
-          .eq('id', lic.id);
-        lic.school_id = targetId;
-      }
+      // [LIC-01] Parcours d'activation sécurisé unifié :
+      // - Vérifie que la licence est DÉJÀ attribuée à targetId (aucun UPDATE de licenses)
+      // - Vérifie le statut ('ACTIVE') et les dates de validité
+      // - Obtient le jeton signé RS256 via l'Edge Function
+      // - Valide cryptographiquement le jeton avec Rust
+      // - Persiste la licence localement (SQLite + orion_lic_token)
+      await activateSchoolLicense({
+        licenseKey: cleanKey,
+        schoolId: targetId,
+      });
 
-      localStorage.setItem(LS_LAST_OK, Date.now().toString());
-      localStorage.setItem(LS_CACHED, JSON.stringify(lic));
-      try { await invoke('save_license', { license: lic }); } catch (_) {}
-
-      setActivationSuccess('Licence activée avec succès ! Ouverture de votre espace…');
+      setActivationSuccess('Licence vérifiée et activée avec succès ! Ouverture de votre espace…');
       setActivationKey('');
-      window.dispatchEvent(new Event('orion:license-updated'));
       setTimeout(markOnboarded, 900);
     } catch (err: any) {
       setActivationError(err.message || 'Échec de vérification de la licence.');

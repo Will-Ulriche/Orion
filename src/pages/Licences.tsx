@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabaseClient';
+import { activateSchoolLicense } from '../lib/licenseActivation';
 
 function normalizeLicenseKey(input: string): string {
   let cleaned = input.trim().toUpperCase().replace(/[\s_]+/g, '-');
@@ -434,7 +435,7 @@ export default function Licences() {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  // Activer une nouvelle clé saisie manuellement
+  // Activer une nouvelle clé saisie manuellement (LIC-01 : parcours sécurisé unifié)
   const handleActivateKey = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanKey = normalizeLicenseKey(activationKey);
@@ -445,46 +446,24 @@ export default function Licences() {
     setActivationSuccess('');
 
     try {
-      // 1. Vérifier la clé sur Supabase via le client anon (RLS appliqué)
-      const { data: lic, error } = await supabase
-        .from('licenses')
-        .select('*')
-        .eq('license_key', cleanKey)
-        .maybeSingle();
-
-      if (error || !lic) {
-        throw new Error('Clé de licence invalide ou introuvable.');
+      const targetId = effectiveSchoolId;
+      if (!targetId || targetId === 'school-1') {
+        throw new Error("Identifiant d'établissement invalide ou introuvable. Veuillez vous reconnecter.");
       }
 
-      if (lic.status === 'REVOKED') throw new Error('Cette clé a été révoquée.');
-      if (lic.status === 'SUSPENDED') throw new Error('Cette clé est suspendue.');
-      if (lic.expires_at && new Date(lic.expires_at) < new Date()) throw new Error('Cette clé est expirée.');
+      // [LIC-01] Parcours d'activation sécurisé unifié :
+      // - Aucun UPDATE direct sur la table licenses
+      // - Contrôle strict de l'appartenance à l'établissement (school_id)
+      // - Rejet formel des licences suspendues/révoquées/expirées
+      // - Obtention du jeton signé RS256 et validation par Rust
+      await activateSchoolLicense({
+        licenseKey: cleanKey,
+        schoolId: targetId,
+      });
 
-      let currentId = effectiveSchoolId;
-      if ((!currentId || currentId === 'school-1') && lic.school_id && lic.school_id !== 'unassigned') {
-        currentId = lic.school_id;
-        localStorage.setItem('current_school_id', currentId);
-        window.dispatchEvent(new Event('orion:school-changed'));
-      } else if (!lic.school_id || lic.school_id === 'unassigned') {
-        await supabase
-          .from('licenses')
-          .update({ school_id: currentId, status: 'ACTIVE' })
-          .eq('id', lic.id);
-        lic.school_id = currentId;
-      }
-
-      // Enregistrer dans le cache local et SQLite
-      localStorage.setItem('orion_lic_ok_at', Date.now().toString());
-      localStorage.setItem('orion_lic_cache', JSON.stringify(lic));
-      try {
-        await invoke('save_license', { license: lic });
-      } catch (_) {}
-
-      setActivationSuccess('Licence activée avec succès !');
+      setActivationSuccess('Licence vérifiée et activée avec succès !');
       setActivationKey('');
       await loadLicenses();
-      // Informer le LicenseGuard qu'une licence valide est désormais disponible
-      window.dispatchEvent(new Event('orion:license-updated'));
       setTimeout(() => {
         setShowActivationModal(false);
         setActivationSuccess('');
