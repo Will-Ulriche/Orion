@@ -18,16 +18,16 @@
 //   - Conflits critiques jamais écrasés silencieusement
 // ============================================================
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use dotenvy::dotenv;
+use reqwest::Client;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::env;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
-use reqwest::Client;
-use serde_json::Value;
-use dotenvy::dotenv;
-use std::env;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// JWT utilisateur courant pour les appels REST (jamais persisté, jamais service_role).
 static SYNC_ACCESS_TOKEN: Mutex<Option<String>> = Mutex::new(None);
@@ -71,12 +71,12 @@ const DEPENDENCY_ORDER: [(&str, u8); 20] = [
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncStatus {
-    pub engine_status: String,       // IDLE | SYNCING | ERROR | OFFLINE
+    pub engine_status: String, // IDLE | SYNCING | ERROR | OFFLINE
     pub last_sync_at: Option<String>,
-    pub pending_count: i64,          // Mutations en attente d'envoi
-    pub failed_count: i64,           // Mutations échouées
-    pub conflict_count: i64,         // Conflits en attente de résolution
-    pub inbox_pending: i64,          // Changements entrants non appliqués
+    pub pending_count: i64,  // Mutations en attente d'envoi
+    pub failed_count: i64,   // Mutations échouées
+    pub conflict_count: i64, // Conflits en attente de résolution
+    pub inbox_pending: i64,  // Changements entrants non appliqués
     pub is_online: bool,
     pub last_error: Option<String>,
 }
@@ -123,7 +123,10 @@ fn jwt_role_claim(token: &str) -> Option<String> {
     };
     let bytes = STANDARD.decode(padded).ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
-    value.get("role").and_then(|r| r.as_str()).map(str::to_string)
+    value
+        .get("role")
+        .and_then(|r| r.as_str())
+        .map(str::to_string)
 }
 
 fn reject_privileged_jwt(token: &str) -> Result<(), String> {
@@ -163,13 +166,18 @@ fn get_supabase_config() -> Result<(String, String), String> {
         .ok()
         .or_else(|| env::var("SUPABASE_URL").ok())
         .or_else(|| option_env!("VITE_SUPABASE_URL").map(String::from))
-        .ok_or_else(|| "VITE_SUPABASE_URL (ou SUPABASE_URL) doit être définie pour la sync".to_string())?;
+        .ok_or_else(|| {
+            "VITE_SUPABASE_URL (ou SUPABASE_URL) doit être définie pour la sync".to_string()
+        })?;
 
     let supabase_anon_key = env::var("VITE_SUPABASE_ANON_KEY")
         .ok()
         .or_else(|| env::var("SUPABASE_ANON_KEY").ok())
         .or_else(|| option_env!("VITE_SUPABASE_ANON_KEY").map(String::from))
-        .ok_or_else(|| "VITE_SUPABASE_ANON_KEY (ou SUPABASE_ANON_KEY) doit être définie pour la sync".to_string())?;
+        .ok_or_else(|| {
+            "VITE_SUPABASE_ANON_KEY (ou SUPABASE_ANON_KEY) doit être définie pour la sync"
+                .to_string()
+        })?;
 
     reject_privileged_jwt(&supabase_anon_key)?;
     Ok((supabase_url, supabase_anon_key))
@@ -180,7 +188,10 @@ pub fn start_sync_loop(db_path: PathBuf) {
         let (supabase_url, supabase_anon_key) = match get_supabase_config() {
             Ok(cfg) => cfg,
             Err(e) => {
-                println!("[Sync] Configuration Supabase absente ({}). Moteur en attente.", e);
+                println!(
+                    "[Sync] Configuration Supabase absente ({}). Moteur en attente.",
+                    e
+                );
                 return;
             }
         };
@@ -198,7 +209,14 @@ pub fn start_sync_loop(db_path: PathBuf) {
 
             println!("[Sync] Cycle automatique démarré.");
             let access_token = current_sync_access_token();
-            run_sync_cycle(&db_path, &client, &supabase_url, &supabase_anon_key, access_token.as_deref()).await;
+            run_sync_cycle(
+                &db_path,
+                &client,
+                &supabase_url,
+                &supabase_anon_key,
+                access_token.as_deref(),
+            )
+            .await;
         }
     });
 }
@@ -224,7 +242,11 @@ pub async fn run_sync_cycle(
     let bearer_token = match access_token {
         Some(t) if !t.is_empty() => t,
         _ => {
-            update_engine_status(db_path, "OFFLINE", Some("Session utilisateur absente. Connectez-vous pour synchroniser."));
+            update_engine_status(
+                db_path,
+                "OFFLINE",
+                Some("Session utilisateur absente. Connectez-vous pour synchroniser."),
+            );
             println!("[Sync] Pas de JWT utilisateur. Cycle annulé.");
             return;
         }
@@ -240,10 +262,24 @@ pub async fn run_sync_cycle(
     update_engine_status(db_path, "SYNCING", None);
 
     // 2. Outbound : envoyer les mutations locales vers Supabase
-    let outbound_result = process_outbox(db_path, client, supabase_url, supabase_anon_key, bearer_token).await;
+    let outbound_result = process_outbox(
+        db_path,
+        client,
+        supabase_url,
+        supabase_anon_key,
+        bearer_token,
+    )
+    .await;
 
     // 3. Inbound : récupérer les changements distants depuis Supabase
-    let inbound_result = process_inbox(db_path, client, supabase_url, supabase_anon_key, bearer_token).await;
+    let inbound_result = process_inbox(
+        db_path,
+        client,
+        supabase_url,
+        supabase_anon_key,
+        bearer_token,
+    )
+    .await;
 
     // 4. Résumer les échecs résiduels : le cycle peut être « réussi » côté
     //    réseau tout en laissant des mutations en FAILED. Sans ça, `last_error`
@@ -279,7 +315,7 @@ async fn check_connectivity(client: &Client, supabase_url: &str, supabase_key: &
         .await
     {
         Ok(res) => !res.status().is_server_error(),
-        Err(_)  => false,
+        Err(_) => false,
     }
 }
 
@@ -307,7 +343,12 @@ async fn process_outbox(
     for (id, entity_type, operation, payload_str, attempt_count) in mutations {
         // Limiter les tentatives : après 5 échecs, on passe en FAILED définitif
         if attempt_count >= 5 {
-            mark_mutation(db_path, &id, "FAILED", Some("Trop de tentatives. Intervention requise."));
+            mark_mutation(
+                db_path,
+                &id,
+                "FAILED",
+                Some("Trop de tentatives. Intervention requise."),
+            );
             continue;
         }
 
@@ -326,7 +367,12 @@ async fn process_outbox(
         let payload: Value = match serde_json::from_str(&payload_str) {
             Ok(v) => v,
             Err(e) => {
-                mark_mutation(db_path, &id, "FAILED", Some(&format!("JSON invalide : {}", e)));
+                mark_mutation(
+                    db_path,
+                    &id,
+                    "FAILED",
+                    Some(&format!("JSON invalide : {}", e)),
+                );
                 continue;
             }
         };
@@ -345,19 +391,30 @@ async fn process_outbox(
         };
 
         let is_write = operation == "INSERT" || operation == "UPSERT" || operation == "UPDATE";
-        let record_id = payload.get("id").and_then(|v| v.as_str()).map(str::to_string);
+        let record_id = payload
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
 
         let res = match operation.as_str() {
             "INSERT" | "UPSERT" => {
-                headers(client.post(format!("{}?on_conflict=id", endpoint)).json(&payload))
-                    .send()
-                    .await
+                headers(
+                    client
+                        .post(format!("{}?on_conflict=id", endpoint))
+                        .json(&payload),
+                )
+                .send()
+                .await
             }
             "UPDATE" => match &record_id {
                 Some(rid) => {
-                    headers(client.patch(format!("{}?id=eq.{}", endpoint, rid)).json(&payload))
-                        .send()
-                        .await
+                    headers(
+                        client
+                            .patch(format!("{}?id=eq.{}", endpoint, rid))
+                            .json(&payload),
+                    )
+                    .send()
+                    .await
                 }
                 None => {
                     mark_mutation(db_path, &id, "FAILED", Some("UPDATE sans champ 'id'"));
@@ -365,7 +422,11 @@ async fn process_outbox(
                 }
             },
             "DELETE" => match &record_id {
-                Some(rid) => headers(client.delete(format!("{}?id=eq.{}", endpoint, rid))).send().await,
+                Some(rid) => {
+                    headers(client.delete(format!("{}?id=eq.{}", endpoint, rid)))
+                        .send()
+                        .await
+                }
                 None => {
                     mark_mutation(db_path, &id, "FAILED", Some("DELETE sans champ 'id'"));
                     continue;
@@ -392,9 +453,14 @@ async fn process_outbox(
         // qui est correct sur toutes les versions.
         if res.status().as_u16() == 409 && is_write {
             if let Some(rid) = &record_id {
-                eprintln!("[Outbox] Doublon {} {} — bascule en mise à jour.", entity_type, rid);
+                eprintln!(
+                    "[Outbox] Doublon {} {} — bascule en mise à jour.",
+                    entity_type, rid
+                );
                 res = match headers(
-                    client.patch(format!("{}?id=eq.{}", endpoint, rid)).json(&payload)
+                    client
+                        .patch(format!("{}?id=eq.{}", endpoint, rid))
+                        .json(&payload),
                 )
                 .send()
                 .await
@@ -434,24 +500,25 @@ async fn process_outbox(
 // Utilise un cursor (dernière version connue) pour l'incrémental
 // ──────────────────────────────────────────────
 
-/// Récupère les changements distants. Retourne `Ok(None)` si tout s'est bien
-/// passé, `Ok(Some(avertissement))` si au moins une table a été ignorée pour
-/// incompatibilité de schéma, et `Err` en cas de panne réelle du cycle.
-async fn process_inbox(
+/// Taille de page pour la synchronisation entrante (PostgREST REST API)
+pub const INBOUND_PAGE_SIZE: usize = 500;
+
+/// Récupère les changements distants avec pagination complète par table.
+/// Retourne `Ok(None)` si tout s'est bien passé, `Ok(Some(avertissement))`
+/// si au moins une table a été ignorée pour incompatibilité de schéma,
+/// et `Err` en cas de panne réseau ou serveur (le curseur n'est alors PAS avancé).
+pub(crate) async fn process_inbox(
     db_path: &PathBuf,
     client: &Client,
     supabase_url: &str,
     supabase_anon_key: &str,
     bearer_token: &str,
 ) -> Result<Option<String>, String> {
-    // Pour l'instant, on récupère les données marquées comme modifiées
-    // après le cursor de la dernière sync (via la colonne de version)
     let last_cursor = load_inbound_cursor(db_path).unwrap_or_default();
 
     // Tables synchronisables et colonne servant de curseur incrémental.
     // `enrollment_history` n'a pas de `updated_at` côté Supabase : son
-    // horodatage est `changed_at`. Utiliser `updated_at` partout produisait
-    // une erreur 400 sur cette table.
+    // horodatage est `changed_at`.
     let tables: [(&str, &str); 15] = [
         ("academic_years", "updated_at"),
         ("classes", "updated_at"),
@@ -474,66 +541,111 @@ async fn process_inbox(
     let mut degraded: Vec<String> = Vec::new();
 
     for (table, version_col) in &tables {
-        let url = if last_cursor.is_empty() {
-            // Première sync : on récupère tout (limité à 500 pour éviter la surcharge)
-            format!("{}/rest/v1/{}?order={}.asc&limit=500", supabase_url, table, version_col)
-        } else {
-            // Sync incrémentale : seulement ce qui a changé depuis le cursor
-            format!(
-                "{}/rest/v1/{}?{}=gt.{}&order={}.asc&limit=500",
-                supabase_url, table, version_col, last_cursor, version_col
-            )
-        };
+        let mut offset = 0usize;
+        let mut total_table_records = 0usize;
 
-        let res = client
-            .get(&url)
-            // apikey : clé anon publique. Authorization : JWT utilisateur pour RLS.
-            .header("apikey", supabase_anon_key)
-            .header("Authorization", format!("Bearer {}", bearer_token))
-            .send()
-            .await;
+        // Pagination complète jusqu'à épuisement des résultats
+        loop {
+            let url = if last_cursor.is_empty() {
+                // Première sync : tout récupérer page par page avec tri déterministe
+                format!(
+                    "{}/rest/v1/{}?order={}.asc,id.asc&limit={}&offset={}",
+                    supabase_url, table, version_col, INBOUND_PAGE_SIZE, offset
+                )
+            } else {
+                // Sync incrémentale : enregistrements modifiés après last_cursor
+                format!(
+                    "{}/rest/v1/{}?{}=gt.{}&order={}.asc,id.asc&limit={}&offset={}",
+                    supabase_url,
+                    table,
+                    version_col,
+                    last_cursor,
+                    version_col,
+                    INBOUND_PAGE_SIZE,
+                    offset
+                )
+            };
 
-        match res {
-            Ok(response) if response.status().is_success() => {
-                if let Ok(rows) = response.json::<Vec<Value>>().await {
-                    for row in &rows {
-                        store_inbox_item(db_path, table, row);
+            let res = client
+                .get(&url)
+                // apikey : clé anon publique. Authorization : JWT utilisateur pour RLS.
+                .header("apikey", supabase_anon_key)
+                .header("Authorization", format!("Bearer {}", bearer_token))
+                .send()
+                .await;
+
+            match res {
+                Ok(response) if response.status().is_success() => {
+                    let rows = response.json::<Vec<Value>>().await.map_err(|e| {
+                        format!(
+                            "Erreur décodage JSON pour {} (offset {}) : {}",
+                            table, offset, e
+                        )
+                    })?;
+
+                    let page_len = rows.len();
+                    total_table_records += page_len;
+
+                    store_inbox_items(db_path, table, &rows);
+
+                    println!(
+                        "[Inbox] {} : page reçue (offset {}, {} enregistrement(s), total {}).",
+                        table, offset, page_len, total_table_records
+                    );
+
+                    offset += page_len;
+
+                    // Si la page contient moins de INBOUND_PAGE_SIZE éléments,
+                    // tous les enregistrements disponibles ont été épuisés.
+                    if page_len < INBOUND_PAGE_SIZE {
+                        break;
                     }
-                    println!("[Inbox] {} : {} enregistrement(s) reçu(s).", table, rows.len());
                 }
-            }
-            Ok(response) if response.status().as_u16() == 404 => {
-                // Table non encore dans Supabase → on ignore silencieusement
-            }
-            // Incompatibilité de schéma (table ou colonne absente) : on signale
-            // mais on ne bloque pas les autres tables. Rendre cette erreur
-            // fatale empêcherait toute synchronisation entrante dès qu'une
-            // seule table diverge du schéma attendu.
-            Ok(response) if response.status().is_client_error() => {
-                let status = response.status().as_u16();
-                let body = response.text().await.unwrap_or_default();
-                eprintln!("[Inbox] Table {} ignorée ({}): {}", table, status, body);
-                degraded.push(format!("{} ({})", table, status));
-            }
-            Ok(response) => {
-                // Erreur serveur : le cycle est réellement en échec, on remonte
-                let status = response.status().as_u16();
-                let body = response.text().await.unwrap_or_default();
-                eprintln!("[Inbox] Erreur {} pour la table {} : {}", status, table, body);
-                return Err(format!("Erreur {} sur la table {} : {}", status, table, body));
-            }
-            Err(e) => {
-                eprintln!("[Inbox] Erreur réseau pour {} : {}", table, e);
-                return Err(format!("Erreur réseau inbound : {}", e));
+                Ok(response) if response.status().as_u16() == 404 => {
+                    // Table non encore dans Supabase → on ignore silencieusement
+                    break;
+                }
+                // Incompatibilité de schéma (table ou colonne absente) : on signale
+                // mais on ne bloque pas les autres tables.
+                Ok(response) if response.status().is_client_error() => {
+                    let status = response.status().as_u16();
+                    let body = response.text().await.unwrap_or_default();
+                    eprintln!("[Inbox] Table {} ignorée ({}): {}", table, status, body);
+                    degraded.push(format!("{} ({})", table, status));
+                    break;
+                }
+                Ok(response) => {
+                    // Erreur serveur : échec réel du cycle, on remonte sans avancer le curseur
+                    let status = response.status().as_u16();
+                    let body = response.text().await.unwrap_or_default();
+                    eprintln!(
+                        "[Inbox] Erreur {} pour la table {} (offset {}) : {}",
+                        status, table, offset, body
+                    );
+                    return Err(format!(
+                        "Erreur {} sur la table {} (offset {}) : {}",
+                        status, table, offset, body
+                    ));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[Inbox] Erreur réseau pour {} (offset {}) : {}",
+                        table, offset, e
+                    );
+                    return Err(format!(
+                        "Erreur réseau inbound (table {}, offset {}) : {}",
+                        table, offset, e
+                    ));
+                }
             }
         }
     }
 
-    // Appliquer les items de l'inbox dans SQLite
+    // Appliquer tous les items de l'inbox dans SQLite jusqu'à épuisement
     apply_inbox_items(db_path);
 
-    // Avancer le curseur seulement si le cycle est complet : sinon un échec
-    // partiel ferait perdre définitivement les lignes non récupérées.
+    // Avancer le curseur de synchronisation SEULEMENT si toutes les pages
+    // et tables nécessaires ont été traitées avec succès.
     let new_cursor = inbound_cursor();
     save_inbound_cursor(db_path, &new_cursor);
 
@@ -554,90 +666,106 @@ async fn process_inbox(
 fn apply_inbox_items(db_path: &PathBuf) {
     let db = match Connection::open(db_path) {
         Ok(c) => c,
-        Err(e) => { eprintln!("[Inbox] Impossible d'ouvrir SQLite : {}", e); return; }
+        Err(e) => {
+            eprintln!("[Inbox] Impossible d'ouvrir SQLite : {}", e);
+            return;
+        }
     };
 
-    let items: Vec<(String, String, String, String, String)> = {
-        let mut stmt = match db.prepare(
-            "SELECT id, entity_type, entity_id, operation, payload
-             FROM sync_inbox
-             WHERE status = 'PENDING'
-             ORDER BY received_at ASC
-             LIMIT 100"
-        ) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
+    // Traiter l'ensemble des items en attente par lots jusqu'à épuisement complet
+    loop {
+        let items: Vec<(String, String, String, String, String)> = {
+            let mut stmt = match db.prepare(
+                "SELECT id, entity_type, entity_id, operation, payload
+                 FROM sync_inbox
+                 WHERE status = 'PENDING'
+                 ORDER BY received_at ASC
+                 LIMIT 200",
+            ) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
 
-        stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            ))
-        })
-        .ok()
-        .map(|iter| iter.filter_map(Result::ok).collect())
-        .unwrap_or_default()
-    };
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            });
 
-    for (inbox_id, entity_type, entity_id, operation, payload_str) in items {
-        let payload: Value = match serde_json::from_str(&payload_str) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = db.execute(
-                    "UPDATE sync_inbox SET status = 'FAILED', error_message = ?1 WHERE id = ?2",
-                    rusqlite::params![format!("JSON invalide : {}", e), inbox_id],
-                );
-                continue;
+            match rows {
+                Ok(iter) => iter.filter_map(Result::ok).collect(),
+                Err(_) => return,
             }
         };
 
-        // Résolution de conflit basée sur l'horodatage :
-        // Si une mutation locale PENDING/SYNCING existe pour la même entité,
-        // on compare les `updated_at` pour décider qui gagne.
-        //   - Distant ≥ Local  → appliquer le distant (remote wins)
-        //   - Local > Distant  → garder le local (local wins, APPLIED sans écriture)
-        // Cela élimine les faux conflits qui bloquaient l'inbox.
-        let conflict_winner = check_and_resolve_conflict(&db, &entity_type, &entity_id, &payload);
-
-        match conflict_winner {
-            ConflictResolution::LocalWins => {
-                // Le local est plus récent — on ignore le distant et on marque APPLIED
-                // (la donnée locale est déjà correcte dans SQLite)
-                let _ = db.execute(
-                    "UPDATE sync_inbox SET status = 'APPLIED', applied_at = CURRENT_TIMESTAMP WHERE id = ?1",
-                    rusqlite::params![inbox_id],
-                );
-                println!("[Inbox] LOCAL wins pour {}/{} — distant ignoré", entity_type, entity_id);
-                continue;
-            }
-            ConflictResolution::RemoteWins | ConflictResolution::NoConflict => {
-                // Pas de conflit ou le distant est plus récent → on applique normalement
-            }
+        if items.is_empty() {
+            break;
         }
 
-        // Appliquer l'upsert/delete dans SQLite
-        let result = match operation.as_str() {
-            "INSERT" | "UPDATE" => upsert_entity(&db, &entity_type, &payload),
-            "DELETE" => soft_delete_entity(&db, &entity_type, &entity_id),
-            _ => Ok(()),
-        };
+        for (inbox_id, entity_type, entity_id, operation, payload_str) in items {
+            let payload: Value = match serde_json::from_str(&payload_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = db.execute(
+                        "UPDATE sync_inbox SET status = 'FAILED', error_message = ?1 WHERE id = ?2",
+                        rusqlite::params![format!("JSON invalide : {}", e), inbox_id],
+                    );
+                    continue;
+                }
+            };
 
-        match result {
-            Ok(_) => {
-                let _ = db.execute(
+            // Résolution de conflit basée sur l'horodatage :
+            // Si une mutation locale PENDING/SYNCING existe pour la même entité,
+            // on compare les `updated_at` pour décider qui gagne.
+            //   - Distant ≥ Local  → appliquer le distant (remote wins)
+            //   - Local > Distant  → garder le local (local wins, APPLIED sans écriture)
+            // Cela élimine les faux conflits qui bloquaient l'inbox.
+            let conflict_winner =
+                check_and_resolve_conflict(&db, &entity_type, &entity_id, &payload);
+
+            match conflict_winner {
+                ConflictResolution::LocalWins => {
+                    // Le local est plus récent — on ignore le distant et on marque APPLIED
+                    // (la donnée locale est déjà correcte dans SQLite)
+                    let _ = db.execute(
                     "UPDATE sync_inbox SET status = 'APPLIED', applied_at = CURRENT_TIMESTAMP WHERE id = ?1",
                     rusqlite::params![inbox_id],
                 );
+                    println!(
+                        "[Inbox] LOCAL wins pour {}/{} — distant ignoré",
+                        entity_type, entity_id
+                    );
+                    continue;
+                }
+                ConflictResolution::RemoteWins | ConflictResolution::NoConflict => {
+                    // Pas de conflit ou le distant est plus récent → on applique normalement
+                }
             }
-            Err(e) => {
-                let _ = db.execute(
-                    "UPDATE sync_inbox SET status = 'FAILED', error_message = ?1 WHERE id = ?2",
-                    rusqlite::params![e, inbox_id],
+
+            // Appliquer l'upsert/delete dans SQLite
+            let result = match operation.as_str() {
+                "INSERT" | "UPDATE" => upsert_entity(&db, &entity_type, &payload),
+                "DELETE" => soft_delete_entity(&db, &entity_type, &entity_id),
+                _ => Ok(()),
+            };
+
+            match result {
+                Ok(_) => {
+                    let _ = db.execute(
+                    "UPDATE sync_inbox SET status = 'APPLIED', applied_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                    rusqlite::params![inbox_id],
                 );
+                }
+                Err(e) => {
+                    let _ = db.execute(
+                        "UPDATE sync_inbox SET status = 'FAILED', error_message = ?1 WHERE id = ?2",
+                        rusqlite::params![e, inbox_id],
+                    );
+                }
             }
         }
     }
@@ -649,9 +777,9 @@ fn apply_inbox_items(db_path: &PathBuf) {
 
 #[derive(Debug)]
 enum ConflictResolution {
-    NoConflict,  // Pas de mutation locale en cours
-    LocalWins,   // Local plus récent → on garde le local
-    RemoteWins,  // Distant plus récent ou égal → on applique le distant
+    NoConflict, // Pas de mutation locale en cours
+    LocalWins,  // Local plus récent → on garde le local
+    RemoteWins, // Distant plus récent ou égal → on applique le distant
 }
 
 /// Compare l'horodatage de la mutation locale avec celui du payload distant.
@@ -663,12 +791,14 @@ fn check_and_resolve_conflict(
     remote_payload: &Value,
 ) -> ConflictResolution {
     // Récupérer la mutation locale la plus récente pour cette entité
-    let local_ts: Option<String> = db.query_row(
-        "SELECT MAX(created_at) FROM pending_mutations
+    let local_ts: Option<String> = db
+        .query_row(
+            "SELECT MAX(created_at) FROM pending_mutations
          WHERE entity_type = ?1 AND entity_id = ?2 AND status IN ('PENDING', 'SYNCING')",
-        rusqlite::params![entity_type, entity_id],
-        |row| row.get::<_, Option<String>>(0),
-    ).unwrap_or(None);
+            rusqlite::params![entity_type, entity_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None);
 
     let local_ts = match local_ts {
         Some(ts) if !ts.is_empty() => ts,
@@ -700,7 +830,9 @@ fn check_and_resolve_conflict(
 // ──────────────────────────────────────────────
 
 fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<(), String> {
-    let id = payload.get("id").and_then(|v| v.as_str())
+    let id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
         .ok_or("Champ 'id' manquant dans le payload.")?;
 
     match entity_type {
@@ -756,7 +888,8 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
                     str_field(payload, "blood_type"),
                     str_field(payload, "medical_notes"),
                 ],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         "enrollments" => {
             db.execute(
@@ -793,7 +926,8 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
                     str_field(payload, "name"),
                     str_field(payload, "level"),
                 ],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         "enrollment_history" => {
             db.execute(
@@ -814,7 +948,8 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
                     str_field(payload, "reason"),
                     str_field(payload, "changed_by"),
                 ],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         "library_categories" => {
             db.execute(
@@ -977,7 +1112,8 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
                     ts_field(payload, "created_at"),
                     ts_field(payload, "updated_at"),
                 ],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         "library_returns" => {
             db.execute(
@@ -1068,11 +1204,15 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
                     ts_field(payload, "created_at"),
                     ts_field(payload, "updated_at"),
                 ],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         _ => {
             // Table non gérée → on l'ignore sans faire échouer la sync
-            println!("[Inbox] Table '{}' non supportée pour l'upsert.", entity_type);
+            println!(
+                "[Inbox] Table '{}' non supportée pour l'upsert.",
+                entity_type
+            );
         }
     }
 
@@ -1083,20 +1223,35 @@ fn soft_delete_entity(db: &Connection, entity_type: &str, entity_id: &str) -> Re
     // Supprimer les dépendances d'abord selon le type d'entité
     match entity_type {
         "academic_years" => {
-            db.execute("DELETE FROM enrollment_history WHERE academic_year_id = ?1", rusqlite::params![entity_id])
-                .map_err(|e| e.to_string())?;
-            db.execute("DELETE FROM enrollments WHERE academic_year_id = ?1", rusqlite::params![entity_id])
-                .map_err(|e| e.to_string())?;
-            db.execute("DELETE FROM classes WHERE academic_year_id = ?1", rusqlite::params![entity_id])
-                .map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM enrollment_history WHERE academic_year_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM enrollments WHERE academic_year_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM classes WHERE academic_year_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         "classes" => {
-            db.execute("UPDATE enrollments SET class_id = NULL WHERE class_id = ?1", rusqlite::params![entity_id])
-                .map_err(|e| e.to_string())?;
+            db.execute(
+                "UPDATE enrollments SET class_id = NULL WHERE class_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         "enrollments" => {
-            db.execute("DELETE FROM enrollment_history WHERE enrollment_id = ?1", rusqlite::params![entity_id])
-                .map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM enrollment_history WHERE enrollment_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         "fee_structures" => {
             // Les paiements liés ne sont pas supprimés automatiquement
@@ -1118,12 +1273,15 @@ fn soft_delete_entity(db: &Connection, entity_type: &str, entity_id: &str) -> Re
 // Helpers SQLite
 // ──────────────────────────────────────────────
 
-fn load_pending_mutations(db_path: &PathBuf) -> Result<Vec<(String, String, String, String, i64)>, String> {
+fn load_pending_mutations(
+    db_path: &PathBuf,
+) -> Result<Vec<(String, String, String, String, i64)>, String> {
     let db = Connection::open(db_path).map_err(|e| e.to_string())?;
     // Les parents (année scolaire, classe) doivent partir avant leurs enfants
     // (élève, inscription), sinon PostgreSQL rejette l'enfant sur la clé étrangère.
-    let mut stmt = db.prepare(
-        "SELECT id, entity_type, operation, payload, COALESCE(attempt_count, 0)
+    let mut stmt = db
+        .prepare(
+            "SELECT id, entity_type, operation, payload, COALESCE(attempt_count, 0)
          FROM pending_mutations
          WHERE status IN ('PENDING', 'FAILED')
            AND COALESCE(attempt_count, 0) < 5
@@ -1172,25 +1330,32 @@ fn load_pending_mutations(db_path: &PathBuf) -> Result<Vec<(String, String, Stri
               END
             END,
            created_at ASC
-         LIMIT 20"
-    ).map_err(|e| e.to_string())?;
+         LIMIT 20",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, i64>(4)?,
-        ))
-    }).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
 
     Ok(rows.filter_map(Result::ok).collect())
 }
 
 fn mark_mutation(db_path: &PathBuf, id: &str, status: &str, error: Option<&str>) {
     if let Ok(db) = Connection::open(db_path) {
-        let synced_at = if status == "SYNCED" { Some("CURRENT_TIMESTAMP") } else { None };
+        let synced_at = if status == "SYNCED" {
+            Some("CURRENT_TIMESTAMP")
+        } else {
+            None
+        };
         let _ = db.execute(
             "UPDATE pending_mutations SET status = ?1, last_error = ?2, synced_at = CASE WHEN ?3 = 1 THEN CURRENT_TIMESTAMP ELSE synced_at END WHERE id = ?4",
             rusqlite::params![status, error, synced_at.is_some() as i32, id],
@@ -1216,31 +1381,65 @@ fn increment_attempt(db_path: &PathBuf, id: &str) {
     }
 }
 
-fn store_inbox_item(db_path: &PathBuf, entity_type: &str, row: &Value) {
+/// Enregistre un lot d'enregistrements entrants dans sync_inbox au sein d'une transaction unique.
+/// Idempotent : ignore les enregistrements déjà en attente de traitement (status = 'PENDING').
+fn store_inbox_items(db_path: &PathBuf, entity_type: &str, rows: &[Value]) {
+    if rows.is_empty() {
+        return;
+    }
     let db = match Connection::open(db_path) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let id = uuid::Uuid::new_v4().to_string();
-    let entity_id = row.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let school_id  = row.get("school_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let payload    = serde_json::to_string(row).unwrap_or_default();
-    let remote_id  = entity_id.clone();
 
-    // Idempotence : ne pas insérer si déjà présent avec le même remote_id
+    let _ = db.execute_batch("BEGIN TRANSACTION;");
+    for row in rows {
+        store_inbox_item_conn(&db, entity_type, row);
+    }
+    let _ = db.execute_batch("COMMIT;");
+}
+
+fn store_inbox_item_conn(db: &Connection, entity_type: &str, row: &Value) {
+    let entity_id = row
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if entity_id.is_empty() {
+        return;
+    }
+    let school_id = row
+        .get("school_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let payload = serde_json::to_string(row).unwrap_or_default();
+    let remote_id = entity_id.clone();
+
+    // Idempotence : ne pas insérer de doublon si déjà présent en PENDING
     let exists: i64 = db.query_row(
         "SELECT COUNT(*) FROM sync_inbox WHERE remote_id = ?1 AND entity_type = ?2 AND status = 'PENDING'",
         rusqlite::params![remote_id, entity_type],
         |row| row.get(0),
     ).unwrap_or(0);
 
-    if exists > 0 { return; }
+    if exists > 0 {
+        return;
+    }
 
-    let _ = db.execute(
+    let id = uuid::Uuid::new_v4().to_string();
+    if let Err(e) = db.execute(
         "INSERT INTO sync_inbox (id, remote_id, school_id, entity_type, entity_id, operation, payload)
          VALUES (?1, ?2, ?3, ?4, ?5, 'UPDATE', ?6)",
         rusqlite::params![id, remote_id, school_id, entity_type, entity_id, payload],
-    );
+    ) {
+        eprintln!("[Inbox] Erreur insertion sync_inbox ({}/{}): {}", entity_type, remote_id, e);
+    }
+}
+
+#[allow(dead_code)]
+fn store_inbox_item(db_path: &PathBuf, entity_type: &str, row: &Value) {
+    store_inbox_items(db_path, entity_type, std::slice::from_ref(row));
 }
 
 /// Garantit qu'une ligne d'état existe avant toute lecture ou écriture.
@@ -1248,7 +1447,9 @@ fn store_inbox_item(db_path: &PathBuf, entity_type: &str, row: &Value) {
 /// retombait sur "IDLE", `last_sync_at` restait nul et `last_error` jamais
 /// renseigné — le bouton « Synchroniser » n'affichait donc jamais rien.
 fn ensure_sync_state(db_path: &PathBuf) {
-    let Ok(db) = Connection::open(db_path) else { return };
+    let Ok(db) = Connection::open(db_path) else {
+        return;
+    };
 
     let exists: i64 = db
         .query_row(
@@ -1262,7 +1463,11 @@ fn ensure_sync_state(db_path: &PathBuf) {
     }
 
     let school_id: String = db
-        .query_row("SELECT id FROM schools ORDER BY created_at ASC LIMIT 1", [], |row| row.get(0))
+        .query_row(
+            "SELECT id FROM schools ORDER BY created_at ASC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or_else(|_| "school-1".to_string());
     let device_id: String = db
         .query_row(
@@ -1328,7 +1533,9 @@ fn save_inbound_cursor(db_path: &PathBuf, cursor: &str) {
 /// demande explicitement de rejouer la file, donc on ne le laisse pas bloqué
 /// indéfiniment par la limite de 5 tentatives.
 fn reset_exhausted_mutations(db_path: &PathBuf) -> usize {
-    let Ok(db) = Connection::open(db_path) else { return 0 };
+    let Ok(db) = Connection::open(db_path) else {
+        return 0;
+    };
     let count = db
         .execute(
             "UPDATE pending_mutations
@@ -1348,7 +1555,9 @@ fn reset_exhausted_mutations(db_path: &PathBuf) -> usize {
 /// étrangère et resterait en FAILED définitivement, alors que la cause réelle
 /// est chez le parent.
 fn blocking_parents(db_path: &PathBuf, entity_type: &str) -> Vec<String> {
-    let Ok(db) = Connection::open(db_path) else { return Vec::new() };
+    let Ok(db) = Connection::open(db_path) else {
+        return Vec::new();
+    };
     let Some((_, rank)) = DEPENDENCY_ORDER.iter().find(|(t, _)| *t == entity_type) else {
         return Vec::new();
     };
@@ -1378,7 +1587,10 @@ fn blocking_parents(db_path: &PathBuf, entity_type: &str) -> Vec<String> {
 }
 
 fn str_field<'a>(payload: &'a Value, key: &str) -> Option<String> {
-    payload.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Champ numérique du payload (accepte un entier JSON comme un flottant).
@@ -1530,7 +1742,14 @@ pub async fn run_manual_sync(db_path: PathBuf) -> Result<SyncStatus, String> {
 
     // Utiliser le JWT utilisateur courant pour que RLS s'applique correctement.
     let access_token = current_sync_access_token();
-    run_sync_cycle(&db_path, &client, &supabase_url, &supabase_anon_key, access_token.as_deref()).await;
+    run_sync_cycle(
+        &db_path,
+        &client,
+        &supabase_url,
+        &supabase_anon_key,
+        access_token.as_deref(),
+    )
+    .await;
 
     get_sync_status_internal(&db_path)
 }
@@ -1540,35 +1759,52 @@ pub fn get_sync_status_internal(db_path: &PathBuf) -> Result<SyncStatus, String>
     ensure_sync_state(db_path);
     let db = Connection::open(db_path).map_err(|e| e.to_string())?;
 
-    let pending_count: i64 = db.query_row(
-        "SELECT COUNT(*) FROM pending_mutations WHERE status = 'PENDING'",
-        [], |row| row.get(0),
-    ).unwrap_or(0);
+    let pending_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM pending_mutations WHERE status = 'PENDING'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
-    let failed_count: i64 = db.query_row(
-        "SELECT COUNT(*) FROM pending_mutations WHERE status = 'FAILED'",
-        [], |row| row.get(0),
-    ).unwrap_or(0);
+    let failed_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM pending_mutations WHERE status = 'FAILED'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
-    let conflict_count: i64 = db.query_row(
-        "SELECT COUNT(*) FROM sync_inbox WHERE status = 'CONFLICT'",
-        [], |row| row.get(0),
-    ).unwrap_or(0);
+    let conflict_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sync_inbox WHERE status = 'CONFLICT'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
-    let inbox_pending: i64 = db.query_row(
-        "SELECT COUNT(*) FROM sync_inbox WHERE status = 'PENDING'",
-        [], |row| row.get(0),
-    ).unwrap_or(0);
+    let inbox_pending: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sync_inbox WHERE status = 'PENDING'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
-    let (engine_status, last_sync_at, last_error): (String, Option<String>, Option<String>) = db.query_row(
-        "SELECT engine_status, last_sync_at, last_error FROM sync_state WHERE id = ?1",
-        rusqlite::params![SYNC_STATE_ID],
-        |row| Ok((
-            row.get::<_, String>(0).unwrap_or_else(|_| "IDLE".to_string()),
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        )),
-    ).unwrap_or_else(|_| ("IDLE".to_string(), None, None));
+    let (engine_status, last_sync_at, last_error): (String, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT engine_status, last_sync_at, last_error FROM sync_state WHERE id = ?1",
+            rusqlite::params![SYNC_STATE_ID],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)
+                        .unwrap_or_else(|_| "IDLE".to_string()),
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .unwrap_or_else(|_| ("IDLE".to_string(), None, None));
 
     Ok(SyncStatus {
         // L'état n'est connu qu'à la suite d'un cycle : avant le premier cycle
@@ -1588,28 +1824,32 @@ pub fn get_sync_status_internal(db_path: &PathBuf) -> Result<SyncStatus, String>
 /// Récupérer la liste des mutations en attente (pour l'affichage)
 pub fn get_pending_mutations_internal(db_path: &PathBuf) -> Result<Vec<PendingMutation>, String> {
     let db = Connection::open(db_path).map_err(|e| e.to_string())?;
-    let mut stmt = db.prepare(
-        "SELECT id, school_id, entity_type, entity_id, operation, status,
+    let mut stmt = db
+        .prepare(
+            "SELECT id, school_id, entity_type, entity_id, operation, status,
                 COALESCE(attempt_count, 0), created_at, last_error
          FROM pending_mutations
          WHERE status IN ('PENDING', 'FAILED', 'SYNCING')
          ORDER BY created_at DESC
-         LIMIT 50"
-    ).map_err(|e| e.to_string())?;
+         LIMIT 50",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map([], |row| {
-        Ok(PendingMutation {
-            id:            row.get(0)?,
-            school_id:     row.get(1)?,
-            entity_type:   row.get(2)?,
-            entity_id:     row.get(3)?,
-            operation:     row.get(4)?,
-            status:        row.get(5)?,
-            attempt_count: row.get(6)?,
-            created_at:    row.get(7)?,
-            last_error:    row.get(8)?,
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(PendingMutation {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                entity_type: row.get(2)?,
+                entity_id: row.get(3)?,
+                operation: row.get(4)?,
+                status: row.get(5)?,
+                attempt_count: row.get(6)?,
+                created_at: row.get(7)?,
+                last_error: row.get(8)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     Ok(rows.filter_map(Result::ok).collect())
 }
@@ -1617,31 +1857,35 @@ pub fn get_pending_mutations_internal(db_path: &PathBuf) -> Result<Vec<PendingMu
 /// Récupérer les conflits nécessitant une résolution manuelle
 pub fn get_conflicts_internal(db_path: &PathBuf) -> Result<Vec<InboxConflict>, String> {
     let db = Connection::open(db_path).map_err(|e| e.to_string())?;
-    let mut stmt = db.prepare(
-        "SELECT id, entity_type, entity_id, operation, conflict_data, payload, received_at
+    let mut stmt = db
+        .prepare(
+            "SELECT id, entity_type, entity_id, operation, conflict_data, payload, received_at
          FROM sync_inbox
          WHERE status = 'CONFLICT'
-         ORDER BY received_at ASC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY received_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map([], |row| {
-        let payload_str: String = row.get(5)?;
-        let remote_data: Value = serde_json::from_str(&payload_str).unwrap_or(Value::Null);
-        let conflict_str: Option<String> = row.get(4)?;
-        let local_data: Option<Value> = conflict_str
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
+    let rows = stmt
+        .query_map([], |row| {
+            let payload_str: String = row.get(5)?;
+            let remote_data: Value = serde_json::from_str(&payload_str).unwrap_or(Value::Null);
+            let conflict_str: Option<String> = row.get(4)?;
+            let local_data: Option<Value> = conflict_str
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok());
 
-        Ok(InboxConflict {
-            id:          row.get(0)?,
-            entity_type: row.get(1)?,
-            entity_id:   row.get(2)?,
-            operation:   row.get(3)?,
-            local_data,
-            remote_data,
-            received_at: row.get(6)?,
+            Ok(InboxConflict {
+                id: row.get(0)?,
+                entity_type: row.get(1)?,
+                entity_id: row.get(2)?,
+                operation: row.get(3)?,
+                local_data,
+                remote_data,
+                received_at: row.get(6)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     Ok(rows.filter_map(Result::ok).collect())
 }
@@ -1658,11 +1902,13 @@ pub fn resolve_conflict_internal(
     match choice {
         "REMOTE" => {
             // Récupérer le payload et l'appliquer
-            let (entity_type, payload_str): (String, String) = db.query_row(
-                "SELECT entity_type, payload FROM sync_inbox WHERE id = ?1",
-                rusqlite::params![inbox_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).map_err(|_| "Conflit introuvable.".to_string())?;
+            let (entity_type, payload_str): (String, String) = db
+                .query_row(
+                    "SELECT entity_type, payload FROM sync_inbox WHERE id = ?1",
+                    rusqlite::params![inbox_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|_| "Conflit introuvable.".to_string())?;
 
             let payload: Value = serde_json::from_str(&payload_str)
                 .map_err(|e| format!("Payload invalide : {}", e))?;
@@ -1679,7 +1925,8 @@ pub fn resolve_conflict_internal(
             db.execute(
                 "UPDATE sync_inbox SET status = 'SKIPPED' WHERE id = ?1",
                 rusqlite::params![inbox_id],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         _ => return Err("Choix invalide. Utilisez 'LOCAL' ou 'REMOTE'.".to_string()),
     }
@@ -1695,8 +1942,466 @@ pub fn purge_all_conflicts_internal(db_path: &PathBuf) -> Result<usize, String> 
     // check_and_resolve_conflict comparera les horodatages et appliquera
     // automatiquement la bonne version (LOCAL ou REMOTE) sans intervention.
     let reset = db
-        .execute("UPDATE sync_inbox SET status = 'PENDING' WHERE status = 'CONFLICT'", [])
+        .execute(
+            "UPDATE sync_inbox SET status = 'PENDING' WHERE status = 'CONFLICT'",
+            [],
+        )
         .map_err(|e| e.to_string())?;
-    println!("[Sync] {} conflit(s) remis en PENDING pour retraitement automatique", reset);
+    println!(
+        "[Sync] {} conflit(s) remis en PENDING pour retraitement automatique",
+        reset
+    );
     Ok(reset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+    use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+    use tokio::runtime::Runtime;
+
+    struct TempTestDir(PathBuf);
+    impl Drop for TempTestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn setup_test_db() -> (TempTestDir, PathBuf) {
+        let temp_dir =
+            std::env::temp_dir().join(format!("orion_test_sync_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("test.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            crate::db::run_migrations(&conn).unwrap();
+            let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-1', 'School 1')", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-sync-1', 'School Sync 1')", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-sync-1000', 'School Sync 1000')", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-idem', 'School Idem')", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-fail', 'School Fail')", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO academic_years (id, school_id, name) VALUES ('ay-1', 'school-sync-1', '2025-2026')", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO academic_years (id, school_id, name) VALUES ('ay-1000', 'school-sync-1000', '2025-2026')", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO academic_years (id, school_id, name) VALUES ('ay-idem', 'school-idem', '2025-2026')", []);
+        }
+        ensure_sync_state(&db_path);
+        (TempTestDir(temp_dir), db_path)
+    }
+
+    fn spawn_mock_server<F>(handler: F) -> (String, Arc<AtomicBool>, thread::JoinHandle<()>)
+    where
+        F: Fn(&str) -> (u16, String) + Send + Sync + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind TCP listener");
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let handler = Arc::new(handler);
+
+        // Non-blocking listener pour pouvoir vérifier stop_flag
+        listener.set_nonblocking(true).unwrap();
+
+        let handle = thread::spawn(move || {
+            while !stop_clone.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let h = handler.clone();
+                        // Un thread par connexion pour paralléliser les réponses
+                        thread::spawn(move || {
+                            let mut stream = stream;
+                            let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(3000)));
+                            let _ = stream.set_write_timeout(Some(Duration::from_millis(3000)));
+                            let mut buf = [0u8; 65536];
+                            let mut total_req = Vec::new();
+                            loop {
+                                match stream.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        total_req.extend_from_slice(&buf[..n]);
+                                        if total_req.windows(4).any(|w| w == b"\r\n\r\n") {
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            if total_req.is_empty() {
+                                return;
+                            }
+                            let req_str = String::from_utf8_lossy(&total_req);
+                            let first_line = req_str.lines().next().unwrap_or("");
+                            let (status_code, body) = h(first_line);
+                            let status_text = match status_code {
+                                200 => "OK",
+                                404 => "Not Found",
+                                500 => "Internal Server Error",
+                                _ => "Response",
+                            };
+                            let response = format!(
+                                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                status_code, status_text, body.len(), body
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                            let _ = stream.flush();
+                        });
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Courte pause pour laisser le thread démarrer
+        thread::sleep(Duration::from_millis(30));
+
+        (format!("http://127.0.0.1:{}", port), stop, handle)
+    }
+
+    fn parse_query_param(url_line: &str, param: &str) -> Option<usize> {
+        let key = format!("{}=", param);
+        if let Some(pos) = url_line.find(&key) {
+            let rest = &url_line[pos + key.len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            rest[..end].parse::<usize>().ok()
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn test_pagination_more_than_500_rows() {
+        let (_guard, db_path) = setup_test_db();
+        let total_rows = 650usize;
+
+        // Génération de 650 enregistrements pour la table classes
+        let mut all_classes = Vec::with_capacity(total_rows);
+        for i in 0..total_rows {
+            all_classes.push(json!({
+                "id": format!("class-test-500-{:04}", i),
+                "school_id": "school-sync-1",
+                "academic_year_id": "ay-1",
+                "name": format!("Classe 500-{:04}", i),
+                "level": "CE1",
+                "updated_at": format!("2026-02-01T{:02}:{:02}:{:02}Z", (i / 3600) % 24, (i / 60) % 60, i % 60)
+            }));
+        }
+
+        let classes_data = Arc::new(all_classes);
+        let classes_clone = classes_data.clone();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(move |line| {
+            if line.contains("/rest/v1/classes") {
+                // Vérifier la présence du tri déterministe et de la pagination
+                assert!(
+                    line.contains("order=updated_at.asc,id.asc"),
+                    "Tri déterministe absent: {}",
+                    line
+                );
+                assert!(
+                    line.contains(&format!("limit={}", INBOUND_PAGE_SIZE)),
+                    "Limit absent ou erroné: {}",
+                    line
+                );
+
+                let offset = parse_query_param(line, "offset").unwrap_or(0);
+                if offset >= classes_clone.len() {
+                    (200, "[]".to_string())
+                } else {
+                    let end = std::cmp::min(offset + INBOUND_PAGE_SIZE, classes_clone.len());
+                    let slice = &classes_clone[offset..end];
+                    (200, serde_json::to_string(slice).unwrap())
+                }
+            } else {
+                // Toutes les autres tables renvoient une liste vide
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+        let result = Runtime::new().unwrap().block_on(async {
+            process_inbox(
+                &db_path,
+                &client,
+                &mock_url,
+                "test_anon_key",
+                "test_jwt_token",
+            )
+            .await
+        });
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+
+        assert!(result.is_ok(), "process_inbox a échoué: {:?}", result);
+
+        // Vérification dans SQLite : exactement 650 lignes sans doublon
+        let conn = Connection::open(&db_path).unwrap();
+        let total_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM classes", [], |r| r.get::<_, i64>(0))
+            .unwrap() as usize;
+        let distinct_count: usize = conn
+            .query_row("SELECT COUNT(DISTINCT id) FROM classes", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap() as usize;
+        assert_eq!(
+            total_count, 650,
+            "Le nombre total de classes récupérées doit être 650"
+        );
+        assert_eq!(
+            distinct_count, 650,
+            "Aucun doublon d'id ne doit être présent"
+        );
+
+        // sync_inbox doit avoir appliqué tous les items
+        let pending_count: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_inbox WHERE status = 'PENDING'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap() as usize;
+        assert_eq!(
+            pending_count, 0,
+            "Tous les items de sync_inbox doivent être appliqués"
+        );
+
+        let applied_count: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_inbox WHERE status = 'APPLIED'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap() as usize;
+        assert_eq!(
+            applied_count, 650,
+            "Exactement 650 items doivent être passés au statut APPLIED"
+        );
+
+        // Curseur sauvegardé et non vide
+        let cursor = load_inbound_cursor(&db_path).unwrap();
+        assert!(
+            !cursor.is_empty(),
+            "Le curseur entrant doit être mis à jour après succès"
+        );
+    }
+
+    #[test]
+    fn test_pagination_more_than_1000_rows() {
+        let (_guard, db_path) = setup_test_db();
+        let total_rows = 1250usize;
+
+        // Génération de 1250 enregistrements (nécessite 3 pages : 500, 500, 250)
+        let mut all_classes = Vec::with_capacity(total_rows);
+        for i in 0..total_rows {
+            all_classes.push(json!({
+                "id": format!("class-test-1000-{:04}", i),
+                "school_id": "school-sync-1000",
+                "academic_year_id": "ay-1000",
+                "name": format!("Classe 1000-{:04}", i),
+                "level": "CM2",
+                "updated_at": format!("2026-03-01T{:02}:{:02}:{:02}Z", (i / 3600) % 24, (i / 60) % 60, i % 60)
+            }));
+        }
+
+        let classes_data = Arc::new(all_classes);
+        let classes_clone = classes_data.clone();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(move |line| {
+            if line.contains("/rest/v1/classes") {
+                assert!(line.contains("order=updated_at.asc,id.asc"));
+                assert!(line.contains(&format!("limit={}", INBOUND_PAGE_SIZE)));
+
+                let offset = parse_query_param(line, "offset").unwrap_or(0);
+                if offset >= classes_clone.len() {
+                    (200, "[]".to_string())
+                } else {
+                    let end = std::cmp::min(offset + INBOUND_PAGE_SIZE, classes_clone.len());
+                    let slice = &classes_clone[offset..end];
+                    (200, serde_json::to_string(slice).unwrap())
+                }
+            } else {
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+        let result = Runtime::new().unwrap().block_on(async {
+            process_inbox(&db_path, &client, &mock_url, "anon_key", "jwt_token").await
+        });
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+
+        assert!(
+            result.is_ok(),
+            "process_inbox pour 1250 lignes a échoué: {:?}",
+            result
+        );
+
+        let conn = Connection::open(&db_path).unwrap();
+        let total_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM classes", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+        let distinct_count: i64 = conn
+            .query_row("SELECT COUNT(DISTINCT id) FROM classes", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(
+            total_count, 1250,
+            "Le total doit être exactement de 1250 classes"
+        );
+        assert_eq!(
+            distinct_count, 1250,
+            "Aucun doublon ne doit exister sur 1250 enregistrements"
+        );
+
+        let pending_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_inbox WHERE status = 'PENDING'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pending_count, 0,
+            "Toutes les 1250 lignes doivent être appliquées"
+        );
+    }
+
+    #[test]
+    fn test_pagination_idempotence_no_duplicates_on_resync() {
+        let (_guard, db_path) = setup_test_db();
+        let total_rows = 600usize;
+
+        let mut all_classes = Vec::with_capacity(total_rows);
+        for i in 0..total_rows {
+            all_classes.push(json!({
+                "id": format!("class-idem-{:04}", i),
+                "school_id": "school-idem",
+                "academic_year_id": "ay-idem",
+                "name": format!("Classe Idem-{:04}", i),
+                "level": "6eme",
+                "updated_at": format!("2026-04-01T{:02}:{:02}:{:02}Z", (i / 3600) % 24, (i / 60) % 60, i % 60)
+            }));
+        }
+
+        let classes_data = Arc::new(all_classes);
+        let classes_clone = classes_data.clone();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(move |line| {
+            if line.contains("/rest/v1/classes") {
+                let offset = parse_query_param(line, "offset").unwrap_or(0);
+                if offset >= classes_clone.len() {
+                    (200, "[]".to_string())
+                } else {
+                    let end = std::cmp::min(offset + INBOUND_PAGE_SIZE, classes_clone.len());
+                    let slice = &classes_clone[offset..end];
+                    (200, serde_json::to_string(slice).unwrap())
+                }
+            } else {
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+
+        // 1ère synchronisation
+        let res1 = Runtime::new().unwrap().block_on(async {
+            process_inbox(&db_path, &client, &mock_url, "anon_key", "jwt_token").await
+        });
+        assert!(res1.is_ok());
+
+        // 2ème synchronisation avec les mêmes données (pour tester l'idempotence et l'absence de doublons)
+        let res2 = Runtime::new().unwrap().block_on(async {
+            process_inbox(&db_path, &client, &mock_url, "anon_key", "jwt_token").await
+        });
+        assert!(res2.is_ok());
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let total_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM classes", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+        let distinct_count: i64 = conn
+            .query_row("SELECT COUNT(DISTINCT id) FROM classes", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(
+            total_count, 600,
+            "Après re-sync, le compte de classes doit rester exactement 600"
+        );
+        assert_eq!(
+            distinct_count, 600,
+            "Aucun doublon ne doit avoir été créé lors de la ré-exécution"
+        );
+    }
+
+    #[test]
+    fn test_pagination_failure_does_not_advance_cursor() {
+        let (_guard, db_path) = setup_test_db();
+        let initial_cursor = "2026-01-01T00:00:00Z";
+        save_inbound_cursor(&db_path, initial_cursor);
+
+        // Simulation d'une panne serveur HTTP 500 sur la 2ème page (offset 500)
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(|line| {
+            if line.contains("/rest/v1/academic_years") {
+                let offset = parse_query_param(line, "offset").unwrap_or(0);
+                if offset == 0 {
+                    // Page 1 retourne 500 éléments
+                    let mut page = Vec::with_capacity(500);
+                    for i in 0..500 {
+                        page.push(json!({
+                            "id": format!("ay-fail-{:04}", i),
+                            "school_id": "school-fail",
+                            "name": format!("AY {}", i),
+                            "updated_at": "2026-05-01T00:00:00Z"
+                        }));
+                    }
+                    (200, serde_json::to_string(&page).unwrap())
+                } else {
+                    // Page 2 : panne HTTP 500
+                    (500, "{\"error\": \"Internal server error\"}".to_string())
+                }
+            } else {
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+        let result = Runtime::new().unwrap().block_on(async {
+            process_inbox(&db_path, &client, &mock_url, "anon_key", "jwt_token").await
+        });
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+
+        assert!(
+            result.is_err(),
+            "Le cycle doit échouer si une page renvoie une erreur serveur 500"
+        );
+
+        // Vérification cruciale : le curseur de synchronisation entrant N'A PAS été avancé
+        let cursor_after = load_inbound_cursor(&db_path).unwrap();
+        assert_eq!(
+            cursor_after, initial_cursor,
+            "En cas d'échec sur une page intermédiaire, le curseur entrant ne doit pas être avancé afin d'éviter toute perte de données"
+        );
+    }
 }

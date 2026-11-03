@@ -492,6 +492,7 @@ pub fn retry_failed_mutations(app: tauri::AppHandle) -> Result<usize, String> {
 #[tauri::command]
 pub fn purge_invalid_mutations(state: State<'_, DbState>) -> Result<usize, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::require_super_admin(&conn)?;
     // Tables valides synchronisables
     let valid_types = ["academic_years", "classes", "students", "enrollments"];
     let placeholders = valid_types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
@@ -512,6 +513,7 @@ pub fn purge_invalid_mutations(state: State<'_, DbState>) -> Result<usize, Strin
 #[tauri::command]
 pub fn enqueue_full_resync(school_id: String, state: State<'_, DbState>) -> Result<usize, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SUPER_ADMIN"])?;
 
     let mut enqueued = 0usize;
     // L'ordre suit les dépendances : année scolaire → classes → élèves → inscriptions.
@@ -589,7 +591,9 @@ pub fn get_sync_conflicts(app: tauri::AppHandle) -> Result<Vec<InboxConflict>, S
 // COMMANDE : Supprimer TOUS les conflits en attente
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn purge_all_sync_conflicts(app: tauri::AppHandle) -> Result<usize, String> {
+pub fn purge_all_sync_conflicts(app: tauri::AppHandle, state: State<'_, DbState>) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::require_super_admin(&conn)?;
     let db_path = app.path().app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
@@ -631,6 +635,8 @@ pub fn save_school_settings(payload: String, school_id: Option<String>, state: S
             conn.query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
                 .unwrap_or_else(|_| "school-1".to_string())
         });
+
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SUPER_ADMIN"])?;
 
     // Garantir l'existence de la ligne (la colonne name est NOT NULL).
     conn.execute(
@@ -1246,6 +1252,7 @@ pub fn create_class(
     state: State<'_, DbState>
 ) -> Result<Class, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
     let id = uuid::Uuid::new_v4().to_string();
     
@@ -1279,6 +1286,7 @@ pub fn update_class(
         rusqlite::params![id],
         |row| Ok((row.get(0)?, row.get(1)?))
     ).map_err(|_| "Classe introuvable".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     conn.execute(
@@ -1299,6 +1307,7 @@ pub fn delete_class(id: String, state: State<'_, DbState>) -> Result<(), String>
         rusqlite::params![id],
         |row| Ok((row.get(0)?, row.get(1)?))
     ).map_err(|_| "Classe introuvable".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     // Les élèves de la classe passent en "non assigné" au lieu d'être supprimés
@@ -1751,6 +1760,7 @@ pub fn create_fee_structure(
     state: State<'_, DbState>
 ) -> Result<crate::models::FeeStructure, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -1803,6 +1813,7 @@ pub fn create_fee_structure(
 #[tauri::command]
 pub fn delete_fee_structure(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
 
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM payments WHERE fee_structure_id = ?1 AND status = 'VALID'",
@@ -1837,6 +1848,7 @@ pub fn update_fee_structure(
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
 
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -1992,10 +2004,12 @@ pub fn create_payment(
     payment_method: String,
     reference: Option<String>,
     notes: Option<String>,
-    recorded_by: String, // from context
+    _recorded_by: Option<String>,
     state: State<'_, DbState>
 ) -> Result<crate::models::Payment, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE", "SECRETAIRE"])?;
+    let recorded_by = sess.user_id;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -2223,6 +2237,7 @@ fn build_financial_dashboard(
 #[tauri::command]
 pub fn cancel_payment(id: String, school_id: String, cancel_reason: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
 
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -2804,11 +2819,13 @@ pub fn upsert_grade(
     max_score: f64,
     evaluation_date: Option<String>,
     notes: Option<String>,
-    recorded_by: String,
+    _recorded_by: Option<String>,
     is_absent: bool,
     state: State<'_, DbState>
 ) -> Result<String, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "PROFESSEUR", "SECRETAIRE"])?;
+    let recorded_by = sess.user_id;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -3543,6 +3560,7 @@ pub fn create_staff(
     state: State<'_, DbState>
 ) -> Result<crate::models::Staff, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let statut = statut_administratif.unwrap_or_else(|| "Actif".to_string());
@@ -3561,6 +3579,7 @@ pub fn create_staff(
 #[tauri::command]
 pub fn update_staff(staff: crate::models::Staff, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &staff.school_id, &["DIRECTION", "SECRETAIRE"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE staff SET
@@ -3621,6 +3640,7 @@ pub fn update_staff(staff: crate::models::Staff, state: State<'_, DbState>) -> R
 #[tauri::command]
 pub fn delete_staff(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute(
         "DELETE FROM staff WHERE id=?1 AND school_id=?2",
         rusqlite::params![id, school_id]
@@ -3632,6 +3652,7 @@ pub fn delete_staff(id: String, school_id: String, state: State<'_, DbState>) ->
 #[tauri::command]
 pub fn update_staff_classes(staff_id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     
     let mut stmt = conn.prepare("
         SELECT DISTINCT c.name 
@@ -4029,6 +4050,7 @@ pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<
 #[tauri::command]
 pub fn save_license(license: LicenseRec, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::require_super_admin(&conn)?;
     conn.execute(
         "INSERT OR REPLACE INTO licenses (id, school_id, license_key, status, starts_at, expires_at, max_devices, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)",
@@ -4048,6 +4070,7 @@ pub fn save_license(license: LicenseRec, state: State<'_, DbState>) -> Result<()
 #[tauri::command]
 pub fn delete_local_license(id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::require_super_admin(&conn)?;
     conn.execute("DELETE FROM licenses WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -4056,6 +4079,7 @@ pub fn delete_local_license(id: String, state: State<'_, DbState>) -> Result<(),
 #[tauri::command]
 pub fn purge_local_licenses(school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::require_super_admin(&conn)?;
     conn.execute("DELETE FROM licenses WHERE school_id = ?1", rusqlite::params![school_id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -4499,6 +4523,7 @@ pub struct LocalUserInfo {
 #[tauri::command]
 pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<Vec<LocalUserInfo>, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SUPER_ADMIN"])?;
 
     let mut stmt = conn.prepare(
         "SELECT u.id, u.email, u.username, u.status, p.first_name, p.last_name, p.phone,
@@ -5207,7 +5232,9 @@ mod finance_tests {
 /// et retourne le chemin absolu du fichier créé. Utilisé par l'export Excel du
 /// super-admin (les fichiers sont générés côté navigateur puis persistés ici).
 #[tauri::command]
-pub fn write_download_file(app: tauri::AppHandle, file_name: String, base64_content: String) -> Result<String, String> {
+pub fn write_download_file(app: tauri::AppHandle, file_name: String, base64_content: String, state: State<'_, DbState>) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::require_authenticated(&conn)?;
     use base64::Engine;
 
     let bytes = base64::engine::general_purpose::STANDARD

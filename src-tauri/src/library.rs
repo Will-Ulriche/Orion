@@ -2541,6 +2541,7 @@ pub fn seed_library_demo_data(
     state: State<'_, DbState>,
 ) -> Result<LibraryDashboard, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::require_super_admin(&conn)?;
     seed_library_demo_data_inner(&conn, &school_id)?;
     drop(conn);
     get_library_dashboard(school_id, state)
