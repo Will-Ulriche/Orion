@@ -1,4 +1,4 @@
-﻿import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
@@ -10,15 +10,15 @@ interface AuthContextType {
   roles: string[];
   rolesLoaded: boolean;
   schoolId: string;
-  /** Id de l'établissement ouvert en mode "direction" depuis l'espace SUPER_ADMIN. */
+  /** Id de l'�tablissement ouvert en mode "direction" depuis l'espace SUPER_ADMIN. */
   forcedSchoolId: string | null;
-  /** Nom affiché de l'établissement ouvert en mode "direction". */
+  /** Nom affich� de l'�tablissement ouvert en mode "direction". */
   forcedSchoolName: string | null;
-  /** Vrai quand le SUPER_ADMIN visite l'espace d'un établissement. */
+  /** Vrai quand le SUPER_ADMIN visite l'espace d'un �tablissement. */
   inSchoolMode: boolean;
-  /** Ouvre l'espace direction d'un établissement (mode visite / impersonation). */
+  /** Ouvre l'espace direction d'un �tablissement (mode visite / impersonation). */
   enterSchoolMode: (schoolId: string, schoolName?: string | null) => void;
-  /** Quitte l'espace direction et revient à l'établissement d'origine. */
+  /** Quitte l'espace direction et revient � l'�tablissement d'origine. */
   exitSchoolMode: () => void;
   activated: boolean;
   signOut: () => Promise<void>;
@@ -27,8 +27,10 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const getCurrentSchoolId = (): string =>
-  localStorage.getItem('current_school_id') || 'school-1';
+export const getCurrentSchoolId = (): string => {
+  const stored = localStorage.getItem('current_school_id');
+  return stored || '';
+};
 
 interface RestoredLoginProfile {
   user_id: string;
@@ -42,7 +44,7 @@ const LS_SCHOOL_ID = 'current_school_id';
 const LS_FORCED_ID = 'orion_forced_school_id';
 const LS_FORCED_NAME = 'orion_forced_school_name';
 const LS_PREV_ID = 'orion_prev_school_id';
-/** Événement émis quand l'établissement courant change. */
+/** �v�nement �mis quand l'�tablissement courant change. */
 export const SCHOOL_CHANGED_EVENT = 'orion:school-changed';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -51,8 +53,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [roles, setRoles] = useState<string[]>([]);
   const [rolesLoaded, setRolesLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
-  // Établissement courant — réactif : mis à jour par enterSchoolMode/exitSchoolMode
-  // et par l'événement global SCHOOL_CHANGED_EVENT.
+  // �tablissement courant � r�actif : mis � jour par enterSchoolMode/exitSchoolMode
+  // et par l'�v�nement global SCHOOL_CHANGED_EVENT.
   const [schoolId, setSchoolId] = useState<string>(() => getCurrentSchoolId());
   const [forcedSchoolId, setForcedSchoolId] = useState<string | null>(
     () => localStorage.getItem(LS_FORCED_ID)
@@ -60,11 +62,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [forcedSchoolName, setForcedSchoolName] = useState<string | null>(
     () => localStorage.getItem(LS_FORCED_NAME)
   );
-  // [LIC-01] `activated` est un FLAG UX UNIQUEMENT — il indique si l'installation
-  // a déjà été activée pour basculer la page de login de `connexion en ligne`
+  // [LIC-01] `activated` est un FLAG UX UNIQUEMENT � il indique si l'installation
+  // a d�j� �t� activ�e pour basculer la page de login de `connexion en ligne`
   // vers `connexion locale par PIN` (App.tsx / LoginEntry).
   // Ce flag NE constitue PAS une preuve de licence valide.
-  // La validation réelle de la licence est effectuée dans LicenseGuard via Supabase.
+  // La validation r�elle de la licence est effectu�e dans LicenseGuard via Supabase.
   const [activated, setActivated] = useState(
     () => localStorage.getItem('orion_activated') === '1'
   );
@@ -74,8 +76,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setActivated(true);
   };
 
-  // Relit le localStorage et propage le nouvel établissement dans le contexte
-  // (déclenche le rechargement des années, des pages, du menu…).
+  // Relit le localStorage et propage le nouvel �tablissement dans le contexte
+  // (d�clenche le rechargement des ann�es, des pages, du menu�).
   const syncSchoolFromStorage = () => {
     setSchoolId(getCurrentSchoolId());
     setForcedSchoolId(localStorage.getItem(LS_FORCED_ID));
@@ -88,7 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(SCHOOL_CHANGED_EVENT, handler);
   }, []);
 
-  // Révoque le jeton de restauration avant de supprimer la session locale.
+  // R�voque le jeton de restauration avant de supprimer la session locale.
   const revokeStoredOfflineToken = async () => {
     const raw = localStorage.getItem('orion_offline_session');
     if (!raw) return;
@@ -97,16 +99,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (parsed?.token) {
         await invoke('revoke_local_session', { token: parsed.token });
       }
-    } catch (_) { /* session locale déjà invalide */ }
+    } catch (_) { /* session locale d�j� invalide */ }
     localStorage.removeItem('orion_offline_session');
   };
 
-  // Ouvre l'espace direction d'un établissement (le SUPER_ADMIN "devient" la direction).
+  // Ouvre l'espace direction d'un �tablissement (le SUPER_ADMIN "devient" la direction).
   const enterSchoolMode = (nextSchoolId: string, nextSchoolName?: string | null) => {
     try {
       const current = getCurrentSchoolId();
       if (current !== nextSchoolId) {
-        // On mémorise l'établissement d'origine pour pouvoir y revenir.
+        // On m�morise l'�tablissement d'origine pour pouvoir y revenir.
         localStorage.setItem(LS_PREV_ID, current);
       }
       localStorage.setItem(LS_SCHOOL_ID, nextSchoolId);
@@ -121,7 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.dispatchEvent(new Event(SCHOOL_CHANGED_EVENT));
   };
 
-  // Quitte l'espace direction : on revient à l'établissement d'origine.
+  // Quitte l'espace direction : on revient � l'�tablissement d'origine.
   const exitSchoolMode = () => {
     try {
       const prev = localStorage.getItem(LS_PREV_ID);
@@ -141,7 +143,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setRoles(finalRoles);
       setRolesLoaded(true);
     } catch (err) {
-      console.error("Erreur lors de la récupération des rôles:", err);
+      console.error("Erreur lors de la r�cup�ration des r�les:", err);
       setRoles(fallbackRole ? [fallbackRole] : ['DIRECTION']);
       setRolesLoaded(true);
     }
@@ -151,18 +153,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (userSession?.user) {
       const userMeta = (userSession.user.user_metadata as any) || {};
       let schoolId = userMeta.school_id || localStorage.getItem('current_school_id') || '';
-      let schoolName = 'Établissement';
+      let schoolName = '�tablissement';
       let firstName: string = userMeta.first_name || 'Direction';
       let lastName: string = userMeta.last_name || '';
       let staffId: string | null = null;
       const metaRole: string = userMeta.role || 'DIRECTION';
-      // Fiche complète de l'établissement (renseignée par le super-administrateur
-      // dans le cloud). Elle est rapatriée localement pour que la direction
+      // Fiche compl�te de l'�tablissement (renseign�e par le super-administrateur
+      // dans le cloud). Elle est rapatri�e localement pour que la direction
       // retrouve les informations sans les ressaisir.
       let school: any = null;
 
       try {
-        // Si connecté en ligne, tenter de récupérer l'établissement et profil cloud.
+        // Si connect� en ligne, tenter de r�cup�rer l'�tablissement et profil cloud.
         if (userSession.access_token !== 'offline') {
           try {
             const { data: prof } = await supabase
@@ -178,10 +180,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if ((prof as any)?.staff_id) staffId = (prof as any).staff_id;
             }
           } catch (profileErr) {
-            console.warn('Erreur profil cloud (utilisation métadonnées):', profileErr);
+            console.warn('Erreur profil cloud (utilisation m�tadonn�es):', profileErr);
           }
 
-          // Lecture de l'établissement via la clé de service : seule la
+          // Lecture de l'�tablissement via la cl� de service : seule la
           // super-administration dispose d'une politique RLS de lecture sur
           // `schools`, la direction ne peut donc pas le lire avec le client anon.
           if (schoolId) {
@@ -196,7 +198,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 if ((sch as any).name) schoolName = (sch as any).name;
               }
             } catch (schoolErr) {
-              console.warn('Erreur lecture établissement cloud:', schoolErr);
+              console.warn('Erreur lecture �tablissement cloud:', schoolErr);
             }
           }
         }
@@ -229,7 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           logoUrl: school?.logo_url ?? null,
         });
 
-        // Déterminer les rôles effectifs
+        // D�terminer les r�les effectifs
         let effectiveRoles: string[] = [];
         if (userSession.access_token !== 'offline') {
           try {
@@ -255,7 +257,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           effectiveRoles = ['DIRECTION'];
         }
 
-        // Rapatrier les rôles vers SQLite local
+        // Rapatrier les r�les vers SQLite local
         for (const roleName of effectiveRoles) {
           try {
             await invoke('set_local_user_role', {
@@ -274,7 +276,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await fetchUserRoles(userSession.user.id, schoolId || 'school-main', metaRole);
       } catch (err) {
         console.error("Erreur de synchronisation locale de l'utilisateur:", err);
-        // Toujours garantir que l'utilisateur a son rôle chargé pour ne pas le bloquer
+        // Toujours garantir que l'utilisateur a son r�le charg� pour ne pas le bloquer
         setRoles([metaRole || 'DIRECTION']);
         setRolesLoaded(true);
       }
@@ -282,16 +284,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
-    // Vérifier s'il y a une session hors-ligne sauvegardée
+    // V�rifier s'il y a une session hors-ligne sauvegard�e
     const localOfflineStr = localStorage.getItem('orion_offline_session');
 
-    // Récupérer la session actuelle Supabase
+    // R�cup�rer la session actuelle Supabase
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
         setSession(session);
         setUser(session.user ?? null);
         syncUserToLocalDb(session);
-        void revokeStoredOfflineToken(); // Nettoyer si on est connecté en ligne
+        void revokeStoredOfflineToken(); // Nettoyer si on est connect� en ligne
       } else if (localOfflineStr) {
         try {
           const parsed = JSON.parse(localOfflineStr);
@@ -300,9 +302,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setLoading(false);
             return;
           }
-          // ── Vérification de sécurité ──────────────────────────────────────
-          // Si l'école associée à la session hors-ligne n'existe plus dans la
-          // base locale (supprimée par le SUPER_ADMIN), on refuse l'accès.
+          // -- V�rification de s�curit� --------------------------------------
+          // Si l'�cole associ�e � la session hors-ligne n'existe plus dans la
+          // base locale (supprim�e par le SUPER_ADMIN), on refuse l'acc�s.
           invoke<RestoredLoginProfile>('restore_local_session', { token: parsed.token })
             .then(async (restored) => {
               if (restored) {
@@ -312,15 +314,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   parsed.token,
                   restored.school_id
                 );
-                // Vérifier en arrière-plan que le compte ET l'établissement
-                // n'ont pas été supprimés/suspendus côté cloud par
-                // l'administration (ne bloque pas le démarrage).
+                // V�rifier en arri�re-plan que le compte ET l'�tablissement
+                // n'ont pas �t� supprim�s/suspendus c�t� cloud par
+                // l'administration (ne bloque pas le d�marrage).
                 Promise.all([
                   verifyCloudAccount(profile.user_id),
                   verifyCloudSchool(profile.school_id),
                 ]).then(async ([accountState, schoolState]) => {
                   if (accountState === 'missing' || schoolState === 'missing') {
-                    console.warn('[Auth] Session hors-ligne rejetée : compte ou établissement supprimé.');
+                    console.warn('[Auth] Session hors-ligne rejet�e : compte ou �tablissement supprim�.');
                     void revokeStoredOfflineToken();
                     try { await invoke('clear_local_session'); } catch (_) {}
                     localStorage.removeItem('current_school_id');
@@ -334,8 +336,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   }
                 });
               } else {
-                // L'école a été supprimée → invalider la session fantôme
-                console.warn('[Auth] Session hors-ligne rejetée : établissement supprimé.');
+                // L'�cole a �t� supprim�e ? invalider la session fant�me
+                console.warn('[Auth] Session hors-ligne rejet�e : �tablissement supprim�.');
                 localStorage.removeItem('orion_offline_session');
                 localStorage.removeItem('current_school_id');
               }
@@ -349,7 +351,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               setRoles([]);
             })
             .finally(() => setLoading(false));
-          return; // setLoading(false) géré dans .finally()
+          return; // setLoading(false) g�r� dans .finally()
         } catch (e) {
           localStorage.removeItem('orion_offline_session');
         }
@@ -357,7 +359,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
     });
 
-    // Écouter les changements d'état (connexion, déconnexion)
+    // �couter les changements d'�tat (connexion, d�connexion)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session) {
         setSession(session);
@@ -365,8 +367,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         syncUserToLocalDb(session);
         void revokeStoredOfflineToken();
       } else {
-        // En cas de déconnexion, vérifier si on n'est pas en train de passer en mode offline
-        // (géré par signOut)
+        // En cas de d�connexion, v�rifier si on n'est pas en train de passer en mode offline
+        // (g�r� par signOut)
         if (!localStorage.getItem('orion_offline_session')) {
           setSession(null);
           setUser(null);
@@ -463,7 +465,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error("useAuth doit être utilisé à l'intérieur d'un AuthProvider");
+    throw new Error("useAuth doit �tre utilis� � l'int�rieur d'un AuthProvider");
   }
   return context;
 };

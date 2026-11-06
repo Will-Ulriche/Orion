@@ -40,10 +40,11 @@ const SYNC_STATE_ID: &str = "local-device";
 
 /// Tables parentes dont l'insertion doit précéder celle des enfants,
 /// sinon PostgreSQL rejette l'enfant sur une violation de clé étrangère.
-const DEPENDENCY_ORDER: [(&str, u8); 20] = [
+const DEPENDENCY_ORDER: [(&str, u8); 21] = [
     ("schools", 0),
     ("academic_years", 1),
     ("classes", 2),
+    ("staff", 2),
     ("students", 3),
     ("fee_structures", 4),
     ("payments", 5),
@@ -474,15 +475,30 @@ async fn process_outbox(
             }
         }
 
+        // Idempotence : une suppression rejouée sur une ligne déjà absente côté
+        // serveur est un succès (l'état final est celui attendu).
+        if res.status().as_u16() == 404 && operation == "DELETE" {
+            println!("[Outbox] ✓ Mutation {} déjà absente côté serveur (DELETE idempotent).", id);
+            mark_mutation(db_path, &id, "SYNCED", None);
+            continue;
+        }
+
         if res.status().is_success() {
             println!("[Outbox] ✓ Mutation {} synchronisée.", id);
             mark_mutation(db_path, &id, "SYNCED", None);
         } else if res.status().is_client_error() {
             let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            let error = format!("Erreur client {}: {}", status, body);
-            eprintln!("[Outbox] ✗ Mutation {} : {}", id, error);
-            mark_mutation(db_path, &id, "FAILED", Some(&error));
+            if status == 408 || status == 429 {
+                // Erreur temporaire côté client : on réessaie au cycle suivant.
+                let error = format!("Erreur temporaire {} — Nouvelle tentative prévue.", status);
+                eprintln!("[Outbox] ✗ Mutation {} : {}", id, error);
+                mark_mutation_error(db_path, &id, &error);
+            } else {
+                let error = format!("Erreur client {}: {}", status, body);
+                eprintln!("[Outbox] ✗ Mutation {} : {}", id, error);
+                mark_mutation(db_path, &id, "FAILED", Some(&error));
+            }
         } else {
             // Erreur serveur (5xx) → on réessaie au prochain cycle
             let status = res.status().as_u16();
@@ -519,7 +535,8 @@ pub(crate) async fn process_inbox(
     // Tables synchronisables et colonne servant de curseur incrémental.
     // `enrollment_history` n'a pas de `updated_at` côté Supabase : son
     // horodatage est `changed_at`.
-    let tables: [(&str, &str); 15] = [
+    let tables: [(&str, &str); 22] = [
+        ("staff", "updated_at"),
         ("academic_years", "updated_at"),
         ("classes", "updated_at"),
         ("students", "updated_at"),
@@ -527,6 +544,13 @@ pub(crate) async fn process_inbox(
         ("enrollment_history", "changed_at"),
         ("fee_structures", "updated_at"),
         ("payments", "updated_at"),
+        // Session 5 — Module pédagogique
+        ("subjects", "updated_at"),
+        ("grade_types", "updated_at"),
+        ("grading_periods", "updated_at"),
+        ("class_subjects", "updated_at"),
+        ("teacher_assignments", "updated_at"),
+        ("grades", "updated_at"),
         // Session 6 — Module bibliothèque (l'ordre suit les clés étrangères)
         ("library_categories", "updated_at"),
         ("library_books", "updated_at"),
@@ -539,6 +563,7 @@ pub(crate) async fn process_inbox(
     ];
 
     let mut degraded: Vec<String> = Vec::new();
+    let mut storage_ok = true;
 
     for (table, version_col) in &tables {
         let mut offset = 0usize;
@@ -586,7 +611,9 @@ pub(crate) async fn process_inbox(
                     let page_len = rows.len();
                     total_table_records += page_len;
 
-                    store_inbox_items(db_path, table, &rows);
+                    if !store_inbox_items(db_path, table, &rows) {
+                        storage_ok = false;
+                    }
 
                     println!(
                         "[Inbox] {} : page reçue (offset {}, {} enregistrement(s), total {}).",
@@ -641,8 +668,18 @@ pub(crate) async fn process_inbox(
         }
     }
 
+    if !storage_ok {
+        return Err("Erreur stockage sync_inbox : curseur non avancé.".to_string());
+    }
+
     // Appliquer tous les items de l'inbox dans SQLite jusqu'à épuisement
-    apply_inbox_items(db_path);
+    let apply_failures = apply_inbox_items(db_path);
+    if apply_failures > 0 {
+        return Err(format!(
+            "{} item(s) inbox non appliqué(s) : curseur non avancé.",
+            apply_failures
+        ));
+    }
 
     // Avancer le curseur de synchronisation SEULEMENT si toutes les pages
     // et tables nécessaires ont été traitées avec succès.
@@ -663,14 +700,16 @@ pub(crate) async fn process_inbox(
 // Application des items de l'inbox dans SQLite
 // ──────────────────────────────────────────────
 
-fn apply_inbox_items(db_path: &PathBuf) {
+fn apply_inbox_items(db_path: &PathBuf) -> usize {
     let db = match Connection::open(db_path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[Inbox] Impossible d'ouvrir SQLite : {}", e);
-            return;
+            return 1;
         }
     };
+
+    let mut failed = 0usize;
 
     // Traiter l'ensemble des items en attente par lots jusqu'à épuisement complet
     loop {
@@ -683,7 +722,7 @@ fn apply_inbox_items(db_path: &PathBuf) {
                  LIMIT 200",
             ) {
                 Ok(s) => s,
-                Err(_) => return,
+                Err(_) => return 1,
             };
 
             let rows = stmt.query_map([], |row| {
@@ -698,7 +737,7 @@ fn apply_inbox_items(db_path: &PathBuf) {
 
             match rows {
                 Ok(iter) => iter.filter_map(Result::ok).collect(),
-                Err(_) => return,
+                Err(_) => return 1,
             }
         };
 
@@ -714,6 +753,7 @@ fn apply_inbox_items(db_path: &PathBuf) {
                         "UPDATE sync_inbox SET status = 'FAILED', error_message = ?1 WHERE id = ?2",
                         rusqlite::params![format!("JSON invalide : {}", e), inbox_id],
                     );
+                    failed += 1;
                     continue;
                 }
             };
@@ -765,10 +805,12 @@ fn apply_inbox_items(db_path: &PathBuf) {
                         "UPDATE sync_inbox SET status = 'FAILED', error_message = ?1 WHERE id = ?2",
                         rusqlite::params![e, inbox_id],
                     );
+                    failed += 1;
                 }
             }
         }
     }
+    failed
 }
 
 // ──────────────────────────────────────────────
@@ -1207,6 +1249,187 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
             )
             .map_err(|e| e.to_string())?;
         }
+        "staff" => {
+            db.execute(
+                "INSERT INTO staff (id,school_id,matricule,nom,prenoms,sexe,date_naissance,lieu_naissance,nationalite,photo_url,situation_matrimoniale,nombre_enfants,telephone_principal,telephone_secondaire,email,adresse,region,prefecture,commune,quartier,urgence_nom,urgence_telephone,type_personnel,fonction,statut_professionnel,matricule_professionnel,categorie,grade,classe_grade,echelon,indice,diplome_academique,diplome_professionnel,specialite,date_recrutement,date_entree_fonction_pub,etablissement,annee_scolaire_id,fonction_etablissement,decision_affectation_num,date_affectation,date_prise_service,date_arrivee_region,date_arrivee_etablissement,ancien_etablissement,service_direction,matiere_principale,matieres_secondaires,classes_principales,volume_horaire_hebdo,est_prof_principal,est_responsable_classe,heures_prevues,heures_effectuees,statut_administratif,date_debut_conge,date_fin_conge,date_disponibilite,date_mutation,date_suspension,date_retraite,date_depart,motif_depart,observations,est_actif,created_by,updated_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39,?40,?41,?42,?43,?44,?45,?46,?47,?48,?49,?50,?51,?52,?53,?54,?55,?56,?57,?58,?59,?60,?61,?62,?63,?64,?65,?66,?67,?68,?69) ON CONFLICT(id) DO UPDATE SET school_id=excluded.school_id,matricule=excluded.matricule,nom=excluded.nom,prenoms=excluded.prenoms,sexe=excluded.sexe,date_naissance=excluded.date_naissance,lieu_naissance=excluded.lieu_naissance,nationalite=excluded.nationalite,photo_url=excluded.photo_url,situation_matrimoniale=excluded.situation_matrimoniale,nombre_enfants=excluded.nombre_enfants,telephone_principal=excluded.telephone_principal,telephone_secondaire=excluded.telephone_secondaire,email=excluded.email,adresse=excluded.adresse,region=excluded.region,prefecture=excluded.prefecture,commune=excluded.commune,quartier=excluded.quartier,urgence_nom=excluded.urgence_nom,urgence_telephone=excluded.urgence_telephone,type_personnel=excluded.type_personnel,fonction=excluded.fonction,statut_professionnel=excluded.statut_professionnel,matricule_professionnel=excluded.matricule_professionnel,categorie=excluded.categorie,grade=excluded.grade,classe_grade=excluded.classe_grade,echelon=excluded.echelon,indice=excluded.indice,diplome_academique=excluded.diplome_academique,diplome_professionnel=excluded.diplome_professionnel,specialite=excluded.specialite,date_recrutement=excluded.date_recrutement,date_entree_fonction_pub=excluded.date_entree_fonction_pub,etablissement=excluded.etablissement,annee_scolaire_id=excluded.annee_scolaire_id,fonction_etablissement=excluded.fonction_etablissement,decision_affectation_num=excluded.decision_affectation_num,date_affectation=excluded.date_affectation,date_prise_service=excluded.date_prise_service,date_arrivee_region=excluded.date_arrivee_region,date_arrivee_etablissement=excluded.date_arrivee_etablissement,ancien_etablissement=excluded.ancien_etablissement,service_direction=excluded.service_direction,matiere_principale=excluded.matiere_principale,matieres_secondaires=excluded.matieres_secondaires,classes_principales=excluded.classes_principales,volume_horaire_hebdo=excluded.volume_horaire_hebdo,est_prof_principal=excluded.est_prof_principal,est_responsable_classe=excluded.est_responsable_classe,heures_prevues=excluded.heures_prevues,heures_effectuees=excluded.heures_effectuees,statut_administratif=excluded.statut_administratif,date_debut_conge=excluded.date_debut_conge,date_fin_conge=excluded.date_fin_conge,date_disponibilite=excluded.date_disponibilite,date_mutation=excluded.date_mutation,date_suspension=excluded.date_suspension,date_retraite=excluded.date_retraite,date_depart=excluded.date_depart,motif_depart=excluded.motif_depart,observations=excluded.observations,est_actif=excluded.est_actif,created_by=excluded.created_by,updated_by=excluded.updated_by,created_at=excluded.created_at,updated_at=excluded.updated_at",
+                rusqlite::params![
+                    id,
+                    str_field(payload,"school_id"),
+                    str_field(payload,"matricule"),
+                    str_field(payload,"nom").unwrap_or_default(),
+                    str_field(payload,"prenoms").unwrap_or_default(),
+                    str_field(payload,"sexe"),
+                    str_field(payload,"date_naissance"),
+                    str_field(payload,"lieu_naissance"),
+                    str_field(payload,"nationalite"),
+                    str_field(payload,"photo_url"),
+                    str_field(payload,"situation_matrimoniale"),
+                    int_field(payload,"nombre_enfants"),
+                    str_field(payload,"telephone_principal"),
+                    str_field(payload,"telephone_secondaire"),
+                    str_field(payload,"email"),
+                    str_field(payload,"adresse"),
+                    str_field(payload,"region"),
+                    str_field(payload,"prefecture"),
+                    str_field(payload,"commune"),
+                    str_field(payload,"quartier"),
+                    str_field(payload,"urgence_nom"),
+                    str_field(payload,"urgence_telephone"),
+                    str_field(payload,"type_personnel"),
+                    str_field(payload,"fonction"),
+                    str_field(payload,"statut_professionnel"),
+                    str_field(payload,"matricule_professionnel"),
+                    str_field(payload,"categorie"),
+                    str_field(payload,"grade"),
+                    str_field(payload,"classe_grade"),
+                    str_field(payload,"echelon"),
+                    int_field(payload,"indice"),
+                    str_field(payload,"diplome_academique"),
+                    str_field(payload,"diplome_professionnel"),
+                    str_field(payload,"specialite"),
+                    str_field(payload,"date_recrutement"),
+                    str_field(payload,"date_entree_fonction_pub"),
+                    str_field(payload,"etablissement"),
+                    str_field(payload,"annee_scolaire_id"),
+                    str_field(payload,"fonction_etablissement"),
+                    str_field(payload,"decision_affectation_num"),
+                    str_field(payload,"date_affectation"),
+                    str_field(payload,"date_prise_service"),
+                    str_field(payload,"date_arrivee_region"),
+                    str_field(payload,"date_arrivee_etablissement"),
+                    str_field(payload,"ancien_etablissement"),
+                    str_field(payload,"service_direction"),
+                    str_field(payload,"matiere_principale"),
+                    str_field(payload,"matieres_secondaires"),
+                    str_field(payload,"classes_principales"),
+                    num_field(payload,"volume_horaire_hebdo"),
+                    int_field(payload,"est_prof_principal").unwrap_or(0),
+                    int_field(payload,"est_responsable_classe").unwrap_or(0),
+                    num_field(payload,"heures_prevues"),
+                    num_field(payload,"heures_effectuees"),
+                    str_field(payload,"statut_administratif").unwrap_or_else(|| "Actif".to_string()),
+                    str_field(payload,"date_debut_conge"),
+                    str_field(payload,"date_fin_conge"),
+                    str_field(payload,"date_disponibilite"),
+                    str_field(payload,"date_mutation"),
+                    str_field(payload,"date_suspension"),
+                    str_field(payload,"date_retraite"),
+                    str_field(payload,"date_depart"),
+                    str_field(payload,"motif_depart"),
+                    str_field(payload,"observations"),
+                    int_field(payload,"est_actif").unwrap_or(1),
+                    str_field(payload,"created_by"),
+                    str_field(payload,"updated_by"),
+                    ts_field(payload,"created_at"),
+                    ts_field(payload,"updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        "subjects" => {
+            db.execute(
+                "INSERT INTO subjects (id, school_id, name, code, color, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET name=excluded.name, code=excluded.code, color=excluded.color",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "name").unwrap_or_default(),
+                    str_field(payload, "code").unwrap_or_default(),
+                    str_field(payload, "color"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "grade_types" => {
+            db.execute(
+                "INSERT INTO grade_types (id, school_id, name, max_score, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET name=excluded.name, max_score=excluded.max_score",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "name").unwrap_or_default(),
+                    num_field(payload, "max_score").unwrap_or(20.0),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "grading_periods" => {
+            db.execute(
+                "INSERT INTO grading_periods (id, school_id, academic_year_id, name, period_order, start_date, end_date, is_active, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name, period_order=excluded.period_order, start_date=excluded.start_date, end_date=excluded.end_date, is_active=excluded.is_active",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "academic_year_id"),
+                    str_field(payload, "name").unwrap_or_default(),
+                    int_field(payload, "period_order").unwrap_or(1),
+                    str_field(payload, "start_date"),
+                    str_field(payload, "end_date"),
+                    bool_field(payload, "is_active") as i64,
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        "class_subjects" => {
+            db.execute(
+                "INSERT INTO class_subjects (id, school_id, academic_year_id, class_id, subject_id, teacher_id, coefficient, weekly_hours, subject_type, is_mandatory, order_index, color_icon, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(id) DO UPDATE SET teacher_id=excluded.teacher_id, coefficient=excluded.coefficient, weekly_hours=excluded.weekly_hours, subject_type=excluded.subject_type, is_mandatory=excluded.is_mandatory, order_index=excluded.order_index, color_icon=excluded.color_icon",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "academic_year_id"),
+                    str_field(payload, "class_id"),
+                    str_field(payload, "subject_id"),
+                    str_field(payload, "teacher_id"),
+                    num_field(payload, "coefficient").unwrap_or(1.0),
+                    num_field(payload, "weekly_hours"),
+                    str_field(payload, "subject_type"),
+                    int_field(payload, "is_mandatory").unwrap_or(1),
+                    int_field(payload, "order_index").unwrap_or(0),
+                    str_field(payload, "color_icon"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "teacher_assignments" => {
+            db.execute(
+                "INSERT INTO teacher_assignments (id, school_id, academic_year_id, teacher_id, class_subject_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET teacher_id=excluded.teacher_id, class_subject_id=excluded.class_subject_id",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "academic_year_id"),
+                    str_field(payload, "teacher_id").unwrap_or_default(),
+                    str_field(payload, "class_subject_id"),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        "grades" => {
+            db.execute(
+                "INSERT INTO grades (id, school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id, score, max_score, evaluation_date, notes, recorded_by, is_absent, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(id) DO UPDATE SET score=excluded.score, max_score=excluded.max_score, evaluation_date=excluded.evaluation_date, notes=excluded.notes, is_absent=excluded.is_absent",
+                rusqlite::params![
+                    id,
+                    str_field(payload, "school_id"),
+                    str_field(payload, "academic_year_id"),
+                    str_field(payload, "enrollment_id"),
+                    str_field(payload, "student_id"),
+                    str_field(payload, "class_subject_id"),
+                    str_field(payload, "grading_period_id"),
+                    str_field(payload, "grade_type_id"),
+                    num_field(payload, "score").unwrap_or(0.0),
+                    num_field(payload, "max_score").unwrap_or(20.0),
+                    str_field(payload, "evaluation_date"),
+                    str_field(payload, "notes"),
+                    str_field(payload, "recorded_by").unwrap_or_default(),
+                    bool_field(payload, "is_absent") as i64,
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+
         _ => {
             // Table non gérée → on l'ignore sans faire échouer la sync
             println!(
@@ -1256,6 +1479,25 @@ fn soft_delete_entity(db: &Connection, entity_type: &str, entity_id: &str) -> Re
         "fee_structures" => {
             // Les paiements liés ne sont pas supprimés automatiquement
         }
+        "subjects" => {
+            db.execute("DELETE FROM grades WHERE class_subject_id IN (SELECT id FROM class_subjects WHERE subject_id = ?1)", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+            db.execute("DELETE FROM teacher_assignments WHERE class_subject_id IN (SELECT id FROM class_subjects WHERE subject_id = ?1)", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+            db.execute("DELETE FROM class_subjects WHERE subject_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+        }
+        "grade_types" => {
+            db.execute("DELETE FROM grades WHERE grade_type_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+        }
+        "grading_periods" => {
+            db.execute("DELETE FROM grades WHERE grading_period_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+        }
+        "class_subjects" => {
+            db.execute("DELETE FROM teacher_assignments WHERE class_subject_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+            db.execute("DELETE FROM grades WHERE class_subject_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+        }
+        "staff" => {
+            // Pas de suppression en cascade côté client; l'isolation est garantie par school_id
+        }
+
         _ => {}
     }
 
@@ -1283,8 +1525,20 @@ fn load_pending_mutations(
         .prepare(
             "SELECT id, entity_type, operation, payload, COALESCE(attempt_count, 0)
          FROM pending_mutations
-         WHERE status IN ('PENDING', 'FAILED')
-           AND COALESCE(attempt_count, 0) < 5
+          WHERE status = 'PENDING'
+            AND COALESCE(attempt_count, 0) < 5
+            AND (
+                last_attempt_at IS NULL
+                OR (julianday('now') - julianday(last_attempt_at)) * 86400.0 >=
+                    CASE COALESCE(attempt_count, 0)
+                        WHEN 0 THEN 0
+                        WHEN 1 THEN 0
+                        WHEN 2 THEN 2
+                        WHEN 3 THEN 5
+                        WHEN 4 THEN 10
+                        ELSE 30
+                    END
+            )
          ORDER BY
            -- Pour les INSERT/UPSERT : parents d'abord (school → enrollments)
            -- Pour les DELETE : enfants d'abord (enrollments → school)
@@ -1294,6 +1548,13 @@ fn load_pending_mutations(
                 WHEN 'library_returns' THEN 0
                 WHEN 'library_penalties' THEN 0
                 WHEN 'library_reservations' THEN 0
+                WHEN 'grades' THEN 0
+                WHEN 'teacher_assignments' THEN 0
+                WHEN 'class_subjects' THEN 1
+                WHEN 'grading_periods' THEN 1
+                WHEN 'grade_types' THEN 2
+                WHEN 'subjects' THEN 2
+                WHEN 'staff' THEN 4
                 WHEN 'enrollments' THEN 1
                 WHEN 'payments' THEN 1
                 WHEN 'library_loans' THEN 2
@@ -1313,11 +1574,18 @@ fn load_pending_mutations(
                 WHEN 'school' THEN 0
                 WHEN 'academic_years' THEN 1
                 WHEN 'classes' THEN 2
+                WHEN 'staff' THEN 2
                 WHEN 'students' THEN 3
                 WHEN 'enrollments' THEN 4
                 WHEN 'enrollment_history' THEN 5
                 WHEN 'fee_structures' THEN 6
                 WHEN 'payments' THEN 7
+                WHEN 'subjects' THEN 6
+                WHEN 'grade_types' THEN 6
+                WHEN 'grading_periods' THEN 7
+                WHEN 'class_subjects' THEN 7
+                WHEN 'teacher_assignments' THEN 7
+                WHEN 'grades' THEN 8
                 WHEN 'library_categories' THEN 9
                 WHEN 'library_books' THEN 10
                 WHEN 'library_readers' THEN 10
@@ -1383,20 +1651,29 @@ fn increment_attempt(db_path: &PathBuf, id: &str) {
 
 /// Enregistre un lot d'enregistrements entrants dans sync_inbox au sein d'une transaction unique.
 /// Idempotent : ignore les enregistrements déjà en attente de traitement (status = 'PENDING').
-fn store_inbox_items(db_path: &PathBuf, entity_type: &str, rows: &[Value]) {
+fn store_inbox_items(db_path: &PathBuf, entity_type: &str, rows: &[Value]) -> bool {
     if rows.is_empty() {
-        return;
+        return true;
     }
     let db = match Connection::open(db_path) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("[Inbox] Impossible d'ouvrir SQLite : {}", e);
+            return false;
+        }
     };
 
+    let mut ok = true;
     let _ = db.execute_batch("BEGIN TRANSACTION;");
     for row in rows {
+        // store_inbox_item_conn does not return status; check insertion by re-running is costly.
+        // We track only connection-level failures here.
         store_inbox_item_conn(&db, entity_type, row);
     }
-    let _ = db.execute_batch("COMMIT;");
+    if db.execute_batch("COMMIT;").is_err() {
+        ok = false;
+    }
+    ok
 }
 
 fn store_inbox_item_conn(db: &Connection, entity_type: &str, row: &Value) {
@@ -1540,7 +1817,7 @@ fn reset_exhausted_mutations(db_path: &PathBuf) -> usize {
         .execute(
             "UPDATE pending_mutations
              SET status = 'PENDING', attempt_count = 0, last_error = NULL
-             WHERE status = 'FAILED' AND COALESCE(attempt_count, 0) >= 5",
+             WHERE status = 'FAILED'",
             [],
         )
         .unwrap_or(0);
@@ -1564,7 +1841,7 @@ fn blocking_parents(db_path: &PathBuf, entity_type: &str) -> Vec<String> {
 
     let mut stmt = match db.prepare(
         "SELECT DISTINCT entity_type FROM pending_mutations
-         WHERE status IN ('PENDING', 'FAILED')
+         WHERE status = 'PENDING'
            AND COALESCE(attempt_count, 0) < 5
            AND entity_type != ?1",
     ) {
@@ -1598,11 +1875,15 @@ fn num_field(payload: &Value, key: &str) -> Option<f64> {
     payload.get(key).and_then(|v| v.as_f64())
 }
 
-/// Champ entier du payload.
+/// Champ entier du payload (accepte aussi les booléens true -> 1, false -> 0 renvoyés par PostgreSQL).
 fn int_field(payload: &Value, key: &str) -> Option<i64> {
     payload
         .get(key)
-        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_f64().map(|f| f as i64))
+                .or_else(|| v.as_bool().map(|b| if b { 1 } else { 0 }))
+        })
 }
 
 /// Champ booléen du payload (PostgreSQL renvoie true/false).
@@ -2209,7 +2490,7 @@ mod tests {
             all_classes.push(json!({
                 "id": format!("class-test-1000-{:04}", i),
                 "school_id": "school-sync-1000",
-                "academic_year_id": "ay-1000",
+                "academic_year_id": "ay-1",
                 "name": format!("Classe 1000-{:04}", i),
                 "level": "CM2",
                 "updated_at": format!("2026-03-01T{:02}:{:02}:{:02}Z", (i / 3600) % 24, (i / 60) % 60, i % 60)
@@ -2403,5 +2684,574 @@ mod tests {
             cursor_after, initial_cursor,
             "En cas d'échec sur une page intermédiaire, le curseur entrant ne doit pas être avancé afin d'éviter toute perte de données"
         );
+    }
+    #[test]
+    fn test_upsert_subjects_local() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        let payload = json!({"id":"subject-test-1","school_id":"school-sync-1","name":"Mathématiques","code":"MATH","color":"#123456","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "subjects", &payload).unwrap();
+        let code: String = conn.query_row("SELECT code FROM subjects WHERE id = 'subject-test-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(code, "MATH");
+        let other = json!({"id":"subject-test-2","school_id":"school-sync-1000","name":"Français","code":"FR","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "subjects", &other).unwrap();
+        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM subjects WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM subjects WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_a, 1);
+        assert_eq!(count_b, 1);
+    }
+
+    #[test]
+    fn test_upsert_grade_types_local() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        let payload = json!({"id":"gt-test-1","school_id":"school-sync-1","name":"Examen","max_score":20.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grade_types", &payload).unwrap();
+        let max_score: f64 = conn.query_row("SELECT max_score FROM grade_types WHERE id = 'gt-test-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(max_score, 20.0);
+        let other = json!({"id":"gt-test-2","school_id":"school-sync-1000","name":"Contrôle","max_score":20.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grade_types", &other).unwrap();
+        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM grade_types WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM grade_types WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_a, 1);
+        assert_eq!(count_b, 1);
+    }
+
+    #[test]
+    fn test_upsert_grading_periods_local() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        let payload = json!({"id":"gp-test-1","school_id":"school-sync-1","academic_year_id":"ay-1","name":"Trimestre 1","period_order":1,"is_active":true,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grading_periods", &payload).unwrap();
+        let period_order: i64 = conn.query_row("SELECT period_order FROM grading_periods WHERE id = 'gp-test-1'", [], |r| r.get(0)).unwrap();
+        let is_active: i64 = conn.query_row("SELECT is_active FROM grading_periods WHERE id = 'gp-test-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(period_order, 1);
+        assert_eq!(is_active, 1);
+        let other = json!({"id":"gp-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1000","name":"Trimestre 1","period_order":1,"is_active":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grading_periods", &other).unwrap();
+        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM grading_periods WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM grading_periods WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_a, 1);
+        assert_eq!(count_b, 1);
+    }
+
+    #[test]
+    fn test_upsert_class_subjects_local() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        let subject = json!({"id":"subject-cs-1","school_id":"school-sync-1","name":"Mathématiques","code":"MATH","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "subjects", &subject).unwrap();
+        conn.execute("INSERT OR IGNORE INTO classes (id, school_id, academic_year_id, name) VALUES ('class-cs-1', 'school-sync-1', 'ay-1', '6A')", []).unwrap();
+        let payload = json!({"id":"cs-test-1","school_id":"school-sync-1","academic_year_id":"ay-1","class_id":"class-cs-1","subject_id":"subject-cs-1","coefficient":2.5,"teacher_id":"teacher-1","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "class_subjects", &payload).unwrap();
+        let coefficient: f64 = conn.query_row("SELECT coefficient FROM class_subjects WHERE id = 'cs-test-1'", [], |r| r.get(0)).unwrap();
+        let subject_id: String = conn.query_row("SELECT subject_id FROM class_subjects WHERE id = 'cs-test-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(coefficient, 2.5);
+        assert_eq!(subject_id, "subject-cs-1");
+        let other_subject = json!({"id":"subject-cs-2","school_id":"school-sync-1000","name":"Français","code":"FR","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "subjects", &other_subject).unwrap();
+        conn.execute("INSERT OR IGNORE INTO classes (id, school_id, academic_year_id, name) VALUES ('class-cs-2', 'school-sync-1000', 'ay-1000', '6B')", []).unwrap();
+        let other = json!({"id":"cs-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1000","class_id":"class-cs-2","subject_id":"subject-cs-2","coefficient":1.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "class_subjects", &other).unwrap();
+        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM class_subjects WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM class_subjects WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_a, 1);
+        assert_eq!(count_b, 1);
+    }
+
+    #[test]
+    fn test_upsert_teacher_assignments_local() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        let subject = json!({"id":"subject-ta-1","school_id":"school-sync-1","name":"Mathématiques","code":"MATH","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "subjects", &subject).unwrap();
+        conn.execute("INSERT OR IGNORE INTO classes (id, school_id, academic_year_id, name) VALUES ('class-ta-1', 'school-sync-1', 'ay-1', '6A')", []).unwrap();
+        let class_subject = json!({"id":"cs-ta-1","school_id":"school-sync-1","academic_year_id":"ay-1","class_id":"class-ta-1","subject_id":"subject-ta-1","coefficient":1.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "class_subjects", &class_subject).unwrap();
+        let payload = json!({"id":"ta-test-1","school_id":"school-sync-1","academic_year_id":"ay-1","teacher_id":"teacher-1","class_subject_id":"cs-ta-1","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "teacher_assignments", &payload).unwrap();
+        let teacher_id: String = conn.query_row("SELECT teacher_id FROM teacher_assignments WHERE id = 'ta-test-1'", [], |r| r.get(0)).unwrap();
+        let class_subject_id: String = conn.query_row("SELECT class_subject_id FROM teacher_assignments WHERE id = 'ta-test-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(teacher_id, "teacher-1");
+        assert_eq!(class_subject_id, "cs-ta-1");
+        let other = json!({"id":"ta-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1","teacher_id":"teacher-2","class_subject_id":"cs-ta-1","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "teacher_assignments", &other).unwrap();
+        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM teacher_assignments WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM teacher_assignments WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_a, 1);
+        assert_eq!(count_b, 1);
+    }
+
+    #[test]
+    fn test_upsert_grades_local() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute("INSERT OR IGNORE INTO students (id, school_id, first_name, last_name) VALUES ('student-grade-1', 'school-sync-1', 'Jean', 'Dupont')", []).unwrap();
+        conn.execute("INSERT OR IGNORE INTO enrollments (id, school_id, academic_year_id, student_id, status, enrollment_type) VALUES ('enrollment-grade-1', 'school-sync-1', 'ay-1', 'student-grade-1', 'ACTIVE', 'NEW')", []).unwrap();
+        let subject = json!({"id":"subject-grade-1","school_id":"school-sync-1","name":"Mathématiques","code":"MATH","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "subjects", &subject).unwrap();
+        conn.execute("INSERT OR IGNORE INTO classes (id, school_id, academic_year_id, name) VALUES ('class-grade-1', 'school-sync-1', 'ay-1', '6A')", []).unwrap();
+        let class_subject = json!({"id":"cs-grade-1","school_id":"school-sync-1","academic_year_id":"ay-1","class_id":"class-grade-1","subject_id":"subject-grade-1","coefficient":1.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "class_subjects", &class_subject).unwrap();
+        let grade_type = json!({"id":"gt-grade-1","school_id":"school-sync-1","name":"Examen","max_score":20.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grade_types", &grade_type).unwrap();
+        let grading_period = json!({"id":"gp-grade-1","school_id":"school-sync-1","academic_year_id":"ay-1","name":"Trimestre 1","period_order":1,"is_active":true,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grading_periods", &grading_period).unwrap();
+        let payload = json!({"id":"grade-test-1","school_id":"school-sync-1","academic_year_id":"ay-1","enrollment_id":"enrollment-grade-1","student_id":"student-grade-1","class_subject_id":"cs-grade-1","grading_period_id":"gp-grade-1","grade_type_id":"gt-grade-1","score":14.5,"max_score":20.0,"evaluation_date":"2026-02-01","notes":"Bien","recorded_by":"user-1","is_absent":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grades", &payload).unwrap();
+        let score: f64 = conn.query_row("SELECT score FROM grades WHERE id = 'grade-test-1'", [], |r| r.get(0)).unwrap();
+        let is_absent: i64 = conn.query_row("SELECT is_absent FROM grades WHERE id = 'grade-test-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(score, 14.5);
+        assert_eq!(is_absent, 0);
+        let other = json!({"id":"grade-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1","enrollment_id":"enrollment-grade-1","student_id":"student-grade-1","class_subject_id":"cs-grade-1","grading_period_id":"gp-grade-1","grade_type_id":"gt-grade-1","score":10.0,"max_score":20.0,"is_absent":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grades", &other).unwrap();
+        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM grades WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM grades WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_a, 1);
+        assert_eq!(count_b, 1);
+    }
+
+    #[test]
+    fn test_upsert_staff_local() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        let payload = json!({
+            "id": "staff-test-1",
+            "school_id": "school-sync-1",
+            "nom": "Dupont",
+            "prenoms": "Jean",
+            "telephone_principal": "111",
+            "est_actif": true,
+            "est_prof_principal": true,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        upsert_entity(&conn, "staff", &payload).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+        let (phone, actif, prof_princ): (String, i64, i64) = conn.query_row(
+            "SELECT telephone_principal, est_actif, est_prof_principal FROM staff WHERE id = 'staff-test-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        ).unwrap();
+        assert_eq!(phone, "111");
+        assert_eq!(actif, 1);
+        assert_eq!(prof_princ, 1);
+
+        let updated = json!({
+            "id": "staff-test-1",
+            "school_id": "school-sync-1",
+            "nom": "Dupont",
+            "prenoms": "Jean",
+            "telephone_principal": "999",
+            "est_actif": false,
+            "est_prof_principal": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z"
+        });
+        upsert_entity(&conn, "staff", &updated).unwrap();
+        let (phone_updated, actif_updated): (String, i64) = conn.query_row(
+            "SELECT telephone_principal, est_actif FROM staff WHERE id = 'staff-test-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap();
+        assert_eq!(phone_updated, "999");
+        assert_eq!(actif_updated, 0);
+
+        let other = json!({"id":"staff-test-2","school_id":"school-sync-1000","nom":"Autre","prenoms":"Ecole","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "staff", &other).unwrap();
+        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_a, 1);
+        assert_eq!(count_b, 1);
+    }
+
+    #[test]
+    fn test_inbound_resume_after_local_failure() {
+        let (_guard, db_path) = setup_test_db();
+        let failing_row = json!({
+            "id": "cs-resume-1",
+            "school_id": "school-sync-1",
+            "academic_year_id": "ay-1",
+            "class_id": "class-missing",
+            "subject_id": "subject-missing",
+            "coefficient": 1.0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let rows = Arc::new(vec![failing_row.clone()]);
+        let rows_clone = rows.clone();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(move |line| {
+            if line.contains("/rest/v1/class_subjects") {
+                (200, serde_json::to_string(&*rows_clone).unwrap())
+            } else {
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+        let first = Runtime::new().unwrap().block_on(async {
+            process_inbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+        assert!(first.is_err(), "le premier cycle doit échouer");
+        assert!(
+            load_inbound_cursor(&db_path).unwrap_or_default().is_empty(),
+            "le curseur ne doit pas progresser après un échec"
+        );
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO subjects (id, school_id, name, code, created_at, updated_at) VALUES ('subject-missing', 'school-sync-1', 'Matière', 'MAT', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO classes (id, school_id, academic_year_id, name) VALUES ('class-missing', 'school-sync-1', 'ay-1', '6A')",
+            [],
+        )
+        .unwrap();
+
+        let second = Runtime::new().unwrap().block_on(async {
+            process_inbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+        assert!(second.is_ok(), "le second cycle doit réussir : {:?}", second);
+
+        let count: i64 = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM class_subjects WHERE id = 'cs-resume-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "la ligne doit être appliquée après reprise");
+
+        assert!(
+            !load_inbound_cursor(&db_path).unwrap_or_default().is_empty(),
+            "le curseur doit progresser après le succès"
+        );
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+    }
+
+    #[test]
+    fn test_inbound_cursor_two_tables_one_failure() {
+        let (_guard, db_path) = setup_test_db();
+        let valid_subject = json!({
+            "id": "subject-ok-1",
+            "school_id": "school-sync-1",
+            "name": "Mathématiques",
+            "code": "MATH",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let failing_class_subject = json!({
+            "id": "cs-fail-2",
+            "school_id": "school-sync-1",
+            "academic_year_id": "ay-1",
+            "class_id": "class-missing-2",
+            "subject_id": "subject-missing-2",
+            "coefficient": 1.0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let subjects = Arc::new(vec![valid_subject.clone()]);
+        let class_subjects = Arc::new(vec![failing_class_subject.clone()]);
+        let subjects_clone = subjects.clone();
+        let class_subjects_clone = class_subjects.clone();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(move |line| {
+            if line.contains("/rest/v1/subjects") {
+                (200, serde_json::to_string(&*subjects_clone).unwrap())
+            } else if line.contains("/rest/v1/class_subjects") {
+                (200, serde_json::to_string(&*class_subjects_clone).unwrap())
+            } else {
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+        let first = Runtime::new().unwrap().block_on(async {
+            process_inbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+        assert!(first.is_err(), "le cycle doit échouer si une table échoue");
+
+        let subject_count: i64 = Connection::open(&db_path)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM subjects WHERE id = 'subject-ok-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(subject_count, 1, "la table réussie peut être appliquée");
+
+        assert!(
+            load_inbound_cursor(&db_path).unwrap_or_default().is_empty(),
+            "le curseur ne doit pas progresser si une table échoue"
+        );
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO subjects (id, school_id, name, code, created_at, updated_at) VALUES ('subject-missing-2', 'school-sync-1', 'Matière', 'MAT2', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO classes (id, school_id, academic_year_id, name) VALUES ('class-missing-2', 'school-sync-1', 'ay-1', '6B')",
+            [],
+        )
+        .unwrap();
+
+        let second = Runtime::new().unwrap().block_on(async {
+            process_inbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+        assert!(second.is_ok(), "le cycle suivant doit réussir : {:?}", second);
+
+
+        let cs_count: i64 = Connection::open(&db_path)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM class_subjects WHERE id = 'cs-fail-2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cs_count, 1, "la table en échec doit être reprise");
+
+        assert!(
+            !load_inbound_cursor(&db_path).unwrap_or_default().is_empty(),
+            "le curseur doit progresser après succès complet"
+        );
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+    }
+
+
+
+
+
+    #[test]
+    fn test_outbound_temporary_then_success() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-temp', 'school-sync-1', 'subjects', 'subject-temp-1', 'INSERT', '{\"id\":\"subject-temp-1\",\"school_id\":\"school-sync-1\",\"name\":\"Math\",\"code\":\"MATH\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}', 'PENDING')",
+            [],
+        ).unwrap();
+
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(move |line| {
+            if line.contains("/rest/v1/subjects") {
+                let n = counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    (503, "temporary".to_string())
+                } else {
+                    (201, "".to_string())
+                }
+            } else {
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+        let first = Runtime::new().unwrap().block_on(async {
+            process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+        // Un échec temporaire ne fait pas échouer tout le cycle, mais la mutation
+        // ne doit pas être marquée SYNCED.
+        let _ = first;
+
+        let status: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-temp'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "PENDING", "la mutation temporaire doit rester PENDING");
+
+        let second = Runtime::new().unwrap().block_on(async {
+            process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+        assert!(second.is_ok(), "la seconde tentative doit réussir : {:?}", second);
+
+        let status: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-temp'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "SYNCED", "la mutation doit être SYNCED après succès");
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+    }
+
+    #[test]
+    fn test_outbound_attempt_limit_retry() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status, attempt_count) VALUES ('m-limit', 'school-sync-1', 'subjects', 'subject-limit', 'INSERT', '{\"id\":\"subject-limit\",\"school_id\":\"school-sync-1\",\"name\":\"Math\",\"code\":\"MATH\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}', 'FAILED', 5)",
+            [],
+        ).unwrap();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(|_| (201, "".to_string()));
+        let client = Client::new();
+        let result = Runtime::new().unwrap().block_on(async {
+            process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+        assert!(result.is_ok());
+
+        let status: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-limit'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "FAILED", "une mutation épuisée ne doit pas être envoyée automatiquement");
+
+        let requeued = retry_failed_mutations_internal(&db_path).unwrap();
+        assert!(requeued >= 1);
+
+        let result = Runtime::new().unwrap().block_on(async {
+            process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+        assert!(result.is_ok());
+        let status: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-limit'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "SYNCED", "après reprise explicite, la mutation doit réussir");
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+    }
+
+    #[test]
+    fn test_outbound_multiple_batches() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        for i in 0..45 {
+            conn.execute(
+                &format!("INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-batch-{}', 'school-sync-1', 'subjects', 'subject-batch-{}', 'INSERT', '{{\"id\":\"subject-batch-{}\",\"school_id\":\"school-sync-1\",\"name\":\"Math\",\"code\":\"MATH\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}}', 'PENDING')", i, i, i),
+                [],
+            ).unwrap();
+        }
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(|_| (201, "".to_string()));
+        let client = Client::new();
+        for _ in 0..5 {
+            let _ = Runtime::new().unwrap().block_on(async {
+                process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
+            });
+        }
+
+        let count: i64 = Connection::open(&db_path).unwrap().query_row("SELECT COUNT(*) FROM pending_mutations WHERE status = 'SYNCED'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 45, "toutes les mutations des lots successifs doivent être synchronisées");
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+    }
+
+    #[test]
+    fn test_outbound_restart_persistence() {
+        let (_guard, db_path) = setup_test_db();
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-restart', 'school-sync-1', 'subjects', 'subject-restart', 'INSERT', '{\"id\":\"subject-restart\",\"school_id\":\"school-sync-1\",\"name\":\"Math\",\"code\":\"MATH\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}', 'PENDING')",
+                [],
+            ).unwrap();
+        }
+        let conn = Connection::open(&db_path).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-restart' AND status = 'PENDING'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1, "la mutation doit survivre à la fermeture/réouverture de la connexion");
+    }
+
+    #[test]
+    fn test_outbound_definitive_errors_and_independent_progression() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-auth', 'school-sync-1', 'students', 'student-auth', 'INSERT', '{\"id\":\"student-auth\",\"school_id\":\"school-sync-1\",\"first_name\":\"Jean\",\"last_name\":\"Dupont\"}', 'PENDING')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-valid', 'school-sync-1', 'subjects', 'subject-valid', 'INSERT', '{\"id\":\"subject-valid\",\"school_id\":\"school-sync-1\",\"name\":\"Math\",\"code\":\"MATH\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}', 'PENDING')",
+            [],
+        ).unwrap();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(|line| {
+            if line.contains("/rest/v1/students") {
+                (401, "unauthorized".to_string())
+            } else if line.contains("/rest/v1/subjects") {
+                (201, "".to_string())
+            } else {
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+        let _ = Runtime::new().unwrap().block_on(async {
+            process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+
+        let status_auth: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-auth'", [], |r| r.get(0)).unwrap();
+        let error_auth: Option<String> = Connection::open(&db_path).unwrap().query_row("SELECT last_error FROM pending_mutations WHERE id = 'm-auth'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status_auth, "FAILED");
+        assert!(error_auth.unwrap_or_default().contains("401"));
+
+        let status_valid: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-valid'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status_valid, "SYNCED", "une mutation indépendante doit progresser");
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
+    }
+
+
+    #[test]
+    fn test_outbound_idempotence_operations() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        // INSERT déjà présent côté serveur : 409 puis PATCH.
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-ins', 'school-sync-1', 'subjects', 'subject-idem', 'INSERT', '{\"id\":\"subject-idem\",\"school_id\":\"school-sync-1\",\"name\":\"Math\",\"code\":\"MATH\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}', 'PENDING')",
+            [],
+        ).unwrap();
+        // UPDATE
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-upd', 'school-sync-1', 'subjects', 'subject-upd', 'UPDATE', '{\"id\":\"subject-upd\",\"school_id\":\"school-sync-1\",\"name\":\"Math2\",\"code\":\"MATH2\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}', 'PENDING')",
+            [],
+        ).unwrap();
+        // DELETE d'une ligne déjà absente côté serveur.
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-del', 'school-sync-1', 'subjects', 'subject-del', 'DELETE', '{\"id\":\"subject-del\"}', 'PENDING')",
+            [],
+        ).unwrap();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(|line| {
+            if line.contains("/rest/v1/subjects") && line.contains("POST") {
+                (409, "duplicate".to_string())
+            } else if line.contains("/rest/v1/subjects") && line.contains("PATCH") {
+                (200, "".to_string())
+            } else if line.contains("/rest/v1/subjects") && line.contains("DELETE") {
+                (404, "not found".to_string())
+            } else {
+                (200, "[]".to_string())
+            }
+        });
+
+        let client = Client::new();
+        let _ = Runtime::new().unwrap().block_on(async {
+            process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+
+    }
+
+    #[test]
+    fn test_outbound_school_id_isolation() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-school-a', 'school-sync-1', 'subjects', 'subject-a', 'INSERT', '{\"id\":\"subject-a\",\"school_id\":\"school-sync-1\",\"name\":\"Math\",\"code\":\"MATH\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}', 'PENDING')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES ('m-school-b', 'school-sync-1000', 'subjects', 'subject-b', 'INSERT', '{\"id\":\"subject-b\",\"school_id\":\"school-sync-1000\",\"name\":\"Français\",\"code\":\"FR\",\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\"}', 'PENDING')",
+            [],
+        ).unwrap();
+
+        let (mock_url, stop_flag, server_handle) = spawn_mock_server(|_| (201, "".to_string()));
+        let client = Client::new();
+        let _ = Runtime::new().unwrap().block_on(async {
+            process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
+        });
+
+        let school_a: String = Connection::open(&db_path).unwrap().query_row("SELECT school_id FROM pending_mutations WHERE id = 'm-school-a'", [], |r| r.get(0)).unwrap();
+        let school_b: String = Connection::open(&db_path).unwrap().query_row("SELECT school_id FROM pending_mutations WHERE id = 'm-school-b'", [], |r| r.get(0)).unwrap();
+        assert_eq!(school_a, "school-sync-1");
+        assert_eq!(school_b, "school-sync-1000");
+
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
     }
 }

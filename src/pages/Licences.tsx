@@ -351,7 +351,7 @@ export default function Licences() {
     try {
       // Résoudre le school_id précis de l'utilisateur si disponible
       let targetId = effectiveSchoolId;
-      if (!targetId || targetId === 'school-1') {
+      if (!targetId) {
         const metaSchoolId = (user?.user_metadata as any)?.school_id;
         if (metaSchoolId) targetId = metaSchoolId;
       }
@@ -381,16 +381,10 @@ export default function Licences() {
             await invoke('save_license', { license: active });
           } catch (_) {}
         }
-      } else if (targetId !== 'school-1') {
-        // Fallback si la licence était enregistrée sous school-1
-        const { data: fallbackLics } = await supabase
-          .from('licenses')
-          .select('*')
-          .eq('school_id', 'school-1')
-          .order('created_at', { ascending: false });
-        if (fallbackLics && fallbackLics.length > 0) {
-          loaded = fallbackLics as LicenseRec[];
-        }
+      } else {
+        // Aucun fallback vers school-1 : si la licence n'a pas été trouvée
+        // sous l'établissement identifié, on laisse loaded vide et le
+        // message « Aucune licence trouvée » s'affichera dans l'UI.
       }
     } catch (cloudErr) {
       console.warn('Impossible de joindre Supabase pour les licences, repli local:', cloudErr);

@@ -46,9 +46,25 @@ const RoleProtectedRoute = ({ children, allowedRoles }: { children: React.ReactN
   if (!session) return <Navigate to="/login" />;
   
   // Attendre que les rôles soient chargés avant de bloquer l'accès
-  if (!rolesLoaded) return <>{children}</>;
+  if (!rolesLoaded) {
+    return <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <p className="text-center text-sm text-slate-500">Chargement en cours...</p>
+    </div>;
+  }
   
-  const hasAccess = roles.some(role => allowedRoles.includes(role) || role === 'SUPER_ADMIN');
+  // B. Utilisateur non authentifié - rediriger vers /login
+  if (!session) {
+    return <Navigate to="/login" />;
+  }
+  
+  // C. Erreur ou rôle absent - refuser l'accès
+  if (!roles || roles.length === 0) {
+    return <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <p className="text-center text-sm text-slate-500">Accès refusé - Rôle introuvable</p>
+    </div>;
+  }
+  
+  const hasAccess = roles.some(role => allowedRoles.includes(role));
   
   if (!hasAccess) {
     return (

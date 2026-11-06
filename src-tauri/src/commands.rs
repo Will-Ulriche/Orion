@@ -44,6 +44,22 @@ pub fn record_mutation(
 const REMOTE_COLUMNS: &[(&str, &[&str])] = &[
     ("academic_years", &["id", "school_id", "name", "start_date", "end_date", "status", "is_current", "closed_at", "created_at", "updated_at"]),
     ("classes",        &["id", "school_id", "academic_year_id", "name", "level", "created_at", "updated_at"]),
+    ("staff",          &[
+        "id", "school_id", "matricule", "nom", "prenoms", "sexe", "date_naissance", "lieu_naissance",
+        "nationalite", "photo_url", "situation_matrimoniale", "nombre_enfants", "telephone_principal",
+        "telephone_secondaire", "email", "adresse", "region", "prefecture", "commune", "quartier",
+        "urgence_nom", "urgence_telephone", "type_personnel", "fonction", "statut_professionnel",
+        "matricule_professionnel", "categorie", "grade", "classe_grade", "echelon", "indice",
+        "diplome_academique", "diplome_professionnel", "specialite", "date_recrutement",
+        "date_entree_fonction_pub", "etablissement", "annee_scolaire_id", "fonction_etablissement",
+        "decision_affectation_num", "date_affectation", "date_prise_service", "date_arrivee_region",
+        "date_arrivee_etablissement", "ancien_etablissement", "service_direction", "matiere_principale",
+        "matieres_secondaires", "classes_principales", "volume_horaire_hebdo", "est_prof_principal",
+        "est_responsable_classe", "heures_prevues", "heures_effectuees", "statut_administratif",
+        "date_debut_conge", "date_fin_conge", "date_disponibilite", "date_mutation", "date_suspension",
+        "date_retraite", "date_depart", "motif_depart", "observations", "est_actif", "created_by",
+        "updated_by", "created_at", "updated_at"
+    ]),
     ("students",       &["id", "school_id", "first_name", "last_name", "birth_date", "gender", "photo_url", "matricule", "address", "phone", "parent_name", "parent_phone", "parent_email", "blood_type", "medical_notes", "birth_place", "created_at", "updated_at"]),
     ("enrollments",    &["id", "school_id", "academic_year_id", "student_id", "class_id", "enrollment_number", "enrollment_date", "status", "enrollment_type", "previous_class_id", "created_at", "updated_at"]),
     ("fee_structures", &["id", "school_id", "academic_year_id", "name", "amount", "fee_type", "applies_to", "class_id", "level", "due_date", "is_mandatory", "created_at", "updated_at"]),
@@ -67,7 +83,16 @@ const REMOTE_COLUMNS: &[(&str, &[&str])] = &[
 ];
 
 // Colonnes booléennes : SQLite les range en 0/1, PostgreSQL attend true/false.
-const BOOLEAN_COLUMNS: &[&str] = &["is_current", "is_mandatory", "is_active", "is_absent", "is_reference"];
+const BOOLEAN_COLUMNS: &[&str] = &[
+    "is_current",
+    "is_mandatory",
+    "is_active",
+    "is_absent",
+    "is_reference",
+    "est_prof_principal",
+    "est_responsable_classe",
+    "est_actif",
+];
 
 /// Convertit une valeur SQLite en JSON, en honorant le type booléen attendu.
 fn column_to_json(row: &rusqlite::Row, idx: usize, as_bool: bool) -> rusqlite::Result<serde_json::Value> {
@@ -3645,6 +3670,15 @@ pub fn delete_staff(id: String, school_id: String, state: State<'_, DbState>) ->
         "DELETE FROM staff WHERE id=?1 AND school_id=?2",
         rusqlite::params![id, school_id]
     ).map_err(|e| e.to_string())?;
+
+    // Enregistrer la mutation DELETE pour la sync Supabase
+    let payload = serde_json::json!({ "id": id });
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    let _ = conn.execute(
+        "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status) VALUES (?1, ?2, 'staff', ?3, 'DELETE', ?4, 'PENDING')",
+        rusqlite::params![mutation_id, school_id, id, payload.to_string()],
+    );
+
     Ok(())
 }
 
@@ -5620,5 +5654,58 @@ mod auth_tests {
         let profile = login_local_conn(&conn, "stduser", "UserPassword123!", "school-1").unwrap();
         assert_eq!(profile.role_name, Some("DIRECTION".to_string()));
         assert_ne!(profile.role_name, Some("SUPER_ADMIN".to_string()));
+    }
+
+    #[test]
+    fn test_staff_enqueue_mutation_and_boolean_serialization() {
+        let conn = setup_test_auth_db();
+        // S'assurer que les tables staff et pending_mutations existent
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS staff (
+                id TEXT PRIMARY KEY,
+                school_id TEXT NOT NULL,
+                nom TEXT NOT NULL,
+                prenoms TEXT NOT NULL,
+                est_prof_principal INTEGER NOT NULL DEFAULT 0,
+                est_responsable_classe INTEGER NOT NULL DEFAULT 0,
+                est_actif INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pending_mutations (
+                id TEXT PRIMARY KEY,
+                school_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempt_count INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );"
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO staff (id, school_id, nom, prenoms, est_prof_principal, est_responsable_classe, est_actif, created_at, updated_at)
+             VALUES ('staff-test-sync', 'school-1', 'Diallo', 'Mamadou', 1, 0, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        enqueue_entity(&conn, "staff", "school-1", "staff-test-sync");
+
+        let (entity_type, payload_str): (String, String) = conn.query_row(
+            "SELECT entity_type, payload FROM pending_mutations WHERE entity_id = 'staff-test-sync'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?))
+        ).expect("La mutation staff doit être enregistrée dans pending_mutations");
+
+        assert_eq!(entity_type, "staff");
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+        assert_eq!(payload["nom"], "Diallo");
+        assert_eq!(payload["prenoms"], "Mamadou");
+        // Les colonnes booléennes doivent être sérialisées en JSON booleans (true/false) pour PostgREST
+        assert_eq!(payload["est_prof_principal"], true);
+        assert_eq!(payload["est_responsable_classe"], false);
+        assert_eq!(payload["est_actif"], true);
     }
 }

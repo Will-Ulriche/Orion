@@ -52,9 +52,12 @@ DROP TRIGGER IF EXISTS trg_enrollment_history_changed_at ON public.enrollment_hi
 CREATE TRIGGER trg_enrollment_history_changed_at
   BEFORE UPDATE ON public.enrollment_history
   FOR EACH ROW
-  WHEN (NEW.enrollment_id, NEW.student_id, NEW.academic_year_id,
-        NEW.from_class_id, NEW.to_class_id, NEW.reason)
-    IS DISTINCT FROM
-       (OLD.enrollment_id, OLD.student_id, OLD.academic_year_id,
-        OLD.from_class_id, OLD.to_class_id, OLD.reason)
+  WHEN (
+    NEW.enrollment_id IS DISTINCT FROM OLD.enrollment_id OR
+    NEW.student_id IS DISTINCT FROM OLD.student_id OR
+    NEW.academic_year_id IS DISTINCT FROM OLD.academic_year_id OR
+    NEW.from_class_id IS DISTINCT FROM OLD.from_class_id OR
+    NEW.to_class_id IS DISTINCT FROM OLD.to_class_id OR
+    NEW.reason IS DISTINCT FROM OLD.reason
+  )
   EXECUTE FUNCTION public.set_changed_at();

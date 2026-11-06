@@ -88,16 +88,10 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
       const now = new Date();
       let cloudLics: LicenseInfo[] = (lics ?? []) as LicenseInfo[];
 
-      // Fallback si l'école utilise encore school-1
-      if (cloudLics.length === 0 && targetId !== 'school-1') {
-        const { data: fallbackLics } = await supabase
-          .from('licenses')
-          .select('id, school_id, license_key, status, starts_at, expires_at, max_devices')
-          .eq('school_id', 'school-1')
-          .order('created_at', { ascending: false });
-        if (fallbackLics && fallbackLics.length > 0) {
-          cloudLics = fallbackLics as LicenseInfo[];
-        }
+      // Aucun fallback vers school-1 : si aucune licence n'est trouvée,
+      // on laisse cloudLics vide et on laisse le gestionnaire d'erreur
+      // prendre le relais (message « Aucune licence trouvée »).
+      if (cloudLics.length === 0) {
       }
 
       // Chercher une licence valide parmi les résultats cloud
