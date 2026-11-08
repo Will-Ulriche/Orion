@@ -71,6 +71,10 @@ const REMOTE_COLUMNS: &[(&str, &[&str])] = &[
     ("class_subjects",      &["id", "school_id", "academic_year_id", "class_id", "subject_id", "teacher_id", "coefficient", "created_at", "updated_at"]),
     ("teacher_assignments", &["id", "school_id", "academic_year_id", "teacher_id", "class_subject_id", "created_at", "updated_at"]),
     ("grades",              &["id", "school_id", "academic_year_id", "enrollment_id", "student_id", "class_subject_id", "grading_period_id", "grade_type_id", "score", "max_score", "evaluation_date", "notes", "recorded_by", "is_absent", "created_at", "updated_at"]),
+    // Structure pédagogique étendue
+    ("sections",            &["id", "school_id", "name", "created_at", "updated_at"]),
+    ("levels",              &["id", "school_id", "section_id", "name", "level_order", "created_at", "updated_at"]),
+    ("series",              &["id", "school_id", "level_id", "name", "created_at", "updated_at"]),
     // Session 6 — Module bibliothèque
     ("library_categories",   &["id", "school_id", "name", "code", "description", "color", "created_at", "updated_at"]),
     ("library_books",        &["id", "school_id", "category_id", "isbn", "title", "author", "publisher", "publication_year", "language", "edition", "pages", "description", "shelf_location", "is_reference", "created_at", "updated_at"]),
@@ -511,23 +515,82 @@ pub fn retry_failed_mutations(app: tauri::AppHandle) -> Result<usize, String> {
     crate::sync::retry_failed_mutations_internal(&db_path)
 }
 
+/// Liste canonique de tous les types d'entités synchronisables avec Supabase.
+/// Cohérente avec `REMOTE_COLUMNS` et `DEPENDENCY_ORDER`.
+pub const VALID_SYNC_ENTITY_TYPES: &[&str] = &[
+    "schools",
+    "academic_years",
+    "classes",
+    "staff",
+    "students",
+    "enrollments",
+    "enrollment_history",
+    "fee_structures",
+    "payments",
+    // Session 5 — Module pédagogique
+    "subjects",
+    "grade_types",
+    "grading_periods",
+    "class_subjects",
+    "teacher_assignments",
+    "grades",
+    // Structure pédagogique étendue
+    "sections",
+    "levels",
+    "series",
+    // Session 6 — Module bibliothèque
+    "library_categories",
+    "library_books",
+    "library_copies",
+    "library_readers",
+    "library_loans",
+    "library_returns",
+    "library_penalties",
+    "library_reservations",
+];
+
+/// Helper pour purger les mutations invalides sur une connexion SQLite.
+/// Si un `school_id` est spécifié, la purge est restreinte à cet établissement.
+pub(crate) fn purge_invalid_mutations_conn(
+    conn: &Connection,
+    school_id: Option<&str>,
+) -> Result<usize, String> {
+    let placeholders = VALID_SYNC_ENTITY_TYPES.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    if let Some(sch) = school_id {
+        let sql = format!(
+            "DELETE FROM pending_mutations WHERE entity_type NOT IN ({}) AND school_id = ?",
+            placeholders
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = VALID_SYNC_ENTITY_TYPES
+            .iter()
+            .map(|t| t as &dyn rusqlite::ToSql)
+            .collect();
+        params.push(&sch);
+        conn.execute(&sql, params.as_slice()).map_err(|e| e.to_string())
+    } else {
+        let sql = format!(
+            "DELETE FROM pending_mutations WHERE entity_type NOT IN ({})",
+            placeholders
+        );
+        let params: Vec<&dyn rusqlite::ToSql> = VALID_SYNC_ENTITY_TYPES
+            .iter()
+            .map(|t| t as &dyn rusqlite::ToSql)
+            .collect();
+        conn.execute(&sql, params.as_slice()).map_err(|e| e.to_string())
+    }
+}
+
 // ──────────────────────────────────────────────
 // COMMANDE : Purger les mutations invalides (entity_type inconnu)
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn purge_invalid_mutations(state: State<'_, DbState>) -> Result<usize, String> {
+pub fn purge_invalid_mutations(
+    school_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<usize, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::require_super_admin(&conn)?;
-    // Tables valides synchronisables
-    let valid_types = ["academic_years", "classes", "students", "enrollments"];
-    let placeholders = valid_types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-    let sql = format!(
-        "DELETE FROM pending_mutations WHERE entity_type NOT IN ({})",
-        placeholders
-    );
-    let params: Vec<&dyn rusqlite::ToSql> = valid_types.iter().map(|t| t as &dyn rusqlite::ToSql).collect();
-    let deleted = conn.execute(&sql, params.as_slice()).map_err(|e| e.to_string())?;
-    Ok(deleted)
+    purge_invalid_mutations_conn(&conn, school_id.as_deref())
 }
 
 // ──────────────────────────────────────────────
@@ -5458,7 +5521,7 @@ mod purge_tests {
              CREATE TABLE students (id TEXT PRIMARY KEY, school_id TEXT, first_name TEXT);
              CREATE TABLE enrollments (id TEXT PRIMARY KEY, school_id TEXT, student_id TEXT);
              CREATE TABLE enrollment_history (id TEXT PRIMARY KEY, enrollment_id TEXT, status TEXT);
-             CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT);
+             CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, status TEXT DEFAULT 'ACTIVE');
              CREATE TABLE user_roles (id TEXT PRIMARY KEY, user_id TEXT, school_id TEXT, role_id TEXT);
              CREATE TABLE roles (id TEXT PRIMARY KEY, name TEXT);
              CREATE TABLE profiles (id TEXT PRIMARY KEY, user_id TEXT, school_id TEXT);
@@ -5556,6 +5619,240 @@ mod purge_tests {
         let mut conn = setup_two_schools_db();
         assert!(purge_school_data(&mut conn, "").is_err());
         assert!(purge_school_data(&mut conn, "   ").is_err());
+    }
+
+    #[test]
+    fn test_purge_invalid_mutations_preserves_all_valid_types_and_removes_unknown() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pending_mutations (
+                id TEXT PRIMARY KEY,
+                school_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL
+            );"
+        ).unwrap();
+
+        // 1. Insérer une mutation pour chaque type valide
+        for (i, valid_type) in VALID_SYNC_ENTITY_TYPES.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+                 VALUES (?1, 'school-1', ?2, ?3, 'UPSERT', '{}', 'PENDING')",
+                rusqlite::params![format!("valid-mut-{}", i), valid_type, format!("entity-{}", i)],
+            ).unwrap();
+        }
+
+        // 2. Insérer plusieurs mutations de types inconnus / invalides,
+        // incluant l'ancienne dénomination mal nommée "school"
+        let invalid_types = [
+            "unknown_entity",
+            "temporary_table",
+            "corrupted_junk",
+            "malicious_attempt",
+            "random_string_123",
+            "school", // Vestige mal nommé : doit être impérativement purgé
+        ];
+        for (i, invalid_type) in invalid_types.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+                 VALUES (?1, 'school-1', ?2, ?3, 'UPSERT', '{}', 'PENDING')",
+                rusqlite::params![format!("invalid-mut-{}", i), invalid_type, format!("inv-entity-{}", i)],
+            ).unwrap();
+        }
+
+        let total_before: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0)).unwrap();
+        assert_eq!(total_before as usize, VALID_SYNC_ENTITY_TYPES.len() + invalid_types.len());
+
+        // 3. Exécuter la purge globale
+        let deleted = purge_invalid_mutations_conn(&conn, None).expect("La purge doit réussir");
+        assert_eq!(deleted, invalid_types.len(), "Doit supprimer exactement le nombre de mutations invalides");
+
+        let total_after: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0)).unwrap();
+        assert_eq!(total_after as usize, VALID_SYNC_ENTITY_TYPES.len(), "Toutes les mutations valides doivent être conservées");
+
+        // 4. Vérifier individuellement que CHAQUE type valide est encore présent
+        for valid_type in VALID_SYNC_ENTITY_TYPES.iter() {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
+                rusqlite::params![valid_type],
+                |r| r.get(0),
+            ).unwrap();
+            assert_eq!(count, 1, "L'entité valide '{}' doit être impérativement conservée", valid_type);
+        }
+
+        // 5. Vérifier spécifiquement les modules critiques mentionnés dans la consigne :
+        // personnel, paiements, frais, pédagogique, bibliothèque
+        let critical_modules = [
+            "schools",
+            "staff",
+            "fee_structures",
+            "payments",
+            "subjects",
+            "grade_types",
+            "grading_periods",
+            "class_subjects",
+            "teacher_assignments",
+            "grades",
+            "sections",
+            "levels",
+            "series",
+            "library_categories",
+            "library_books",
+            "library_copies",
+            "library_readers",
+            "library_loans",
+            "library_returns",
+            "library_penalties",
+            "library_reservations",
+        ];
+        for mod_name in &critical_modules {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
+                rusqlite::params![mod_name],
+                |r| r.get(0),
+            ).unwrap();
+            assert_eq!(count, 1, "Le module critique '{}' doit être conservé dans la file", mod_name);
+        }
+
+        // 6. Vérifier qu'aucun type invalide ne subsiste (notamment "school")
+        for invalid_type in &invalid_types {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
+                rusqlite::params![invalid_type],
+                |r| r.get(0),
+            ).unwrap();
+            assert_eq!(count, 0, "L'entité invalide '{}' doit avoir été purgée", invalid_type);
+        }
+    }
+
+    #[test]
+    fn test_purge_invalid_mutations_scoped_to_school() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pending_mutations (
+                id TEXT PRIMARY KEY,
+                school_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL
+            );"
+        ).unwrap();
+
+        // 1. Mutations valides pour school-1 et school-2
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+             VALUES ('m-valid-1', 'school-1', 'students', 'st-1', 'UPSERT', '{}', 'PENDING')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+             VALUES ('m-valid-2', 'school-2', 'students', 'st-2', 'UPSERT', '{}', 'PENDING')",
+            [],
+        ).unwrap();
+
+        // 2. Mutations invalides pour school-1 et school-2
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+             VALUES ('m-inv-1', 'school-1', 'bad_entity_1', 'e-1', 'UPSERT', '{}', 'PENDING')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+             VALUES ('m-inv-2', 'school-2', 'bad_entity_2', 'e-2', 'UPSERT', '{}', 'PENDING')",
+            [],
+        ).unwrap();
+
+        // 3. Purge ciblée sur school-1 uniquement
+        let deleted = purge_invalid_mutations_conn(&conn, Some("school-1")).unwrap();
+        assert_eq!(deleted, 1, "Seule l'entité invalide de school-1 doit être supprimée");
+
+        // 4. Vérifier que school-1 n'a plus l'invalide mais conserve sa valide
+        let s1_valid: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-valid-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s1_valid, 1, "La mutation valide de school-1 doit subsister");
+        let s1_inv: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-inv-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s1_inv, 0, "La mutation invalide de school-1 doit être purgée");
+
+        // 5. Vérifier que school-2 reste complètement intacte (isolation)
+        let s2_valid: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-valid-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s2_valid, 1, "La mutation valide de school-2 doit subsister");
+        let s2_inv: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-inv-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s2_inv, 1, "La mutation de school-2 ne doit pas avoir été touchée par la purge de school-1");
+    }
+
+    #[test]
+    fn test_purge_invalid_mutations_coherence_with_remote_columns_and_dependency_order() {
+        // "school" au singulier ne doit JAMAIS figurer dans VALID_SYNC_ENTITY_TYPES (le nom réel est "schools")
+        assert!(
+            !VALID_SYNC_ENTITY_TYPES.contains(&"school"),
+            "Le nom mal formé 'school' ne doit pas figurer dans VALID_SYNC_ENTITY_TYPES"
+        );
+
+        // Toutes les tables déclarées dans REMOTE_COLUMNS doivent être présentes dans VALID_SYNC_ENTITY_TYPES
+        for (table, _) in REMOTE_COLUMNS.iter() {
+            assert!(
+                VALID_SYNC_ENTITY_TYPES.contains(table),
+                "La table '{}' présente dans REMOTE_COLUMNS doit figurer dans VALID_SYNC_ENTITY_TYPES",
+                table
+            );
+        }
+
+        // Toutes les tables déclarées dans DEPENDENCY_ORDER doivent être présentes dans VALID_SYNC_ENTITY_TYPES
+        for (table, _) in crate::sync::DEPENDENCY_ORDER.iter() {
+            assert!(
+                VALID_SYNC_ENTITY_TYPES.contains(table),
+                "La table '{}' présente dans DEPENDENCY_ORDER doit figurer dans VALID_SYNC_ENTITY_TYPES",
+                table
+            );
+        }
+
+        // Cohérence bidirectionnelle : chaque type déclaré valide doit être recensé dans REMOTE_COLUMNS ou DEPENDENCY_ORDER
+        for table in VALID_SYNC_ENTITY_TYPES.iter() {
+            let in_remote = REMOTE_COLUMNS.iter().any(|(t, _)| t == table);
+            let in_deps = crate::sync::DEPENDENCY_ORDER.iter().any(|(t, _)| t == table);
+            assert!(
+                in_remote || in_deps,
+                "L'entité '{}' dans VALID_SYNC_ENTITY_TYPES doit être déclarée dans REMOTE_COLUMNS ou DEPENDENCY_ORDER",
+                table
+            );
+        }
+    }
+
+    #[test]
+    fn test_purge_invalid_mutations_super_admin_required() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let conn = setup_two_schools_db();
+
+        // 1. Appel sans session -> rejeté
+        crate::auth_guard::clear_session();
+        let res_anon = crate::auth_guard::require_super_admin(&conn);
+        assert!(res_anon.is_err(), "Un appel non authentifié doit être rejeté");
+
+        // 2. Appel avec rôle DIRECTION -> rejeté
+        crate::auth_guard::establish_local_session(&conn, "u-1", "school-1").unwrap();
+        let res_dir = crate::auth_guard::require_super_admin(&conn);
+        assert!(res_dir.is_err(), "Un utilisateur DIRECTION doit être rejeté");
+        assert!(
+            res_dir.unwrap_err().contains("Super Administrateur"),
+            "Le message d'erreur doit indiquer que le rôle Super Administrateur est requis"
+        );
+
+        // 3. Appel avec rôle SUPER_ADMIN -> autorisé
+        conn.execute(
+            "INSERT INTO users (id, email) VALUES ('u-sa', 'sa@orion.com')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa', 'u-sa', 'school-1', 'r2')",
+            [],
+        ).unwrap();
+        crate::auth_guard::establish_local_session(&conn, "u-sa", "school-1").unwrap();
+        let res_sa = crate::auth_guard::require_super_admin(&conn);
+        assert!(res_sa.is_ok(), "Le Super Administrateur doit être autorisé");
     }
 }
 

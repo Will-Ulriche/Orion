@@ -40,30 +40,35 @@ const SYNC_STATE_ID: &str = "local-device";
 
 /// Tables parentes dont l'insertion doit précéder celle des enfants,
 /// sinon PostgreSQL rejette l'enfant sur une violation de clé étrangère.
-const DEPENDENCY_ORDER: [(&str, u8); 21] = [
+pub(crate) const DEPENDENCY_ORDER: [(&str, u8); 26] = [
     ("schools", 0),
+    ("sections", 1),
+    ("levels", 2),
+    ("series", 2),
     ("academic_years", 1),
-    ("classes", 2),
-    ("staff", 2),
-    ("students", 3),
-    ("fee_structures", 4),
-    ("payments", 5),
+    ("classes", 3),
+    ("staff", 3),
+    ("students", 4),
+    ("enrollments", 5),
+    ("enrollment_history", 6),
+    ("fee_structures", 7),
+    ("payments", 8),
     // Session 5 — Module pédagogique
-    ("subjects", 6),
-    ("grade_types", 6),
-    ("grading_periods", 7),
-    ("class_subjects", 7),
-    ("teacher_assignments", 7),
-    ("grades", 8),
+    ("subjects", 7),
+    ("grade_types", 7),
+    ("grading_periods", 8),
+    ("class_subjects", 8),
+    ("teacher_assignments", 8),
+    ("grades", 9),
     // Session 6 — Module bibliothèque
-    ("library_categories", 9),
-    ("library_books", 10),
-    ("library_readers", 10),
-    ("library_copies", 11),
-    ("library_loans", 12),
-    ("library_returns", 13),
-    ("library_penalties", 13),
-    ("library_reservations", 13),
+    ("library_categories", 10),
+    ("library_books", 11),
+    ("library_readers", 11),
+    ("library_copies", 12),
+    ("library_loans", 13),
+    ("library_returns", 14),
+    ("library_penalties", 14),
+    ("library_reservations", 14),
 ];
 
 // ──────────────────────────────────────────────
@@ -478,7 +483,10 @@ async fn process_outbox(
         // Idempotence : une suppression rejouée sur une ligne déjà absente côté
         // serveur est un succès (l'état final est celui attendu).
         if res.status().as_u16() == 404 && operation == "DELETE" {
-            println!("[Outbox] ✓ Mutation {} déjà absente côté serveur (DELETE idempotent).", id);
+            println!(
+                "[Outbox] ✓ Mutation {} déjà absente côté serveur (DELETE idempotent).",
+                id
+            );
             mark_mutation(db_path, &id, "SYNCED", None);
             continue;
         }
@@ -1482,17 +1490,37 @@ fn soft_delete_entity(db: &Connection, entity_type: &str, entity_id: &str) -> Re
         "subjects" => {
             db.execute("DELETE FROM grades WHERE class_subject_id IN (SELECT id FROM class_subjects WHERE subject_id = ?1)", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
             db.execute("DELETE FROM teacher_assignments WHERE class_subject_id IN (SELECT id FROM class_subjects WHERE subject_id = ?1)", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
-            db.execute("DELETE FROM class_subjects WHERE subject_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM class_subjects WHERE subject_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         "grade_types" => {
-            db.execute("DELETE FROM grades WHERE grade_type_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM grades WHERE grade_type_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         "grading_periods" => {
-            db.execute("DELETE FROM grades WHERE grading_period_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM grades WHERE grading_period_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         "class_subjects" => {
-            db.execute("DELETE FROM teacher_assignments WHERE class_subject_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
-            db.execute("DELETE FROM grades WHERE class_subject_id = ?1", rusqlite::params![entity_id]).map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM teacher_assignments WHERE class_subject_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM grades WHERE class_subject_id = ?1",
+                rusqlite::params![entity_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
         "staff" => {
             // Pas de suppression en cascade côté client; l'isolation est garantie par school_id
@@ -1563,37 +1591,45 @@ fn load_pending_mutations(
                 WHEN 'library_readers' THEN 3
                 WHEN 'students' THEN 4
                 WHEN 'classes' THEN 4
+                WHEN 'series' THEN 5
+                WHEN 'levels' THEN 5
+                WHEN 'sections' THEN 5
                 WHEN 'library_books' THEN 5
                 WHEN 'academic_years' THEN 5
                 WHEN 'library_categories' THEN 6
+                WHEN 'schools' THEN 7
                 WHEN 'school' THEN 7
                 ELSE 8
               END
             ELSE
               CASE entity_type
+                WHEN 'schools' THEN 0
                 WHEN 'school' THEN 0
+                WHEN 'sections' THEN 1
+                WHEN 'levels' THEN 2
+                WHEN 'series' THEN 2
                 WHEN 'academic_years' THEN 1
-                WHEN 'classes' THEN 2
-                WHEN 'staff' THEN 2
-                WHEN 'students' THEN 3
-                WHEN 'enrollments' THEN 4
-                WHEN 'enrollment_history' THEN 5
-                WHEN 'fee_structures' THEN 6
-                WHEN 'payments' THEN 7
-                WHEN 'subjects' THEN 6
-                WHEN 'grade_types' THEN 6
-                WHEN 'grading_periods' THEN 7
-                WHEN 'class_subjects' THEN 7
-                WHEN 'teacher_assignments' THEN 7
-                WHEN 'grades' THEN 8
-                WHEN 'library_categories' THEN 9
-                WHEN 'library_books' THEN 10
-                WHEN 'library_readers' THEN 10
-                WHEN 'library_copies' THEN 11
-                WHEN 'library_loans' THEN 12
-                WHEN 'library_returns' THEN 13
-                WHEN 'library_penalties' THEN 13
-                WHEN 'library_reservations' THEN 13
+                WHEN 'classes' THEN 3
+                WHEN 'staff' THEN 3
+                WHEN 'students' THEN 4
+                WHEN 'enrollments' THEN 5
+                WHEN 'enrollment_history' THEN 6
+                WHEN 'fee_structures' THEN 7
+                WHEN 'payments' THEN 8
+                WHEN 'subjects' THEN 7
+                WHEN 'grade_types' THEN 7
+                WHEN 'grading_periods' THEN 8
+                WHEN 'class_subjects' THEN 8
+                WHEN 'teacher_assignments' THEN 8
+                WHEN 'grades' THEN 9
+                WHEN 'library_categories' THEN 10
+                WHEN 'library_books' THEN 11
+                WHEN 'library_readers' THEN 11
+                WHEN 'library_copies' THEN 12
+                WHEN 'library_loans' THEN 13
+                WHEN 'library_returns' THEN 14
+                WHEN 'library_penalties' THEN 14
+                WHEN 'library_reservations' THEN 14
                 ELSE 8
               END
             END,
@@ -1877,13 +1913,11 @@ fn num_field(payload: &Value, key: &str) -> Option<f64> {
 
 /// Champ entier du payload (accepte aussi les booléens true -> 1, false -> 0 renvoyés par PostgreSQL).
 fn int_field(payload: &Value, key: &str) -> Option<i64> {
-    payload
-        .get(key)
-        .and_then(|v| {
-            v.as_i64()
-                .or_else(|| v.as_f64().map(|f| f as i64))
-                .or_else(|| v.as_bool().map(|b| if b { 1 } else { 0 }))
-        })
+    payload.get(key).and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_f64().map(|f| f as i64))
+            .or_else(|| v.as_bool().map(|b| if b { 1 } else { 0 }))
+    })
 }
 
 /// Champ booléen du payload (PostgreSQL renvoie true/false).
@@ -2263,11 +2297,20 @@ mod tests {
         {
             let conn = Connection::open(&db_path).unwrap();
             crate::db::run_migrations(&conn).unwrap();
-            let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-1', 'School 1')", []);
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO schools (id, name) VALUES ('school-1', 'School 1')",
+                [],
+            );
             let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-sync-1', 'School Sync 1')", []);
             let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-sync-1000', 'School Sync 1000')", []);
-            let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-idem', 'School Idem')", []);
-            let _ = conn.execute("INSERT OR IGNORE INTO schools (id, name) VALUES ('school-fail', 'School Fail')", []);
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO schools (id, name) VALUES ('school-idem', 'School Idem')",
+                [],
+            );
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO schools (id, name) VALUES ('school-fail', 'School Fail')",
+                [],
+            );
             let _ = conn.execute("INSERT OR IGNORE INTO academic_years (id, school_id, name) VALUES ('ay-1', 'school-sync-1', '2025-2026')", []);
             let _ = conn.execute("INSERT OR IGNORE INTO academic_years (id, school_id, name) VALUES ('ay-1000', 'school-sync-1000', '2025-2026')", []);
             let _ = conn.execute("INSERT OR IGNORE INTO academic_years (id, school_id, name) VALUES ('ay-idem', 'school-idem', '2025-2026')", []);
@@ -2691,12 +2734,30 @@ mod tests {
         let conn = Connection::open(&db_path).unwrap();
         let payload = json!({"id":"subject-test-1","school_id":"school-sync-1","name":"Mathématiques","code":"MATH","color":"#123456","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "subjects", &payload).unwrap();
-        let code: String = conn.query_row("SELECT code FROM subjects WHERE id = 'subject-test-1'", [], |r| r.get(0)).unwrap();
+        let code: String = conn
+            .query_row(
+                "SELECT code FROM subjects WHERE id = 'subject-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(code, "MATH");
         let other = json!({"id":"subject-test-2","school_id":"school-sync-1000","name":"Français","code":"FR","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "subjects", &other).unwrap();
-        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM subjects WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
-        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM subjects WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        let count_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM subjects WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let count_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM subjects WHERE school_id = 'school-sync-1000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_a, 1);
         assert_eq!(count_b, 1);
     }
@@ -2707,12 +2768,30 @@ mod tests {
         let conn = Connection::open(&db_path).unwrap();
         let payload = json!({"id":"gt-test-1","school_id":"school-sync-1","name":"Examen","max_score":20.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "grade_types", &payload).unwrap();
-        let max_score: f64 = conn.query_row("SELECT max_score FROM grade_types WHERE id = 'gt-test-1'", [], |r| r.get(0)).unwrap();
+        let max_score: f64 = conn
+            .query_row(
+                "SELECT max_score FROM grade_types WHERE id = 'gt-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(max_score, 20.0);
         let other = json!({"id":"gt-test-2","school_id":"school-sync-1000","name":"Contrôle","max_score":20.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "grade_types", &other).unwrap();
-        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM grade_types WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
-        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM grade_types WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        let count_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM grade_types WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let count_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM grade_types WHERE school_id = 'school-sync-1000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_a, 1);
         assert_eq!(count_b, 1);
     }
@@ -2723,14 +2802,38 @@ mod tests {
         let conn = Connection::open(&db_path).unwrap();
         let payload = json!({"id":"gp-test-1","school_id":"school-sync-1","academic_year_id":"ay-1","name":"Trimestre 1","period_order":1,"is_active":true,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "grading_periods", &payload).unwrap();
-        let period_order: i64 = conn.query_row("SELECT period_order FROM grading_periods WHERE id = 'gp-test-1'", [], |r| r.get(0)).unwrap();
-        let is_active: i64 = conn.query_row("SELECT is_active FROM grading_periods WHERE id = 'gp-test-1'", [], |r| r.get(0)).unwrap();
+        let period_order: i64 = conn
+            .query_row(
+                "SELECT period_order FROM grading_periods WHERE id = 'gp-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let is_active: i64 = conn
+            .query_row(
+                "SELECT is_active FROM grading_periods WHERE id = 'gp-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(period_order, 1);
         assert_eq!(is_active, 1);
         let other = json!({"id":"gp-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1000","name":"Trimestre 1","period_order":1,"is_active":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "grading_periods", &other).unwrap();
-        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM grading_periods WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
-        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM grading_periods WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        let count_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM grading_periods WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let count_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM grading_periods WHERE school_id = 'school-sync-1000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_a, 1);
         assert_eq!(count_b, 1);
     }
@@ -2744,8 +2847,20 @@ mod tests {
         conn.execute("INSERT OR IGNORE INTO classes (id, school_id, academic_year_id, name) VALUES ('class-cs-1', 'school-sync-1', 'ay-1', '6A')", []).unwrap();
         let payload = json!({"id":"cs-test-1","school_id":"school-sync-1","academic_year_id":"ay-1","class_id":"class-cs-1","subject_id":"subject-cs-1","coefficient":2.5,"teacher_id":"teacher-1","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "class_subjects", &payload).unwrap();
-        let coefficient: f64 = conn.query_row("SELECT coefficient FROM class_subjects WHERE id = 'cs-test-1'", [], |r| r.get(0)).unwrap();
-        let subject_id: String = conn.query_row("SELECT subject_id FROM class_subjects WHERE id = 'cs-test-1'", [], |r| r.get(0)).unwrap();
+        let coefficient: f64 = conn
+            .query_row(
+                "SELECT coefficient FROM class_subjects WHERE id = 'cs-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let subject_id: String = conn
+            .query_row(
+                "SELECT subject_id FROM class_subjects WHERE id = 'cs-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(coefficient, 2.5);
         assert_eq!(subject_id, "subject-cs-1");
         let other_subject = json!({"id":"subject-cs-2","school_id":"school-sync-1000","name":"Français","code":"FR","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
@@ -2753,8 +2868,20 @@ mod tests {
         conn.execute("INSERT OR IGNORE INTO classes (id, school_id, academic_year_id, name) VALUES ('class-cs-2', 'school-sync-1000', 'ay-1000', '6B')", []).unwrap();
         let other = json!({"id":"cs-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1000","class_id":"class-cs-2","subject_id":"subject-cs-2","coefficient":1.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "class_subjects", &other).unwrap();
-        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM class_subjects WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
-        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM class_subjects WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        let count_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM class_subjects WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let count_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM class_subjects WHERE school_id = 'school-sync-1000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_a, 1);
         assert_eq!(count_b, 1);
     }
@@ -2770,14 +2897,38 @@ mod tests {
         upsert_entity(&conn, "class_subjects", &class_subject).unwrap();
         let payload = json!({"id":"ta-test-1","school_id":"school-sync-1","academic_year_id":"ay-1","teacher_id":"teacher-1","class_subject_id":"cs-ta-1","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "teacher_assignments", &payload).unwrap();
-        let teacher_id: String = conn.query_row("SELECT teacher_id FROM teacher_assignments WHERE id = 'ta-test-1'", [], |r| r.get(0)).unwrap();
-        let class_subject_id: String = conn.query_row("SELECT class_subject_id FROM teacher_assignments WHERE id = 'ta-test-1'", [], |r| r.get(0)).unwrap();
+        let teacher_id: String = conn
+            .query_row(
+                "SELECT teacher_id FROM teacher_assignments WHERE id = 'ta-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let class_subject_id: String = conn
+            .query_row(
+                "SELECT class_subject_id FROM teacher_assignments WHERE id = 'ta-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(teacher_id, "teacher-1");
         assert_eq!(class_subject_id, "cs-ta-1");
         let other = json!({"id":"ta-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1","teacher_id":"teacher-2","class_subject_id":"cs-ta-1","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "teacher_assignments", &other).unwrap();
-        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM teacher_assignments WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
-        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM teacher_assignments WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        let count_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM teacher_assignments WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let count_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM teacher_assignments WHERE school_id = 'school-sync-1000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_a, 1);
         assert_eq!(count_b, 1);
     }
@@ -2799,14 +2950,38 @@ mod tests {
         upsert_entity(&conn, "grading_periods", &grading_period).unwrap();
         let payload = json!({"id":"grade-test-1","school_id":"school-sync-1","academic_year_id":"ay-1","enrollment_id":"enrollment-grade-1","student_id":"student-grade-1","class_subject_id":"cs-grade-1","grading_period_id":"gp-grade-1","grade_type_id":"gt-grade-1","score":14.5,"max_score":20.0,"evaluation_date":"2026-02-01","notes":"Bien","recorded_by":"user-1","is_absent":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "grades", &payload).unwrap();
-        let score: f64 = conn.query_row("SELECT score FROM grades WHERE id = 'grade-test-1'", [], |r| r.get(0)).unwrap();
-        let is_absent: i64 = conn.query_row("SELECT is_absent FROM grades WHERE id = 'grade-test-1'", [], |r| r.get(0)).unwrap();
+        let score: f64 = conn
+            .query_row(
+                "SELECT score FROM grades WHERE id = 'grade-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let is_absent: i64 = conn
+            .query_row(
+                "SELECT is_absent FROM grades WHERE id = 'grade-test-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(score, 14.5);
         assert_eq!(is_absent, 0);
         let other = json!({"id":"grade-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1","enrollment_id":"enrollment-grade-1","student_id":"student-grade-1","class_subject_id":"cs-grade-1","grading_period_id":"gp-grade-1","grade_type_id":"gt-grade-1","score":10.0,"max_score":20.0,"is_absent":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "grades", &other).unwrap();
-        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM grades WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
-        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM grades WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        let count_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM grades WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let count_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM grades WHERE school_id = 'school-sync-1000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_a, 1);
         assert_eq!(count_b, 1);
     }
@@ -2827,7 +3002,13 @@ mod tests {
             "updated_at": "2026-01-01T00:00:00Z"
         });
         upsert_entity(&conn, "staff", &payload).unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
         let (phone, actif, prof_princ): (String, i64, i64) = conn.query_row(
             "SELECT telephone_principal, est_actif, est_prof_principal FROM staff WHERE id = 'staff-test-1'",
@@ -2850,18 +3031,32 @@ mod tests {
             "updated_at": "2026-01-02T00:00:00Z"
         });
         upsert_entity(&conn, "staff", &updated).unwrap();
-        let (phone_updated, actif_updated): (String, i64) = conn.query_row(
-            "SELECT telephone_principal, est_actif FROM staff WHERE id = 'staff-test-1'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?))
-        ).unwrap();
+        let (phone_updated, actif_updated): (String, i64) = conn
+            .query_row(
+                "SELECT telephone_principal, est_actif FROM staff WHERE id = 'staff-test-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(phone_updated, "999");
         assert_eq!(actif_updated, 0);
 
         let other = json!({"id":"staff-test-2","school_id":"school-sync-1000","nom":"Autre","prenoms":"Ecole","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "staff", &other).unwrap();
-        let count_a: i64 = conn.query_row("SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1'", [], |r| r.get(0)).unwrap();
-        let count_b: i64 = conn.query_row("SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1000'", [], |r| r.get(0)).unwrap();
+        let count_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let count_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM staff WHERE school_id = 'school-sync-1000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_a, 1);
         assert_eq!(count_b, 1);
     }
@@ -2915,7 +3110,11 @@ mod tests {
         let second = Runtime::new().unwrap().block_on(async {
             process_inbox(&db_path, &client, &mock_url, "anon-key", "token").await
         });
-        assert!(second.is_ok(), "le second cycle doit réussir : {:?}", second);
+        assert!(
+            second.is_ok(),
+            "le second cycle doit réussir : {:?}",
+            second
+        );
 
         let count: i64 = Connection::open(&db_path)
             .unwrap()
@@ -2980,7 +3179,11 @@ mod tests {
 
         let subject_count: i64 = Connection::open(&db_path)
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM subjects WHERE id = 'subject-ok-1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM subjects WHERE id = 'subject-ok-1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(subject_count, 1, "la table réussie peut être appliquée");
 
@@ -3004,12 +3207,19 @@ mod tests {
         let second = Runtime::new().unwrap().block_on(async {
             process_inbox(&db_path, &client, &mock_url, "anon-key", "token").await
         });
-        assert!(second.is_ok(), "le cycle suivant doit réussir : {:?}", second);
-
+        assert!(
+            second.is_ok(),
+            "le cycle suivant doit réussir : {:?}",
+            second
+        );
 
         let cs_count: i64 = Connection::open(&db_path)
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM class_subjects WHERE id = 'cs-fail-2'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM class_subjects WHERE id = 'cs-fail-2'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(cs_count, 1, "la table en échec doit être reprise");
 
@@ -3021,10 +3231,6 @@ mod tests {
         stop_flag.store(true, Ordering::Relaxed);
         let _ = server_handle.join();
     }
-
-
-
-
 
     #[test]
     fn test_outbound_temporary_then_success() {
@@ -3058,16 +3264,40 @@ mod tests {
         // ne doit pas être marquée SYNCED.
         let _ = first;
 
-        let status: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-temp'", [], |r| r.get(0)).unwrap();
-        assert_eq!(status, "PENDING", "la mutation temporaire doit rester PENDING");
+        let status: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT status FROM pending_mutations WHERE id = 'm-temp'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "PENDING",
+            "la mutation temporaire doit rester PENDING"
+        );
 
         let second = Runtime::new().unwrap().block_on(async {
             process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
         });
-        assert!(second.is_ok(), "la seconde tentative doit réussir : {:?}", second);
+        assert!(
+            second.is_ok(),
+            "la seconde tentative doit réussir : {:?}",
+            second
+        );
 
-        let status: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-temp'", [], |r| r.get(0)).unwrap();
-        assert_eq!(status, "SYNCED", "la mutation doit être SYNCED après succès");
+        let status: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT status FROM pending_mutations WHERE id = 'm-temp'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "SYNCED",
+            "la mutation doit être SYNCED après succès"
+        );
 
         stop_flag.store(true, Ordering::Relaxed);
         let _ = server_handle.join();
@@ -3089,8 +3319,18 @@ mod tests {
         });
         assert!(result.is_ok());
 
-        let status: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-limit'", [], |r| r.get(0)).unwrap();
-        assert_eq!(status, "FAILED", "une mutation épuisée ne doit pas être envoyée automatiquement");
+        let status: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT status FROM pending_mutations WHERE id = 'm-limit'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "FAILED",
+            "une mutation épuisée ne doit pas être envoyée automatiquement"
+        );
 
         let requeued = retry_failed_mutations_internal(&db_path).unwrap();
         assert!(requeued >= 1);
@@ -3099,8 +3339,18 @@ mod tests {
             process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
         });
         assert!(result.is_ok());
-        let status: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-limit'", [], |r| r.get(0)).unwrap();
-        assert_eq!(status, "SYNCED", "après reprise explicite, la mutation doit réussir");
+        let status: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT status FROM pending_mutations WHERE id = 'm-limit'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "SYNCED",
+            "après reprise explicite, la mutation doit réussir"
+        );
 
         stop_flag.store(true, Ordering::Relaxed);
         let _ = server_handle.join();
@@ -3125,8 +3375,18 @@ mod tests {
             });
         }
 
-        let count: i64 = Connection::open(&db_path).unwrap().query_row("SELECT COUNT(*) FROM pending_mutations WHERE status = 'SYNCED'", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 45, "toutes les mutations des lots successifs doivent être synchronisées");
+        let count: i64 = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pending_mutations WHERE status = 'SYNCED'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 45,
+            "toutes les mutations des lots successifs doivent être synchronisées"
+        );
 
         stop_flag.store(true, Ordering::Relaxed);
         let _ = server_handle.join();
@@ -3144,7 +3404,10 @@ mod tests {
         }
         let conn = Connection::open(&db_path).unwrap();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-restart' AND status = 'PENDING'", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 1, "la mutation doit survivre à la fermeture/réouverture de la connexion");
+        assert_eq!(
+            count, 1,
+            "la mutation doit survivre à la fermeture/réouverture de la connexion"
+        );
     }
 
     #[test]
@@ -3175,18 +3438,41 @@ mod tests {
             process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
         });
 
-        let status_auth: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-auth'", [], |r| r.get(0)).unwrap();
-        let error_auth: Option<String> = Connection::open(&db_path).unwrap().query_row("SELECT last_error FROM pending_mutations WHERE id = 'm-auth'", [], |r| r.get(0)).unwrap();
+        let status_auth: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT status FROM pending_mutations WHERE id = 'm-auth'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let error_auth: Option<String> = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT last_error FROM pending_mutations WHERE id = 'm-auth'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(status_auth, "FAILED");
         assert!(error_auth.unwrap_or_default().contains("401"));
 
-        let status_valid: String = Connection::open(&db_path).unwrap().query_row("SELECT status FROM pending_mutations WHERE id = 'm-valid'", [], |r| r.get(0)).unwrap();
-        assert_eq!(status_valid, "SYNCED", "une mutation indépendante doit progresser");
+        let status_valid: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT status FROM pending_mutations WHERE id = 'm-valid'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status_valid, "SYNCED",
+            "une mutation indépendante doit progresser"
+        );
 
         stop_flag.store(true, Ordering::Relaxed);
         let _ = server_handle.join();
     }
-
 
     #[test]
     fn test_outbound_idempotence_operations() {
@@ -3225,6 +3511,8 @@ mod tests {
             process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
         });
 
+        stop_flag.store(true, Ordering::Relaxed);
+        let _ = server_handle.join();
     }
 
     #[test]
@@ -3246,8 +3534,22 @@ mod tests {
             process_outbox(&db_path, &client, &mock_url, "anon-key", "token").await
         });
 
-        let school_a: String = Connection::open(&db_path).unwrap().query_row("SELECT school_id FROM pending_mutations WHERE id = 'm-school-a'", [], |r| r.get(0)).unwrap();
-        let school_b: String = Connection::open(&db_path).unwrap().query_row("SELECT school_id FROM pending_mutations WHERE id = 'm-school-b'", [], |r| r.get(0)).unwrap();
+        let school_a: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT school_id FROM pending_mutations WHERE id = 'm-school-a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let school_b: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT school_id FROM pending_mutations WHERE id = 'm-school-b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(school_a, "school-sync-1");
         assert_eq!(school_b, "school-sync-1000");
 
