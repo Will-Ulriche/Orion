@@ -258,6 +258,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Établir la session locale authentifiée côté backend Rust via Supabase Auth & RLS
+        // SEC-VERIFY3-05 : un échec est bloquant — déconnexion forcée, l'UI ne progresse pas.
         if (userSession.access_token && userSession.access_token !== 'offline') {
           try {
             await invoke('establish_online_session', {
@@ -265,10 +266,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               schoolId: schoolId || null,
             });
           } catch (tokErr) {
-            console.warn('Erreur establish_online_session:', tokErr);
-            try {
-              await invoke('set_sync_access_token', { token: userSession.access_token });
-            } catch (_) {}
+            console.error('Erreur establish_online_session — déconnexion forcée:', tokErr);
+            await supabase.auth.signOut().catch(() => {});
+            setSession(null);
+            setUser(null);
+            setRoles([]);
+            setRolesLoaded(true);
+            setLoading(false);
+            return; // Interrompre syncUserToLocalDb — pas d'appel à activate()
           }
         }
 

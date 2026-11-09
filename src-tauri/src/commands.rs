@@ -613,35 +613,16 @@ pub fn establish_online_session_conn(
         }
     }
 
-    // Déterminer si l'utilisateur est SUPER_ADMIN (cloud ou SQLite local)
-    let has_cloud_sa = cloud_roles.iter().any(|r| r.role_name.eq_ignore_ascii_case("SUPER_ADMIN"));
-    let has_local_sa: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM user_roles ur
-             JOIN roles r ON r.id = ur.role_id
-             WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
-            rusqlite::params![user_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    // Déterminer si l'utilisateur est SUPER_ADMIN — exclusivement d'après les rôles cloud
+    // (SEC-VERIFY3-01 : un reliquat SQLite local ne peut pas accorder ce privilège en connexion en ligne)
+    let is_super_admin = cloud_roles.iter().any(|r| r.role_name.eq_ignore_ascii_case("SUPER_ADMIN"));
 
-    let is_super_admin = has_cloud_sa || (has_local_sa > 0);
-
-    // Déterminer les écoles autorisées
-    let mut authorized_schools: Vec<String> = cloud_roles
+    // Déterminer les écoles autorisées — exclusivement d'après les rôles cloud
+    // (SEC-VERIFY3-02 : les écoles révoquées dans Supabase ne sont pas réintroduites depuis SQLite)
+    let authorized_schools: Vec<String> = cloud_roles
         .iter()
         .filter_map(|r| r.school_id.clone())
         .collect();
-
-    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT school_id FROM user_roles WHERE user_id = ?1 AND school_id IS NOT NULL") {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, String>(0)) {
-            for s in rows.filter_map(Result::ok) {
-                if !authorized_schools.contains(&s) {
-                    authorized_schools.push(s);
-                }
-            }
-        }
-    }
 
     let effective_school_id = if is_super_admin {
         requested_school_id
@@ -683,6 +664,13 @@ pub fn establish_online_session_conn(
         "INSERT INTO schools (id, name) VALUES (?1, 'École') ON CONFLICT(id) DO NOTHING",
         rusqlite::params![effective_school_id],
     ).map_err(|e| format!("Erreur synchronisation école : {}", e))?;
+
+    // SEC-VERIFY3-03 : Purger les rôles locaux obsolètes avant réinsertion depuis cloud_roles.
+    // Garantit qu'aucun rôle révoqué côté Supabase ne persiste dans SQLite après reconnexion.
+    tx.execute(
+        "DELETE FROM user_roles WHERE user_id = ?1",
+        rusqlite::params![user_id],
+    ).map_err(|e| format!("Erreur purge des anciens rôles locaux : {}", e))?;
 
     for crole in cloud_roles {
         let target_school = crole.school_id.as_deref().unwrap_or(&effective_school_id);
@@ -7016,5 +7004,82 @@ mod auth_tests {
         // 3. Vérifier que l'ancienne session u-legit n'a PAS subsisté
         let sess_after = crate::auth_guard::get_authenticated_user(&conn);
         assert!(sess_after.is_err(), "En cas d'échec, aucune session résiduelle ne doit être conservée");
+    }
+
+    /// SEC-VERIFY3-06a : un SUPER_ADMIN exclusivement local (sans cloud) ne peut pas s'élever.
+    /// cloud_roles est vide → is_super_admin = false → aucun établissement autorisé → rejet.
+    #[test]
+    fn test_establish_online_session_local_super_admin_cannot_bypass_cloud() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        // Insérer un utilisateur avec SUPER_ADMIN uniquement dans SQLite local
+        conn.execute(
+            "INSERT INTO users (id, email, username, status) VALUES ('u-local-sa', 'localsa@orion.app', 'localsa', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-local-sa', 'u-local-sa', 'school-1', ?1)",
+            rusqlite::params![sa_role_id],
+        ).unwrap();
+
+        // cloud_roles vide = Supabase ne connaît pas ce rôle
+        let auth = crate::auth_guard::CloudAuthUser {
+            id: "u-local-sa".to_string(),
+            email: Some("localsa@orion.app".to_string()),
+        };
+        let result = establish_online_session_conn(&mut conn, &auth, &[], None, "token-local-sa");
+
+        assert!(
+            result.is_err(),
+            "Un SUPER_ADMIN présent uniquement dans SQLite ne doit pas pouvoir s'élever via establish_online_session"
+        );
+        // Aucune session résiduelle
+        assert!(crate::auth_guard::get_authenticated_user(&conn).is_err());
+    }
+
+    /// SEC-VERIFY3-06b : une école révoquée dans Supabase mais présente dans SQLite n'est pas réintroduite.
+    /// L'accès à cette école doit être refusé même si elle figure en base locale.
+    #[test]
+    fn test_establish_online_session_local_school_not_in_cloud_is_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        // Établissement révoqué présent uniquement en SQLite
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-revoked', 'École révoquée')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, email, username, status) VALUES ('u-revoked', 'revoked@orion.app', 'revoked', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-revoked', 'u-revoked', 'school-revoked', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        // cloud_roles ne contient que school-1 (school-revoked a été révoquée)
+        let auth = crate::auth_guard::CloudAuthUser {
+            id: "u-revoked".to_string(),
+            email: Some("revoked@orion.app".to_string()),
+        };
+        let cloud_roles = vec![crate::auth_guard::CloudUserRole {
+            school_id: Some("school-1".to_string()),
+            role_name: "DIRECTION".to_string(),
+        }];
+
+        // Demande explicite d'accès à l'école révoquée → doit être rejetée
+        let result = establish_online_session_conn(&mut conn, &auth, &cloud_roles, Some("school-revoked"), "token-revoked");
+        assert!(
+            result.is_err(),
+            "L'accès à une école révoquée dans Supabase doit être refusé même si elle est dans SQLite"
+        );
+        // Aucune session résiduelle
+        assert!(crate::auth_guard::get_authenticated_user(&conn).is_err());
     }
 }
