@@ -193,6 +193,8 @@ pub fn run() {
             library::seed_library_demo_data,
             library::clear_library_data,
             commands::set_sync_access_token,
+            commands::bootstrap_initial_super_admin,
+            commands::establish_online_session,
             commands::restore_local_session,
             commands::revoke_local_session,
             commands::clear_local_session,

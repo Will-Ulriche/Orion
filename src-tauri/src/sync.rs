@@ -21,7 +21,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use dotenvy::dotenv;
 use reqwest::Client;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
@@ -44,31 +44,31 @@ pub(crate) const DEPENDENCY_ORDER: [(&str, u8); 26] = [
     ("schools", 0),
     ("sections", 1),
     ("levels", 2),
-    ("series", 2),
+    ("series", 3),
     ("academic_years", 1),
-    ("classes", 3),
-    ("staff", 3),
-    ("students", 4),
-    ("enrollments", 5),
-    ("enrollment_history", 6),
-    ("fee_structures", 7),
-    ("payments", 8),
+    ("classes", 4),
+    ("staff", 4),
+    ("students", 5),
+    ("enrollments", 6),
+    ("enrollment_history", 7),
+    ("fee_structures", 8),
+    ("payments", 9),
     // Session 5 — Module pédagogique
-    ("subjects", 7),
-    ("grade_types", 7),
-    ("grading_periods", 8),
-    ("class_subjects", 8),
-    ("teacher_assignments", 8),
-    ("grades", 9),
+    ("subjects", 8),
+    ("grade_types", 8),
+    ("grading_periods", 9),
+    ("class_subjects", 9),
+    ("teacher_assignments", 9),
+    ("grades", 10),
     // Session 6 — Module bibliothèque
-    ("library_categories", 10),
-    ("library_books", 11),
-    ("library_readers", 11),
-    ("library_copies", 12),
-    ("library_loans", 13),
-    ("library_returns", 14),
-    ("library_penalties", 14),
-    ("library_reservations", 14),
+    ("library_categories", 11),
+    ("library_books", 12),
+    ("library_readers", 12),
+    ("library_copies", 13),
+    ("library_loans", 14),
+    ("library_returns", 15),
+    ("library_penalties", 15),
+    ("library_reservations", 15),
 ];
 
 // ──────────────────────────────────────────────
@@ -164,7 +164,7 @@ pub fn current_sync_access_token() -> Option<String> {
     SYNC_ACCESS_TOKEN.lock().ok().and_then(|g| g.clone())
 }
 
-fn get_supabase_config() -> Result<(String, String), String> {
+pub(crate) fn get_supabase_config() -> Result<(String, String), String> {
     let _ = dotenv();
     // Compile-time : uniquement les variables publiques VITE_*.
     // Runtime : URL + clé anon. Jamais SUPABASE_SERVICE_ROLE_KEY.
@@ -346,7 +346,7 @@ async fn process_outbox(
 
     println!("[Outbox] {} mutation(s) à traiter.", mutations.len());
 
-    for (id, entity_type, operation, payload_str, attempt_count) in mutations {
+    for (id, entity_type, operation, payload_str, attempt_count, school_id) in mutations {
         // Limiter les tentatives : après 5 échecs, on passe en FAILED définitif
         if attempt_count >= 5 {
             mark_mutation(
@@ -360,7 +360,8 @@ async fn process_outbox(
 
         // Ne pas envoyer d'enfant tant qu'un parent n'est pas passé : l'erreur
         // foreign key qui en résulterait serait sans rapport avec la cause réelle.
-        let blocked_by = blocking_parents(db_path, &entity_type);
+        // La détection des parents bloquants est isolée par établissement.
+        let blocked_by = blocking_parents(db_path, &entity_type, school_id.as_deref());
         if !blocked_by.is_empty() {
             let reason = format!("En attente du parent : {}", blocked_by.join(", "));
             mark_mutation_error(db_path, &id, &reason);
@@ -541,9 +542,13 @@ pub(crate) async fn process_inbox(
     let last_cursor = load_inbound_cursor(db_path).unwrap_or_default();
 
     // Tables synchronisables et colonne servant de curseur incrémental.
+    // L'ordre suit les dépendances parent-enfant (sections -> levels -> series -> classes).
     // `enrollment_history` n'a pas de `updated_at` côté Supabase : son
     // horodatage est `changed_at`.
-    let tables: [(&str, &str); 22] = [
+    let tables: [(&str, &str); 25] = [
+        ("sections", "updated_at"),
+        ("levels", "updated_at"),
+        ("series", "updated_at"),
         ("staff", "updated_at"),
         ("academic_years", "updated_at"),
         ("classes", "updated_at"),
@@ -721,9 +726,9 @@ fn apply_inbox_items(db_path: &PathBuf) -> usize {
 
     // Traiter l'ensemble des items en attente par lots jusqu'à épuisement complet
     loop {
-        let items: Vec<(String, String, String, String, String)> = {
+        let items: Vec<(String, String, String, String, String, Option<String>)> = {
             let mut stmt = match db.prepare(
-                "SELECT id, entity_type, entity_id, operation, payload
+                "SELECT id, entity_type, entity_id, operation, payload, school_id
                  FROM sync_inbox
                  WHERE status = 'PENDING'
                  ORDER BY received_at ASC
@@ -740,6 +745,7 @@ fn apply_inbox_items(db_path: &PathBuf) -> usize {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             });
 
@@ -753,7 +759,7 @@ fn apply_inbox_items(db_path: &PathBuf) -> usize {
             break;
         }
 
-        for (inbox_id, entity_type, entity_id, operation, payload_str) in items {
+        for (inbox_id, entity_type, entity_id, operation, payload_str, inbox_school_id) in items {
             let payload: Value = match serde_json::from_str(&payload_str) {
                 Ok(v) => v,
                 Err(e) => {
@@ -794,10 +800,18 @@ fn apply_inbox_items(db_path: &PathBuf) -> usize {
                 }
             }
 
+            let target_school_id = payload
+                .get("school_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or(inbox_school_id);
+
             // Appliquer l'upsert/delete dans SQLite
             let result = match operation.as_str() {
                 "INSERT" | "UPDATE" => upsert_entity(&db, &entity_type, &payload),
-                "DELETE" => soft_delete_entity(&db, &entity_type, &entity_id),
+                "DELETE" => {
+                    soft_delete_entity(&db, &entity_type, &entity_id, target_school_id.as_deref())
+                }
                 _ => Ok(()),
             };
 
@@ -886,6 +900,211 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
         .ok_or("Champ 'id' manquant dans le payload.")?;
 
     match entity_type {
+        "sections" => {
+            let school_id = str_field(payload, "school_id")
+                .ok_or_else(|| "Champ 'school_id' manquant pour section".to_string())?;
+            let school_exists: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM schools WHERE id = ?1",
+                    rusqlite::params![school_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if school_exists == 0 {
+                return Err(format!(
+                    "Isolation école violée : l'établissement '{}' n'existe pas localement",
+                    school_id
+                ));
+            }
+
+            // Ne jamais réassigner l'école d'une section existante
+            let existing_school: Option<String> = db
+                .query_row(
+                    "SELECT school_id FROM sections WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(es) = existing_school {
+                if es != school_id {
+                    return Err(format!(
+                        "Isolation école violée : l'entité 'sections/{}' appartient à l'école '{}' et ne peut être réassignée à '{}'",
+                        id, es, school_id
+                    ));
+                }
+            }
+
+            db.execute(
+                "INSERT INTO sections (id, school_id, name, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                     name       = excluded.name,
+                     updated_at = excluded.updated_at",
+                rusqlite::params![
+                    id,
+                    school_id,
+                    str_field(payload, "name").unwrap_or_default(),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "levels" => {
+            let school_id = str_field(payload, "school_id")
+                .ok_or_else(|| "Champ 'school_id' manquant pour level".to_string())?;
+            let school_exists: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM schools WHERE id = ?1",
+                    rusqlite::params![school_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if school_exists == 0 {
+                return Err(format!(
+                    "Isolation école violée : l'établissement '{}' n'existe pas localement",
+                    school_id
+                ));
+            }
+
+            // Ne jamais réassigner l'école d'un niveau existant
+            let existing_school: Option<String> = db
+                .query_row(
+                    "SELECT school_id FROM levels WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(es) = existing_school {
+                if es != school_id {
+                    return Err(format!(
+                        "Isolation école violée : l'entité 'levels/{}' appartient à l'école '{}' et ne peut être réassignée à '{}'",
+                        id, es, school_id
+                    ));
+                }
+            }
+
+            let section_id = str_field(payload, "section_id")
+                .ok_or_else(|| "Champ 'section_id' manquant pour level".to_string())?;
+
+            // Parent section obligatoire et strictement de la même école
+            let parent_school: String = db
+                .query_row(
+                    "SELECT school_id FROM sections WHERE id = ?1",
+                    rusqlite::params![section_id],
+                    |r| r.get(0),
+                )
+                .map_err(|_| {
+                    format!(
+                        "Intégrité référentielle violée : la section parente '{}' est introuvable localement pour le niveau '{}'",
+                        section_id, id
+                    )
+                })?;
+            if parent_school != school_id {
+                return Err(format!(
+                    "Violation d'intégrité : la section '{}' appartient à l'école '{}', pas à '{}'",
+                    section_id, parent_school, school_id
+                ));
+            }
+
+            db.execute(
+                "INSERT INTO levels (id, school_id, section_id, name, level_order, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                     section_id  = excluded.section_id,
+                     name        = excluded.name,
+                     level_order = excluded.level_order,
+                     updated_at  = excluded.updated_at",
+                rusqlite::params![
+                    id,
+                    school_id,
+                    section_id,
+                    str_field(payload, "name").unwrap_or_default(),
+                    int_field(payload, "level_order").unwrap_or(0),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "series" => {
+            let school_id = str_field(payload, "school_id")
+                .ok_or_else(|| "Champ 'school_id' manquant pour series".to_string())?;
+            let school_exists: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM schools WHERE id = ?1",
+                    rusqlite::params![school_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if school_exists == 0 {
+                return Err(format!(
+                    "Isolation école violée : l'établissement '{}' n'existe pas localement",
+                    school_id
+                ));
+            }
+
+            // Ne jamais réassigner l'école d'une série existante
+            let existing_school: Option<String> = db
+                .query_row(
+                    "SELECT school_id FROM series WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(es) = existing_school {
+                if es != school_id {
+                    return Err(format!(
+                        "Isolation école violée : l'entité 'series/{}' appartient à l'école '{}' et ne peut être réassignée à '{}'",
+                        id, es, school_id
+                    ));
+                }
+            }
+
+            let level_id = str_field(payload, "level_id")
+                .ok_or_else(|| "Champ 'level_id' manquant pour series".to_string())?;
+
+            // Parent level obligatoire et strictement de la même école
+            let parent_school: String = db
+                .query_row(
+                    "SELECT school_id FROM levels WHERE id = ?1",
+                    rusqlite::params![level_id],
+                    |r| r.get(0),
+                )
+                .map_err(|_| {
+                    format!(
+                        "Intégrité référentielle violée : le niveau parent '{}' est introuvable localement pour la série '{}'",
+                        level_id, id
+                    )
+                })?;
+            if parent_school != school_id {
+                return Err(format!(
+                    "Violation d'intégrité : le niveau '{}' appartient à l'école '{}', pas à '{}'",
+                    level_id, parent_school, school_id
+                ));
+            }
+
+            db.execute(
+                "INSERT INTO series (id, school_id, level_id, name, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                     level_id   = excluded.level_id,
+                     name       = excluded.name,
+                     updated_at = excluded.updated_at",
+                rusqlite::params![
+                    id,
+                    school_id,
+                    level_id,
+                    str_field(payload, "name").unwrap_or_default(),
+                    ts_field(payload, "created_at"),
+                    ts_field(payload, "updated_at"),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         "academic_years" => {
             db.execute(
                 "INSERT INTO academic_years (id, school_id, name, start_date, end_date, status, is_current, closed_at)
@@ -1450,9 +1669,175 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
     Ok(())
 }
 
-fn soft_delete_entity(db: &Connection, entity_type: &str, entity_id: &str) -> Result<(), String> {
-    // Supprimer les dépendances d'abord selon le type d'entité
+fn soft_delete_entity(
+    db: &Connection,
+    entity_type: &str,
+    entity_id: &str,
+    target_school_id: Option<&str>,
+) -> Result<(), String> {
+    let table = entity_type;
+
+    // Déterminer et valider l'école d'appartenance de l'entité locale
+    // Les tables principales ont toutes une colonne school_id (sauf enrollment_history)
+    let actual_school: Option<String> = if entity_type == "enrollment_history" {
+        None
+    } else {
+        db.query_row(
+            &format!("SELECT school_id FROM {} WHERE id = ?1", table),
+            rusqlite::params![entity_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    };
+
+    let school_id = match actual_school {
+        Some(sch) => {
+            // Un contexte d'établissement fiable est requis pour supprimer une entité existante
+            match target_school_id {
+                Some(target) if !target.trim().is_empty() => {
+                    if target != sch.as_str() {
+                        return Err(format!(
+                            "Isolation école violée : tentative de suppression de l'entité '{}/{}' appartenant à l'école '{}' avec le contexte '{}'",
+                            entity_type, entity_id, sch, target
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "Contexte d'établissement manquant ou invalide pour la suppression de '{}/{}'",
+                        entity_type, entity_id
+                    ));
+                }
+            }
+            Some(sch)
+        }
+        None => {
+            if entity_type != "enrollment_history" {
+                // Idempotence : l'entité n'existe déjà plus localement
+                println!(
+                    "[Inbox] ✓ DELETE {}/{} déjà absent (idempotent).",
+                    entity_type, entity_id
+                );
+                return Ok(());
+            }
+            None
+        }
+    };
+
+    let sch_ref = school_id.as_deref();
+
+    // Supprimer les dépendances d'abord selon le type d'entité, en restreignant à l'école validée
     match entity_type {
+        "series" => {
+            if let Some(sch) = sch_ref {
+                db.execute(
+                    "UPDATE classes SET series_id = NULL WHERE series_id = ?1 AND school_id = ?2",
+                    rusqlite::params![entity_id, sch],
+                )
+                .map_err(|e| e.to_string())?;
+            } else {
+                db.execute(
+                    "UPDATE classes SET series_id = NULL WHERE series_id = ?1",
+                    rusqlite::params![entity_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        "levels" => {
+            if let Some(sch) = sch_ref {
+                db.execute(
+                    "UPDATE classes SET series_id = NULL WHERE series_id IN (
+                        SELECT id FROM series WHERE level_id = ?1 AND school_id = ?2
+                    ) AND school_id = ?2",
+                    rusqlite::params![entity_id, sch],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "UPDATE classes SET level_id = NULL WHERE level_id = ?1 AND school_id = ?2",
+                    rusqlite::params![entity_id, sch],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "DELETE FROM series WHERE level_id = ?1 AND school_id = ?2",
+                    rusqlite::params![entity_id, sch],
+                )
+                .map_err(|e| e.to_string())?;
+            } else {
+                db.execute(
+                    "UPDATE classes SET series_id = NULL WHERE series_id IN (SELECT id FROM series WHERE level_id = ?1)",
+                    rusqlite::params![entity_id],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "UPDATE classes SET level_id = NULL WHERE level_id = ?1",
+                    rusqlite::params![entity_id],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "DELETE FROM series WHERE level_id = ?1",
+                    rusqlite::params![entity_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        "sections" => {
+            if let Some(sch) = sch_ref {
+                db.execute(
+                    "UPDATE classes SET series_id = NULL WHERE series_id IN (
+                        SELECT s.id FROM series s JOIN levels l ON s.level_id = l.id WHERE l.section_id = ?1 AND l.school_id = ?2
+                    ) AND school_id = ?2",
+                    rusqlite::params![entity_id, sch],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "UPDATE classes SET level_id = NULL WHERE level_id IN (
+                        SELECT id FROM levels WHERE section_id = ?1 AND school_id = ?2
+                    ) AND school_id = ?2",
+                    rusqlite::params![entity_id, sch],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "DELETE FROM series WHERE level_id IN (
+                        SELECT id FROM levels WHERE section_id = ?1 AND school_id = ?2
+                    ) AND school_id = ?2",
+                    rusqlite::params![entity_id, sch],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "DELETE FROM levels WHERE section_id = ?1 AND school_id = ?2",
+                    rusqlite::params![entity_id, sch],
+                )
+                .map_err(|e| e.to_string())?;
+            } else {
+                db.execute(
+                    "UPDATE classes SET series_id = NULL WHERE series_id IN (
+                        SELECT s.id FROM series s JOIN levels l ON s.level_id = l.id WHERE l.section_id = ?1
+                    )",
+                    rusqlite::params![entity_id],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "UPDATE classes SET level_id = NULL WHERE level_id IN (
+                        SELECT id FROM levels WHERE section_id = ?1
+                    )",
+                    rusqlite::params![entity_id],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "DELETE FROM series WHERE level_id IN (
+                        SELECT id FROM levels WHERE section_id = ?1
+                    )",
+                    rusqlite::params![entity_id],
+                )
+                .map_err(|e| e.to_string())?;
+                db.execute(
+                    "DELETE FROM levels WHERE section_id = ?1",
+                    rusqlite::params![entity_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
         "academic_years" => {
             db.execute(
                 "DELETE FROM enrollment_history WHERE academic_year_id = ?1",
@@ -1530,10 +1915,15 @@ fn soft_delete_entity(db: &Connection, entity_type: &str, entity_id: &str) -> Re
     }
 
     // Supprimer l'entité elle-même
-    let table = entity_type;
-    let sql = format!("DELETE FROM {} WHERE id = ?1", table);
-    db.execute(&sql, rusqlite::params![entity_id])
-        .map_err(|e| format!("Erreur DELETE {}/{}: {}", entity_type, entity_id, e))?;
+    if let Some(sch) = sch_ref {
+        let sql = format!("DELETE FROM {} WHERE id = ?1 AND school_id = ?2", table);
+        db.execute(&sql, rusqlite::params![entity_id, sch])
+            .map_err(|e| format!("Erreur DELETE {}/{}: {}", entity_type, entity_id, e))?;
+    } else {
+        let sql = format!("DELETE FROM {} WHERE id = ?1", table);
+        db.execute(&sql, rusqlite::params![entity_id])
+            .map_err(|e| format!("Erreur DELETE {}/{}: {}", entity_type, entity_id, e))?;
+    }
 
     println!("[Inbox] ✓ DELETE {}/{} appliqué.", entity_type, entity_id);
     Ok(())
@@ -1545,13 +1935,13 @@ fn soft_delete_entity(db: &Connection, entity_type: &str, entity_id: &str) -> Re
 
 fn load_pending_mutations(
     db_path: &PathBuf,
-) -> Result<Vec<(String, String, String, String, i64)>, String> {
+) -> Result<Vec<(String, String, String, String, i64, Option<String>)>, String> {
     let db = Connection::open(db_path).map_err(|e| e.to_string())?;
     // Les parents (année scolaire, classe) doivent partir avant leurs enfants
     // (élève, inscription), sinon PostgreSQL rejette l'enfant sur la clé étrangère.
     let mut stmt = db
         .prepare(
-            "SELECT id, entity_type, operation, payload, COALESCE(attempt_count, 0)
+            "SELECT id, entity_type, operation, payload, COALESCE(attempt_count, 0), school_id
          FROM pending_mutations
           WHERE status = 'PENDING'
             AND COALESCE(attempt_count, 0) < 5
@@ -1592,13 +1982,13 @@ fn load_pending_mutations(
                 WHEN 'students' THEN 4
                 WHEN 'classes' THEN 4
                 WHEN 'series' THEN 5
-                WHEN 'levels' THEN 5
-                WHEN 'sections' THEN 5
+                WHEN 'levels' THEN 6
+                WHEN 'sections' THEN 7
                 WHEN 'library_books' THEN 5
-                WHEN 'academic_years' THEN 5
-                WHEN 'library_categories' THEN 6
-                WHEN 'schools' THEN 7
-                WHEN 'school' THEN 7
+                WHEN 'academic_years' THEN 7
+                WHEN 'library_categories' THEN 7
+                WHEN 'schools' THEN 9
+                WHEN 'school' THEN 9
                 ELSE 8
               END
             ELSE
@@ -1607,29 +1997,29 @@ fn load_pending_mutations(
                 WHEN 'school' THEN 0
                 WHEN 'sections' THEN 1
                 WHEN 'levels' THEN 2
-                WHEN 'series' THEN 2
+                WHEN 'series' THEN 3
                 WHEN 'academic_years' THEN 1
-                WHEN 'classes' THEN 3
-                WHEN 'staff' THEN 3
-                WHEN 'students' THEN 4
-                WHEN 'enrollments' THEN 5
-                WHEN 'enrollment_history' THEN 6
-                WHEN 'fee_structures' THEN 7
-                WHEN 'payments' THEN 8
-                WHEN 'subjects' THEN 7
-                WHEN 'grade_types' THEN 7
-                WHEN 'grading_periods' THEN 8
-                WHEN 'class_subjects' THEN 8
-                WHEN 'teacher_assignments' THEN 8
-                WHEN 'grades' THEN 9
-                WHEN 'library_categories' THEN 10
-                WHEN 'library_books' THEN 11
-                WHEN 'library_readers' THEN 11
-                WHEN 'library_copies' THEN 12
-                WHEN 'library_loans' THEN 13
-                WHEN 'library_returns' THEN 14
-                WHEN 'library_penalties' THEN 14
-                WHEN 'library_reservations' THEN 14
+                WHEN 'classes' THEN 4
+                WHEN 'staff' THEN 4
+                WHEN 'students' THEN 5
+                WHEN 'enrollments' THEN 6
+                WHEN 'enrollment_history' THEN 7
+                WHEN 'fee_structures' THEN 8
+                WHEN 'payments' THEN 9
+                WHEN 'subjects' THEN 8
+                WHEN 'grade_types' THEN 8
+                WHEN 'grading_periods' THEN 9
+                WHEN 'class_subjects' THEN 9
+                WHEN 'teacher_assignments' THEN 9
+                WHEN 'grades' THEN 10
+                WHEN 'library_categories' THEN 11
+                WHEN 'library_books' THEN 12
+                WHEN 'library_readers' THEN 12
+                WHEN 'library_copies' THEN 13
+                WHEN 'library_loans' THEN 14
+                WHEN 'library_returns' THEN 15
+                WHEN 'library_penalties' THEN 15
+                WHEN 'library_reservations' THEN 15
                 ELSE 8
               END
             END,
@@ -1646,6 +2036,7 @@ fn load_pending_mutations(
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -1867,7 +2258,9 @@ fn reset_exhausted_mutations(db_path: &PathBuf) -> usize {
 /// encore en attente ou en échec : l'envoi de l'enfant échouerait sur la clé
 /// étrangère et resterait en FAILED définitivement, alors que la cause réelle
 /// est chez le parent.
-fn blocking_parents(db_path: &PathBuf, entity_type: &str) -> Vec<String> {
+/// Lorsque `school_id` est précisé, les mutations des autres écoles ne bloquent
+/// pas la progression de l'école concernée.
+fn blocking_parents(db_path: &PathBuf, entity_type: &str, school_id: Option<&str>) -> Vec<String> {
     let Ok(db) = Connection::open(db_path) else {
         return Vec::new();
     };
@@ -1875,22 +2268,54 @@ fn blocking_parents(db_path: &PathBuf, entity_type: &str) -> Vec<String> {
         return Vec::new();
     };
 
-    let mut stmt = match db.prepare(
-        "SELECT DISTINCT entity_type FROM pending_mutations
-         WHERE status = 'PENDING'
-           AND COALESCE(attempt_count, 0) < 5
-           AND entity_type != ?1",
-    ) {
+    let sql = match school_id {
+        Some(_) => {
+            "SELECT DISTINCT entity_type FROM pending_mutations
+             WHERE status = 'PENDING'
+               AND COALESCE(attempt_count, 0) < 5
+               AND entity_type != ?1
+               AND school_id = ?2"
+        }
+        None => {
+            "SELECT DISTINCT entity_type FROM pending_mutations
+             WHERE status = 'PENDING'
+               AND COALESCE(attempt_count, 0) < 5
+               AND entity_type != ?1"
+        }
+    };
+
+    let mut stmt = match db.prepare(sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
 
-    let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
+    let rows: Result<Vec<String>, _> = match school_id {
+        Some(sid) => {
+            let map = stmt.query_map(rusqlite::params![entity_type, sid], |row| {
+                row.get::<_, String>(0)
+            });
+            match map {
+                Ok(r) => r.collect(),
+                Err(_) => return Vec::new(),
+            }
+        }
+        None => {
+            let map = stmt.query_map(rusqlite::params![entity_type], |row| {
+                row.get::<_, String>(0)
+            });
+            match map {
+                Ok(r) => r.collect(),
+                Err(_) => return Vec::new(),
+            }
+        }
     };
 
-    rows.filter_map(Result::ok)
+    let Ok(types) = rows else {
+        return Vec::new();
+    };
+
+    types
+        .into_iter()
         .filter(|t| {
             DEPENDENCY_ORDER
                 .iter()
@@ -3555,5 +3980,578 @@ mod tests {
 
         stop_flag.store(true, Ordering::Relaxed);
         let _ = server_handle.join();
+    }
+
+    #[test]
+    fn test_dependency_order_pedagogical_structure() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+
+        // 1. Vérification des rangs canoniques dans DEPENDENCY_ORDER
+        let rank_sections = DEPENDENCY_ORDER
+            .iter()
+            .find(|(t, _)| *t == "sections")
+            .unwrap()
+            .1;
+        let rank_levels = DEPENDENCY_ORDER
+            .iter()
+            .find(|(t, _)| *t == "levels")
+            .unwrap()
+            .1;
+        let rank_series = DEPENDENCY_ORDER
+            .iter()
+            .find(|(t, _)| *t == "series")
+            .unwrap()
+            .1;
+        let rank_classes = DEPENDENCY_ORDER
+            .iter()
+            .find(|(t, _)| *t == "classes")
+            .unwrap()
+            .1;
+
+        assert!(
+            rank_sections < rank_levels,
+            "sections ({}) doit précéder levels ({})",
+            rank_sections,
+            rank_levels
+        );
+        assert!(
+            rank_levels < rank_series,
+            "levels ({}) doit précéder series ({})",
+            rank_levels,
+            rank_series
+        );
+        assert!(
+            rank_series < rank_classes,
+            "series ({}) doit précéder classes ({})",
+            rank_series,
+            rank_classes
+        );
+
+        // 2. Vérification du blocage effectif par blocking_parents
+        // A. Section en attente bloque le niveau pour la même école
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+             VALUES ('m-sec-block', 'school-sync-1', 'sections', 'sec-1', 'INSERT', '{}', 'PENDING')",
+            [],
+        ).unwrap();
+        let blockers_level = blocking_parents(&db_path, "levels", Some("school-sync-1"));
+        assert!(
+            blockers_level.contains(&"sections".to_string()),
+            "levels doit être bloqué par sections en attente"
+        );
+
+        // Mais ne bloque PAS une autre école
+        let blockers_other = blocking_parents(&db_path, "levels", Some("school-other"));
+        assert!(
+            blockers_other.is_empty(),
+            "levels d'une autre école ne doit pas être bloqué"
+        );
+
+        // B. Niveau en attente bloque la série
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+             VALUES ('m-lev-block', 'school-sync-1', 'levels', 'lev-1', 'INSERT', '{}', 'PENDING')",
+            [],
+        ).unwrap();
+        let blockers_series = blocking_parents(&db_path, "series", Some("school-sync-1"));
+        assert!(
+            blockers_series.contains(&"levels".to_string()),
+            "series doit être bloqué par levels en attente"
+        );
+
+        // C. Série en attente bloque la classe
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+             VALUES ('m-ser-block', 'school-sync-1', 'series', 'ser-1', 'INSERT', '{}', 'PENDING')",
+            [],
+        ).unwrap();
+        let blockers_class = blocking_parents(&db_path, "classes", Some("school-sync-1"));
+        assert!(
+            blockers_class.contains(&"series".to_string()),
+            "classes doit être bloqué par series en attente"
+        );
+    }
+
+    #[test]
+    fn test_inbound_pedagogical_structure_upsert_and_update() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+
+        // 1. Insertion entrante section
+        let sec_payload = json!({
+            "id": "sec-in-1",
+            "school_id": "school-sync-1",
+            "name": "Secondaire Général",
+            "created_at": "2026-01-01T08:00:00Z",
+            "updated_at": "2026-01-01T08:00:00Z"
+        });
+        upsert_entity(&conn, "sections", &sec_payload).expect("upsert section doit réussir");
+
+        let sec_name: String = conn
+            .query_row("SELECT name FROM sections WHERE id = 'sec-in-1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(sec_name, "Secondaire Général");
+
+        // 2. Insertion entrante level
+        let lev_payload = json!({
+            "id": "lev-in-1",
+            "school_id": "school-sync-1",
+            "section_id": "sec-in-1",
+            "name": "Seconde",
+            "level_order": 10,
+            "created_at": "2026-01-01T08:05:00Z",
+            "updated_at": "2026-01-01T08:05:00Z"
+        });
+        upsert_entity(&conn, "levels", &lev_payload).expect("upsert level doit réussir");
+
+        let (lev_name, lev_order): (String, i64) = conn
+            .query_row(
+                "SELECT name, level_order FROM levels WHERE id = 'lev-in-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(lev_name, "Seconde");
+        assert_eq!(lev_order, 10);
+
+        // 3. Insertion entrante series
+        let ser_payload = json!({
+            "id": "ser-in-1",
+            "school_id": "school-sync-1",
+            "level_id": "lev-in-1",
+            "name": "Scientifique S",
+            "created_at": "2026-01-01T08:10:00Z",
+            "updated_at": "2026-01-01T08:10:00Z"
+        });
+        upsert_entity(&conn, "series", &ser_payload).expect("upsert series doit réussir");
+
+        let ser_name: String = conn
+            .query_row("SELECT name FROM series WHERE id = 'ser-in-1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(ser_name, "Scientifique S");
+
+        // 4. Mise à jour entrante (id identique, contenu modifié)
+        let lev_update = json!({
+            "id": "lev-in-1",
+            "school_id": "school-sync-1",
+            "section_id": "sec-in-1",
+            "name": "2nde Générale",
+            "level_order": 11,
+            "created_at": "2026-01-01T08:05:00Z",
+            "updated_at": "2026-01-02T10:00:00Z"
+        });
+        upsert_entity(&conn, "levels", &lev_update).expect("update level doit réussir");
+
+        let (lev_name_upd, lev_order_upd): (String, i64) = conn
+            .query_row(
+                "SELECT name, level_order FROM levels WHERE id = 'lev-in-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(lev_name_upd, "2nde Générale");
+        assert_eq!(lev_order_upd, 11);
+
+        let count_levels: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM levels WHERE id = 'lev-in-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count_levels, 1,
+            "la mise à jour ne doit pas créer de doublon"
+        );
+    }
+
+    #[test]
+    fn test_soft_delete_pedagogical_structure() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Créer structure complète : section -> level -> series -> class
+        conn.execute("INSERT INTO sections (id, school_id, name) VALUES ('sec-del-1', 'school-sync-1', 'Collège')", []).unwrap();
+        conn.execute("INSERT INTO levels (id, school_id, section_id, name, level_order) VALUES ('lev-del-1', 'school-sync-1', 'sec-del-1', '6ème', 1)", []).unwrap();
+        conn.execute("INSERT INTO series (id, school_id, level_id, name) VALUES ('ser-del-1', 'school-sync-1', 'lev-del-1', 'Série A')", []).unwrap();
+        conn.execute(
+            "INSERT INTO classes (id, school_id, academic_year_id, name, level_id, series_id)
+             VALUES ('cls-del-1', 'school-sync-1', 'ay-1', '6ème A', 'lev-del-1', 'ser-del-1')",
+            [],
+        )
+        .unwrap();
+
+        // 1. Suppression de la série : la classe perd son series_id mais conserve son level_id
+        soft_delete_entity(&conn, "series", "ser-del-1", Some("school-sync-1"))
+            .expect("suppression series doit réussir");
+        let (cls_lev, cls_ser): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT level_id, series_id FROM classes WHERE id = 'cls-del-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cls_lev, Some("lev-del-1".to_string()));
+        assert_eq!(
+            cls_ser, None,
+            "series_id de la classe doit être NULL après suppression de la série"
+        );
+
+        let ser_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM series WHERE id = 'ser-del-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ser_count, 0);
+
+        // 2. Re-créer une série et ré-associer la classe
+        conn.execute("INSERT INTO series (id, school_id, level_id, name) VALUES ('ser-del-2', 'school-sync-1', 'lev-del-1', 'Série B')", []).unwrap();
+        conn.execute(
+            "UPDATE classes SET series_id = 'ser-del-2' WHERE id = 'cls-del-1'",
+            [],
+        )
+        .unwrap();
+
+        // 3. Suppression du level : la classe perd son level_id ET son series_id, et la série liée est purgée
+        soft_delete_entity(&conn, "levels", "lev-del-1", Some("school-sync-1"))
+            .expect("suppression level doit réussir");
+        let (cls_lev2, cls_ser2): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT level_id, series_id FROM classes WHERE id = 'cls-del-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cls_lev2, None, "level_id doit être NULL");
+        assert_eq!(
+            cls_ser2, None,
+            "series_id doit être NULL car la série appartenait au niveau supprimé"
+        );
+
+        let ser2_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM series WHERE id = 'ser-del-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            ser2_count, 0,
+            "la série dépendante du niveau doit être supprimée"
+        );
+
+        // 4. Test suppression d'une section entière avec enfants
+        conn.execute("INSERT INTO sections (id, school_id, name) VALUES ('sec-del-2', 'school-sync-1', 'Lycée')", []).unwrap();
+        conn.execute("INSERT INTO levels (id, school_id, section_id, name, level_order) VALUES ('lev-del-2', 'school-sync-1', 'sec-del-2', 'Terminale', 12)", []).unwrap();
+        conn.execute("INSERT INTO series (id, school_id, level_id, name) VALUES ('ser-del-3', 'school-sync-1', 'lev-del-2', 'Terminale D')", []).unwrap();
+        conn.execute(
+            "INSERT INTO classes (id, school_id, academic_year_id, name, level_id, series_id)
+             VALUES ('cls-del-2', 'school-sync-1', 'ay-1', 'TD 1', 'lev-del-2', 'ser-del-3')",
+            [],
+        )
+        .unwrap();
+
+        soft_delete_entity(&conn, "sections", "sec-del-2", Some("school-sync-1"))
+            .expect("suppression section doit réussir");
+
+        let sec2_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sections WHERE id = 'sec-del-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let lev2_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM levels WHERE id = 'lev-del-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ser3_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM series WHERE id = 'ser-del-3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sec2_count, 0);
+        assert_eq!(lev2_count, 0);
+        assert_eq!(ser3_count, 0);
+
+        let (cls_lev3, cls_ser3): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT level_id, series_id FROM classes WHERE id = 'cls-del-2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cls_lev3, None);
+        assert_eq!(cls_ser3, None);
+    }
+
+    #[test]
+    fn test_school_isolation_pedagogical_structure() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+
+        // 1. Rejet si school_id n'existe pas localement
+        let sec_unknown_school = json!({
+            "id": "sec-ghost-1",
+            "school_id": "school-ghost-9999",
+            "name": "Section Fantôme",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let res = upsert_entity(&conn, "sections", &sec_unknown_school);
+        assert!(
+            res.is_err(),
+            "L'insertion d'une section pour une école inconnue localement doit échouer"
+        );
+        assert!(res.unwrap_err().contains("Isolation école violée"));
+
+        // 2. Création valide pour school-sync-1 et school-sync-1000
+        let sec_school_a = json!({
+            "id": "sec-a",
+            "school_id": "school-sync-1",
+            "name": "Primaire Ecole A",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let sec_school_b = json!({
+            "id": "sec-b",
+            "school_id": "school-sync-1000",
+            "name": "Primaire Ecole B",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        upsert_entity(&conn, "sections", &sec_school_a).unwrap();
+        upsert_entity(&conn, "sections", &sec_school_b).unwrap();
+
+        // 3. Rejet d'un level pour school-sync-1 avec section_id de school-sync-1000
+        let lev_cross_school = json!({
+            "id": "lev-cross-1",
+            "school_id": "school-sync-1",
+            "section_id": "sec-b", // appartient à school-sync-1000 !
+            "name": "CM2 Piraté",
+            "level_order": 5,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let res_cross = upsert_entity(&conn, "levels", &lev_cross_school);
+        assert!(
+            res_cross.is_err(),
+            "L'insertion d'un niveau référençant une section d'une autre école doit échouer"
+        );
+        assert!(res_cross.unwrap_err().contains("Violation d'intégrité"));
+
+        // 4. Rejet d'une série pour school-sync-1 avec level_id de school-sync-1000
+        let lev_school_b = json!({
+            "id": "lev-b",
+            "school_id": "school-sync-1000",
+            "section_id": "sec-b",
+            "name": "CM2 Ecole B",
+            "level_order": 5,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        upsert_entity(&conn, "levels", &lev_school_b).unwrap();
+
+        let ser_cross_school = json!({
+            "id": "ser-cross-1",
+            "school_id": "school-sync-1",
+            "level_id": "lev-b", // appartient à school-sync-1000 !
+            "name": "Série Piratée",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let res_ser_cross = upsert_entity(&conn, "series", &ser_cross_school);
+        assert!(
+            res_ser_cross.is_err(),
+            "L'insertion d'une série référençant un niveau d'une autre école doit échouer"
+        );
+        assert!(res_ser_cross.unwrap_err().contains("Violation d'intégrité"));
+
+        // 5. Étanchéité des données : les données de school-sync-1 et school-sync-1000 restent isolées
+        let count_sec_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sections WHERE school_id = 'school-sync-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let count_sec_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sections WHERE school_id = 'school-sync-1000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_sec_a, 1);
+        assert_eq!(count_sec_b, 1);
+    }
+
+    #[test]
+    fn test_upsert_id_collision_rejected() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Insérer section légitime pour school-sync-1
+        let sec_legit = json!({
+            "id": "sec-shared-id-1",
+            "school_id": "school-sync-1",
+            "name": "Section Originale",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        upsert_entity(&conn, "sections", &sec_legit).expect("insertion section légitime");
+
+        // Tenter d'écraser sec-shared-id-1 avec school-sync-1000
+        let sec_collision = json!({
+            "id": "sec-shared-id-1",
+            "school_id": "school-sync-1000",
+            "name": "Section Hostile",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let res = upsert_entity(&conn, "sections", &sec_collision);
+        assert!(
+            res.is_err(),
+            "La collision d'ID inter-écoles sur sections doit être rejetée"
+        );
+        let err_msg = res.unwrap_err();
+        assert!(
+            err_msg.contains("Isolation école violée"),
+            "Message attendu : {}",
+            err_msg
+        );
+
+        // Vérifier que la section originale est restée intacte
+        let owner: String = conn
+            .query_row(
+                "SELECT school_id FROM sections WHERE id = 'sec-shared-id-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner, "school-sync-1");
+    }
+
+    #[test]
+    fn test_upsert_missing_parent_rejected() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Level avec section_id inexistant
+        let lev_orphan = json!({
+            "id": "lev-orphan-1",
+            "school_id": "school-sync-1",
+            "section_id": "sec-non-existent",
+            "name": "Niveau Orphelin",
+            "level_order": 1,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let res_lev = upsert_entity(&conn, "levels", &lev_orphan);
+        assert!(
+            res_lev.is_err(),
+            "Level sans parent existant doit être rejeté"
+        );
+        assert!(res_lev.unwrap_err().contains("introuvable localement"));
+
+        // Series avec level_id inexistant
+        let ser_orphan = json!({
+            "id": "ser-orphan-1",
+            "school_id": "school-sync-1",
+            "level_id": "lev-non-existent",
+            "name": "Série Orpheline",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let res_ser = upsert_entity(&conn, "series", &ser_orphan);
+        assert!(
+            res_ser.is_err(),
+            "Series sans parent existant doit être rejeté"
+        );
+        assert!(res_ser.unwrap_err().contains("introuvable localement"));
+    }
+
+    #[test]
+    fn test_soft_delete_cross_school_rejected() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Créer une section pour school-sync-1
+        conn.execute("INSERT INTO sections (id, school_id, name) VALUES ('sec-safe-1', 'school-sync-1', 'Section Protégée')", []).unwrap();
+
+        // 1. Tenter la suppression avec un school_id hostile (école 1000 essaie de supprimer l'entité de l'école 1)
+        let res_hostile =
+            soft_delete_entity(&conn, "sections", "sec-safe-1", Some("school-sync-1000"));
+        assert!(
+            res_hostile.is_err(),
+            "Suppression avec école hostile doit être rejetée"
+        );
+        let err_msg = res_hostile.unwrap_err();
+        assert!(
+            err_msg.contains("Isolation école violée"),
+            "Message attendu : {}",
+            err_msg
+        );
+
+        // 2. Tenter la suppression sans contexte d'école
+        let res_no_ctx = soft_delete_entity(&conn, "sections", "sec-safe-1", None);
+        assert!(
+            res_no_ctx.is_err(),
+            "Suppression sans contexte d'école doit être rejetée"
+        );
+        assert!(res_no_ctx
+            .unwrap_err()
+            .contains("manque le contexte d'établissement"));
+
+        // 3. Vérifier que l'entité n'a pas été supprimée
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sections WHERE id = 'sec-safe-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "La section originale doit toujours être présente");
+    }
+
+    #[test]
+    fn test_cross_school_queue_non_blocking() {
+        let (_guard, db_path) = setup_test_db();
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Mutation PENDING pour école A (sections)
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status)
+             VALUES ('m-sec-a', 'school-sync-1', 'sections', 'sec-a', 'INSERT', '{}', 'PENDING')",
+            [],
+        ).unwrap();
+
+        // Mutation PENDING pour école B (sections)
+        // Vérifier que levels pour école B n'est pas bloqué si seule école A a une mutation de sections
+        let blockers_b = blocking_parents(&db_path, "levels", Some("school-sync-1000"));
+        assert!(
+            blockers_b.is_empty(),
+            "Ecole B ne doit pas être bloquée par la mutation sections de l'école A"
+        );
+
+        // Mais école A est bien bloquée pour son propre level
+        let blockers_a = blocking_parents(&db_path, "levels", Some("school-sync-1"));
+        assert_eq!(
+            blockers_a,
+            vec!["sections".to_string()],
+            "Ecole A doit être bloquée par sa propre mutation sections"
+        );
     }
 }

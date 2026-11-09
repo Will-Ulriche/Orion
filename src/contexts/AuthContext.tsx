@@ -257,6 +257,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           effectiveRoles = ['DIRECTION'];
         }
 
+        // Établir la session locale authentifiée côté backend Rust via Supabase Auth & RLS
+        if (userSession.access_token && userSession.access_token !== 'offline') {
+          try {
+            await invoke('establish_online_session', {
+              token: userSession.access_token,
+              schoolId: schoolId || null,
+            });
+          } catch (tokErr) {
+            console.warn('Erreur establish_online_session:', tokErr);
+            try {
+              await invoke('set_sync_access_token', { token: userSession.access_token });
+            } catch (_) {}
+          }
+        }
+
+        // Si le rôle est SUPER_ADMIN, tenter l'amorçage initial sécurisé
+        // (requis lors de la première installation sur une base vierge)
+        if (effectiveRoles.includes('SUPER_ADMIN') && userSession.access_token && userSession.access_token !== 'offline') {
+          try {
+            await invoke('bootstrap_initial_super_admin', {
+              token: userSession.access_token,
+              schoolId: schoolId || 'school-main',
+            });
+          } catch (bErr) {
+            // Rejet normal si le premier super admin a déjà été amorcé
+            console.debug('Amorçage initial SUPER_ADMIN:', bErr);
+          }
+        }
+
         // Rapatrier les r�les vers SQLite local
         for (const roleName of effectiveRoles) {
           try {

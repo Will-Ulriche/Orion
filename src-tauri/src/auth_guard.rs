@@ -1,7 +1,9 @@
-﻿use std::sync::Mutex;
+use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
+#[cfg(test)]
 use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+#[cfg(test)]
 use dotenvy::dotenv;
 
 const LOCAL_SESSION_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
@@ -24,17 +26,21 @@ pub(crate) fn lock_test_session() -> std::sync::MutexGuard<'static, ()> {
     TEST_SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[derive(Deserialize, Debug, Clone)]
-struct JwtClaims {
-    sub: Option<String>,
-    email: Option<String>,
-    // ConservÃ© pour la sÃ©mantique JWT (expiration portÃ©e par le claim) ;
-    // la validation effective est dÃ©lÃ©guÃ©e Ã  jsonwebtoken via Validation.
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use tests::{make_test_jwt, make_test_jwt_with_role};
+
+#[derive(Deserialize, serde::Serialize, Debug, Clone)]
+pub struct JwtClaims {
+    pub sub: Option<String>,
+    pub email: Option<String>,
+    // Conservé pour la sémantique JWT (expiration portée par le claim) ;
+    // la validation effective est déléguée à jsonwebtoken via Validation.
     #[allow(dead_code)]
-    exp: Option<i64>,
-    // Claims Supabase standard â€” prÃ©sents dans chaque JWT Ã©mis par Supabase Auth.
-    // On ne les exige pas tous (certains projets les omettent) mais on les valide
-    // si `jsonwebtoken` les vÃ©rifie (iss, aud sont dans Validation).
+    pub exp: Option<i64>,
+    pub role: Option<String>,
+    pub user_metadata: Option<serde_json::Value>,
+    pub app_metadata: Option<serde_json::Value>,
 }
 
 /// Enregistre ou efface la session utilisateur courante en mÃ©moire Rust
@@ -269,12 +275,13 @@ pub fn fetch_user_roles(conn: &Connection, user_id: &str, school_id: Option<&str
 /// Lit le secret JWT Supabase depuis l'environnement.
 /// La variable SUPABASE_JWT_SECRET est disponible dans le dashboard Supabase
 /// (Settings â†’ API â†’ JWT Secret). Elle ne doit jamais Ãªtre committÃ©e.
+#[cfg(test)]
 fn supabase_jwt_secret() -> Option<String> {
-    // Ordre de prioritÃ© : variable d'environnement runtime, puis .env chargÃ© par dotenvy.
+    // Ordre de priorité : variable d'environnement runtime, puis .env chargé par dotenvy.
     std::env::var("SUPABASE_JWT_SECRET").ok().filter(|s| !s.is_empty())
 }
 
-/// Ã‰metteurs Supabase acceptÃ©s selon la configuration rÃ©elle du projet.
+#[cfg(test)]
 fn supabase_expected_issuers() -> Vec<String> {
     let _ = dotenv();
     let mut issuers = vec!["supabase".to_string()];
@@ -291,58 +298,289 @@ fn supabase_expected_issuers() -> Vec<String> {
     issuers
 }
 
-/// VÃ©rifie et dÃ©code un JWT Supabase avec validation cryptographique complÃ¨te.
-///
-/// ContrÃ´les effectuÃ©s par `jsonwebtoken` :
-/// - Signature HMAC-SHA256 avec le secret Supabase (rejet si invalide ou absente)
-/// - Expiration (`exp`) avec tolÃ©rance d'horloge de 10s maximum
-/// - Audience (`aud`) â€” doit Ãªtre "authenticated" (token utilisateur Supabase)
-/// - Ã‰metteur (`iss`) â€” doit correspondre Ã  l'instance Supabase configurÃ©e ou "supabase"
-///
-/// ContrÃ´le supplÃ©mentaire :
-/// - Si le secret n'est pas configurÃ©, le token est systÃ©matiquement rejetÃ© :
-///   il vaut mieux refuser un accÃ¨s lÃ©gitime que d'accepter un token non vÃ©rifiÃ©.
-fn decode_jwt_token(token: &str) -> Option<JwtClaims> {
+#[cfg(test)]
+pub(crate) fn decode_jwt_token(token: &str) -> Option<JwtClaims> {
     let secret = supabase_jwt_secret().or_else(|| {
-        // Tentative de chargement depuis .env (environnement de dÃ©veloppement)
         let _ = dotenv();
         std::env::var("SUPABASE_JWT_SECRET").ok().filter(|s| !s.is_empty())
     })?;
 
     let key = DecodingKey::from_secret(secret.as_bytes());
 
-    // HS256 est l'algorithme imposÃ© par Supabase pour ses JWTs.
-    // On refuse explicitement tout autre algorithme (prÃ©vention de l'attaque
-    // Â« alg:none Â» et des substitutions RS256/HS512).
+    // HS256 est l'algorithme imposé par Supabase pour ses JWTs.
+    // On refuse explicitement tout autre algorithme (prévention de l'attaque
+    // « alg:none » et des substitutions RS256/HS512).
     let mut validation = Validation::new(Algorithm::HS256);
-    // VÃ©rification stricte d'expiration avec 10s de tolÃ©rance horloge
+    // Vérification stricte d'expiration avec 10s de tolérance horloge
     validation.validate_exp = true;
     validation.leeway = 10;
 
-    // VÃ©rification de l'audience : un token d'authentification utilisateur Supabase
+    // Vérification de l'audience : un token d'authentification utilisateur Supabase
     // porte obligatoirement l'audience "authenticated".
     validation.set_audience(&["authenticated"]);
 
-    // VÃ©rification de l'Ã©metteur : doit provenir du service auth Supabase
+    // Vérification de l'émetteur : doit provenir du service auth Supabase
     let expected_issuers = supabase_expected_issuers();
     validation.set_issuer(&expected_issuers);
 
     match decode::<JwtClaims>(token, &key, &validation) {
         Ok(data) => Some(data.claims),
         Err(e) => {
-            eprintln!("[auth_guard] JWT rejetÃ© : {}", e);
+            eprintln!("[auth_guard] JWT rejeté : {}", e);
             None
         }
     }
 }
 
-/// RÃ©cupÃ¨re l'utilisateur actuellement authentifiÃ©, soit via la session locale Rust,
-/// soit via un JWT Supabase actif. VÃ©rifie toujours que le compte est actif.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct CloudAuthUser {
+    pub id: String,
+    pub email: Option<String>,
+}
+
+/// Analyse et valide la réponse brute de Supabase Auth (`GET /auth/v1/user`).
+/// Rejette tout statut non-200 (401, 403, 500...) et toute charge utile sans id valide.
+pub fn parse_supabase_auth_user_response(
+    status_code: u16,
+    body: &str,
+) -> Result<CloudAuthUser, String> {
+    if status_code != 200 {
+        return Err(format!(
+            "Jeton d'authentification cloud invalide ou expiré (statut HTTP {}).",
+            status_code
+        ));
+    }
+
+    let payload: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Réponse Supabase Auth invalide ou malformée : {}", e))?;
+
+    let user_id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "La réponse Supabase Auth ne contient aucun identifiant utilisateur valide.".to_string())?
+        .to_string();
+
+    let email = payload
+        .get("email")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Ok(CloudAuthUser { id: user_id, email })
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct CloudUserRole {
+    pub school_id: Option<String>,
+    pub role_name: String,
+}
+
+/// Analyse et valide la réponse brute de PostgREST (`GET /rest/v1/user_roles?select=school_id,roles(name)&user_id=eq.{id}`).
+/// Retourne la liste des couples (school_id, role_name) autorisés dans la base PostgreSQL sous RLS.
+/// Ignore totalement user_metadata ou tout autre claim non validé par la base.
+pub fn parse_cloud_user_roles_response(
+    status_code: u16,
+    body: &str,
+) -> Result<Vec<CloudUserRole>, String> {
+    if status_code != 200 {
+        return Err(format!(
+            "Vérification des autorisations cloud échouée (statut HTTP {}).",
+            status_code
+        ));
+    }
+
+    let json: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Réponse PostgREST malformée : {}", e))?;
+
+    let array = json
+        .as_array()
+        .ok_or_else(|| "Format de réponse inattendu pour les rôles utilisateur (tableau attendu).".to_string())?;
+
+    let mut user_roles = Vec::new();
+    for item in array {
+        let role_name = item
+            .get("roles")
+            .and_then(|r| r.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.trim().to_string());
+
+        if let Some(r_name) = role_name {
+            if !r_name.is_empty() {
+                let school_id = item
+                    .get("school_id")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+
+                user_roles.push(CloudUserRole {
+                    school_id,
+                    role_name: r_name,
+                });
+            }
+        }
+    }
+
+    Ok(user_roles)
+}
+
+/// Analyse et valide la réponse brute de PostgREST (`GET /rest/v1/user_roles?select=roles(name)&user_id=eq.{id}`).
+/// Vérifie la présence effective de SUPER_ADMIN dans les rôles canoniques de la base.
+/// Ignore totalement user_metadata ou tout autre claim non validé par la base.
+pub fn parse_cloud_super_admin_roles_response(
+    status_code: u16,
+    body: &str,
+) -> Result<(), String> {
+    let roles = parse_cloud_user_roles_response(status_code, body)?;
+    let has_super_admin = roles.iter().any(|r| r.role_name.eq_ignore_ascii_case("SUPER_ADMIN"));
+
+    if !has_super_admin {
+        return Err("Privilèges insuffisants : l'utilisateur authentifié ne possède pas le rôle SUPER_ADMIN dans le cloud.".to_string());
+    }
+
+    Ok(())
+}
+
+/// Vérifie l'authenticité et l'identité du jeton auprès de Supabase Auth
+/// via l'endpoint officiel `GET /auth/v1/user`.
+///
+/// Utilise uniquement l'URL Supabase et la clé anonyme publique (apikey).
+/// Supabase Auth valide la signature, l'audience, l'émetteur et l'expiration côté serveur.
+/// Tout jeton invalide, expiré ou forgé entraîne un refus HTTP (ex: 401 Unauthorized).
+pub async fn verify_supabase_user_token(
+    supabase_url: &str,
+    supabase_anon_key: &str,
+    token: &str,
+    client: &reqwest::Client,
+) -> Result<CloudAuthUser, String> {
+    let trimmed_token = token.trim();
+    if trimmed_token.is_empty() {
+        return Err("Jeton d'authentification absent ou vide.".to_string());
+    }
+
+    let trimmed_url = supabase_url.trim().trim_end_matches('/');
+    let trimmed_key = supabase_anon_key.trim();
+    if trimmed_url.is_empty() || trimmed_key.is_empty() {
+        return Err("Configuration Supabase manquante (URL ou clé anonyme absente).".to_string());
+    }
+
+    let endpoint = format!("{}/auth/v1/user", trimmed_url);
+    let resp = client
+        .get(&endpoint)
+        .header("apikey", trimmed_key)
+        .header("Authorization", format!("Bearer {}", trimmed_token))
+        .header("Content-Type", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("Impossible de contacter le service Supabase Auth : {}", e))?;
+
+    let status = resp.status().as_u16();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Impossible de lire la réponse Supabase Auth : {}", e))?;
+
+    parse_supabase_auth_user_response(status, &body)
+}
+
+/// Récupère auprès de PostgREST sous contrôle RLS les rôles et établissements effectifs
+/// associés à l'utilisateur connecté via son jeton Bearer.
+pub async fn fetch_cloud_user_roles(
+    supabase_url: &str,
+    supabase_anon_key: &str,
+    user_id: &str,
+    token: &str,
+    client: &reqwest::Client,
+) -> Result<Vec<CloudUserRole>, String> {
+    let trimmed_token = token.trim();
+    let trimmed_url = supabase_url.trim().trim_end_matches('/');
+    let trimmed_key = supabase_anon_key.trim();
+
+    if trimmed_token.is_empty() {
+        return Err("Jeton d'authentification absent ou vide.".to_string());
+    }
+    if user_id.trim().is_empty() {
+        return Err("Identifiant utilisateur manquant pour la vérification des rôles.".to_string());
+    }
+    if trimmed_url.is_empty() || trimmed_key.is_empty() {
+        return Err("Configuration Supabase manquante (URL ou clé anonyme absente).".to_string());
+    }
+
+    let endpoint = format!(
+        "{}/rest/v1/user_roles?select=school_id,roles(name)&user_id=eq.{}",
+        trimmed_url,
+        user_id
+    );
+
+    let resp = client
+        .get(&endpoint)
+        .header("apikey", trimmed_key)
+        .header("Authorization", format!("Bearer {}", trimmed_token))
+        .header("Content-Type", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("Impossible de contacter l'API Supabase PostgREST : {}", e))?;
+
+    let status = resp.status().as_u16();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Impossible de lire la réponse PostgREST : {}", e))?;
+
+    parse_cloud_user_roles_response(status, &body)
+}
+
+/// Vérifie que l'utilisateur authentifié possède formellement le rôle SUPER_ADMIN
+/// dans la table PostgreSQL `public.user_roles` via PostgREST `/rest/v1/user_roles`.
+///
+/// Cette requête s'exécute avec le jeton Bearer de l'utilisateur sous le contrôle strict
+/// des politiques RLS PostgreSQL distantes (sec007_user_roles_select_self).
+/// Les données de profil modifiables (user_metadata) sont TOTALEMENT ignorées.
+pub async fn verify_cloud_super_admin_role(
+    supabase_url: &str,
+    supabase_anon_key: &str,
+    user_id: &str,
+    token: &str,
+    client: &reqwest::Client,
+) -> Result<(), String> {
+    let roles = fetch_cloud_user_roles(supabase_url, supabase_anon_key, user_id, token, client).await?;
+    let has_super_admin = roles.iter().any(|r| r.role_name.eq_ignore_ascii_case("SUPER_ADMIN"));
+
+    if !has_super_admin {
+        return Err("Privilèges insuffisants : l'utilisateur authentifié ne possède pas le rôle SUPER_ADMIN dans le cloud.".to_string());
+    }
+
+    Ok(())
+}
+
+/// Vérifie de bout en bout l'identité et le privilège SUPER_ADMIN auprès de Supabase
+/// en utilisant exclusivement la configuration publique du projet (sans secret maître).
+pub async fn verify_cloud_super_admin_credentials(
+    token: &str,
+) -> Result<CloudAuthUser, String> {
+    let (supabase_url, supabase_anon_key) = crate::sync::get_supabase_config()?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Erreur création client HTTP : {}", e))?;
+
+    // 1. Validation d'authenticité et extraction de l'identité via Supabase Auth
+    let auth_user = verify_supabase_user_token(&supabase_url, &supabase_anon_key, token, &client).await?;
+
+    // 2. Validation d'autorité via les rôles réels en base PostgreSQL protégés par RLS
+    verify_cloud_super_admin_role(&supabase_url, &supabase_anon_key, &auth_user.id, token, &client).await?;
+
+    Ok(auth_user)
+}
+
+/// Récupère l'utilisateur actuellement authentifié via la session locale Rust en mémoire.
+/// Vérifie toujours que le compte est actif dans SQLite et rafraîchit ses rôles.
+/// Aucun secret symétrique maître n'est requis.
 pub fn get_authenticated_user(conn: &Connection) -> Result<SessionUser, String> {
-    // 1. Session locale en mÃ©moire
+    // 1. Session locale en mémoire (établie après validation explicite en ligne ou hors-ligne)
     if let Ok(guard) = CURRENT_SESSION.lock() {
         if let Some(ref session) = *guard {
-            // VÃ©rifier que le compte est toujours actif dans SQLite
+            // Vérifier que le compte est toujours actif dans SQLite
             let status: Option<String> = conn
                 .query_row(
                     "SELECT status FROM users WHERE id = ?1",
@@ -352,7 +590,7 @@ pub fn get_authenticated_user(conn: &Connection) -> Result<SessionUser, String> 
                 .ok();
 
             if status.as_deref() == Some("ACTIVE") {
-                // RafraÃ®chir les rÃ´les pour prendre en compte toute mise Ã  jour
+                // Rafraîchir les rôles pour prendre en compte toute mise à jour locale
                 let mut refreshed = session.clone();
                 refreshed.roles = fetch_user_roles(conn, &session.user_id, Some(&session.school_id));
                 refreshed.is_super_admin = refreshed.roles.iter().any(|r| r == "SUPER_ADMIN");
@@ -361,37 +599,7 @@ pub fn get_authenticated_user(conn: &Connection) -> Result<SessionUser, String> 
         }
     }
 
-    // 2. VÃ©rification via le token JWT Cloud actif (SYNC_ACCESS_TOKEN)
-    if let Some(token) = crate::sync::current_sync_access_token() {
-        if let Some(claims) = decode_jwt_token(&token) {
-            if let Some(sub) = claims.sub {
-                // L'utilisateur est authentifiÃ© auprÃ¨s de Supabase
-                // Trouver ou dÃ©duire son school_id depuis SQLite
-                let school_id: String = conn
-                    .query_row(
-                        "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
-                        rusqlite::params![sub],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or_else(|_| "school-main".to_string());
-
-                let roles = fetch_user_roles(conn, &sub, Some(&school_id));
-                let is_super_admin = roles.iter().any(|r| r == "SUPER_ADMIN");
-
-                let session = SessionUser {
-                    user_id: sub.clone(),
-                    school_id,
-                    email: claims.email,
-                    roles,
-                    is_super_admin,
-                };
-                set_current_session(Some(session.clone()));
-                return Ok(session);
-            }
-        }
-    }
-
-    Err("Non authentifiÃ© : aucune session active. Veuillez vous connecter.".to_string())
+    Err("Non authentifié : aucune session active. Veuillez vous connecter.".to_string())
 }
 
 /// Exige que l'appelant soit authentifiÃ©
@@ -727,7 +935,7 @@ mod tests {
     // std::env::set_var() dans le cadre du test (thread non parallÃ¨le grÃ¢ce
     // au verrou de session).
 
-    fn make_test_jwt(secret: &str, sub: &str, exp_offset_secs: i64) -> String {
+    pub(crate) fn make_test_jwt(secret: &str, sub: &str, exp_offset_secs: i64) -> String {
         let issuers = supabase_expected_issuers();
         let iss = issuers.last().cloned().unwrap_or_else(|| "supabase".to_string());
         make_test_jwt_custom(
@@ -736,21 +944,42 @@ mod tests {
             exp_offset_secs,
             "authenticated",
             &iss,
+            None,
         )
     }
 
-    fn make_test_jwt_custom(
+    #[allow(dead_code)]
+    pub(crate) fn make_test_jwt_with_role(
+        secret: &str,
+        sub: &str,
+        role: &str,
+        exp_offset_secs: i64,
+    ) -> String {
+        let issuers = supabase_expected_issuers();
+        let iss = issuers.last().cloned().unwrap_or_else(|| "supabase".to_string());
+        make_test_jwt_custom(
+            secret,
+            sub,
+            exp_offset_secs,
+            "authenticated",
+            &iss,
+            Some(role),
+        )
+    }
+
+    pub(crate) fn make_test_jwt_custom(
         secret: &str,
         sub: &str,
         exp_offset_secs: i64,
         aud: &str,
         iss: &str,
+        meta_role: Option<&str>,
     ) -> String {
         use jsonwebtoken::{encode, EncodingKey, Header, Algorithm};
         use serde_json::json;
 
         let now = chrono::Utc::now().timestamp();
-        let claims = json!({
+        let mut claims = json!({
             "sub": sub,
             "email": format!("{}@test.com", sub),
             "exp": now + exp_offset_secs,
@@ -760,9 +989,13 @@ mod tests {
             "iss": iss
         });
 
+        if let Some(r) = meta_role {
+            claims["user_metadata"] = json!({ "role": r });
+        }
+
         let header = Header::new(Algorithm::HS256);
         encode(&header, &claims, &EncodingKey::from_secret(secret.as_bytes()))
-            .expect("Impossible de crÃ©er le JWT de test")
+            .expect("Impossible de créer le JWT de test")
     }
 
     #[test]
@@ -848,10 +1081,11 @@ mod tests {
             3600,
             "anon",
             "https://reyxonfhvlybjhxlthvy.supabase.co/auth/v1",
+            None,
         );
         let result = decode_jwt_token(&token);
 
-        assert!(result.is_none(), "Un JWT avec une audience non autorisÃ©e doit Ãªtre rejetÃ©");
+        assert!(result.is_none(), "Un JWT avec une audience non autorisée doit être rejeté");
 
         std::env::remove_var("SUPABASE_JWT_SECRET");
     }
@@ -862,13 +1096,14 @@ mod tests {
         let secret = "test-secret-suffisamment-long-pour-hmac256";
         std::env::set_var("SUPABASE_JWT_SECRET", secret);
 
-        // Ã‰metteur non reconnu
+        // Émetteur non reconnu
         let token = make_test_jwt_custom(
             secret,
             "u-dir-a",
             3600,
             "authenticated",
             "https://evil-server.attacker.com/auth/v1",
+            None,
         );
         let result = decode_jwt_token(&token);
 
@@ -918,43 +1153,207 @@ mod tests {
         let conn = setup_test_db();
         clear_session();
 
-        let secret = "test-secret-suffisamment-long-pour-hmac256";
-        std::env::set_var("SUPABASE_JWT_SECRET", secret);
-
-        // 1. Cas falsifiÃ© : JWT forgÃ© pour usurper le compte u-sa (SUPER_ADMIN)
-        let forged = make_test_jwt("faux-secret-attaquant", "u-sa", 3600);
-        crate::sync::set_sync_access_token(Some(forged));
+        // 1. Un jeton placé arbitrairement dans sync_access_token ne suffit plus sans validation explicite
+        let arbitrary_token = "fake.bearer.jwt";
+        crate::sync::set_sync_access_token(Some(arbitrary_token.to_string()));
         clear_session();
 
-        // Les gardes d'autorisation doivent refuser l'accÃ¨s
-        assert!(require_authenticated(&conn).is_err(), "Un JWT falsifiÃ© ne doit pas donner accÃ¨s");
-        assert!(require_super_admin(&conn).is_err(), "Un JWT falsifiÃ© ne doit pas confÃ©rer les droits admin");
+        // Les gardes d'autorisation doivent refuser l'accès sans session locale établie
+        assert!(require_authenticated(&conn).is_err(), "Un jeton non validé ne doit pas donner accès");
+        assert!(require_super_admin(&conn).is_err(), "Un jeton non validé ne doit pas conférer les droits admin");
 
-        // 2. Cas expirÃ© : JWT pour u-dir-a mais expirÃ©
-        let expired = make_test_jwt(secret, "u-dir-a", -60);
-        crate::sync::set_sync_access_token(Some(expired));
-        clear_session();
+        // 2. Session établie légitimement pour u-dir-a
+        establish_local_session(&conn, "u-dir-a", "school-A").expect("La session légitime doit s'établir");
 
-        assert!(require_authenticated(&conn).is_err(), "Un JWT expirÃ© ne doit pas donner accÃ¨s");
-        assert!(require_direction_or_super_admin(&conn, Some("school-A")).is_err());
-
-        // 3. Cas valide : JWT lÃ©gitime pour u-dir-a
-        let valid = make_test_jwt(secret, "u-dir-a", 3600);
-        crate::sync::set_sync_access_token(Some(valid));
-        clear_session();
-
-        let session = get_authenticated_user(&conn).expect("Un JWT valide doit permettre l'accÃ¨s");
+        let session = get_authenticated_user(&conn).expect("Une session active doit permettre l'accès");
         assert_eq!(session.user_id, "u-dir-a");
         assert_eq!(session.school_id, "school-A");
         assert!(require_authenticated(&conn).is_ok());
         assert!(require_direction_or_super_admin(&conn, Some("school-A")).is_ok());
-        // L'isolation multi-Ã©cole reste respectÃ©e : pas d'accÃ¨s Ã  school-B
+        // L'isolation multi-école reste respectée : pas d'accès à school-B
         assert!(require_direction_or_super_admin(&conn, Some("school-B")).is_err());
 
         // Nettoyage
         crate::sync::set_sync_access_token(None);
         clear_session();
+    }
+
+    // ──────────────────────────────────────────────
+    // Tests de validation cloud sans secret maître (ORI-SEC-01A-FIX2)
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_supabase_auth_user_rejected_on_401() {
+        let res = parse_supabase_auth_user_response(401, r#"{"message":"Invalid or expired JWT"}"#);
+        assert!(res.is_err(), "Un jeton renvoyant 401 doit être rejeté");
+        assert!(res.unwrap_err().contains("invalide ou expiré"));
+    }
+
+    #[test]
+    fn test_parse_supabase_auth_user_rejected_on_http_errors() {
+        let res_403 = parse_supabase_auth_user_response(403, r#"{"error":"Forbidden"}"#);
+        assert!(res_403.is_err());
+        assert!(res_403.unwrap_err().contains("403"));
+
+        let res_500 = parse_supabase_auth_user_response(500, r#"{"error":"Internal Server Error"}"#);
+        assert!(res_500.is_err());
+        assert!(res_500.unwrap_err().contains("500"));
+    }
+
+    #[test]
+    fn test_parse_supabase_auth_user_success_extracts_id() {
+        let res = parse_supabase_auth_user_response(
+            200,
+            r#"{"id":"user-uuid-123","email":"admin@orion.app"}"#,
+        );
+        assert!(res.is_ok(), "Un jeton validé par Supabase Auth doit être accepté : {:?}", res);
+        let user = res.unwrap();
+        assert_eq!(user.id, "user-uuid-123");
+        assert_eq!(user.email.as_deref(), Some("admin@orion.app"));
+    }
+
+    #[test]
+    fn test_parse_supabase_auth_user_rejects_missing_or_empty_id() {
+        let res_missing = parse_supabase_auth_user_response(200, r#"{"email":"admin@orion.app"}"#);
+        assert!(res_missing.is_err());
+        assert!(res_missing.unwrap_err().contains("aucun identifiant utilisateur valide"));
+
+        let res_empty = parse_supabase_auth_user_response(200, r#"{"id":"   ","email":"admin@orion.app"}"#);
+        assert!(res_empty.is_err());
+        assert!(res_empty.unwrap_err().contains("aucun identifiant utilisateur valide"));
+    }
+
+    #[test]
+    fn test_parse_supabase_auth_user_rejects_malformed_json() {
+        let res = parse_supabase_auth_user_response(200, r#"{malformed_json"#);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("invalide ou malformée"));
+    }
+
+    #[test]
+    fn test_parse_cloud_super_admin_roles_rejects_user_metadata_injection() {
+        // L'attaquant prétend être SUPER_ADMIN dans ses user_metadata,
+        // mais n'a AUCUN rôle SUPER_ADMIN dans la table PostgreSQL user_roles (renvoie [])
+        let res = parse_cloud_super_admin_roles_response(200, r#"[]"#);
+        assert!(res.is_err(), "Un utilisateur sans entrée SUPER_ADMIN dans PostgreSQL doit être rejeté");
+        assert!(res.unwrap_err().contains("Privilèges insuffisants"));
+    }
+
+    #[test]
+    fn test_parse_cloud_super_admin_roles_rejects_other_roles() {
+        let body = r#"[{"roles":{"name":"DIRECTION"}},{"roles":{"name":"PROFESSEUR"}}]"#;
+        let res = parse_cloud_super_admin_roles_response(200, body);
+        assert!(res.is_err(), "Les rôles autres que SUPER_ADMIN ne doivent pas suffire");
+        assert!(res.unwrap_err().contains("Privilèges insuffisants"));
+    }
+
+    #[test]
+    fn test_parse_cloud_super_admin_roles_accepts_when_present_in_db() {
+        let body = r#"[{"roles":{"name":"SUPER_ADMIN"}}]"#;
+        let res = parse_cloud_super_admin_roles_response(200, body);
+        assert!(res.is_ok(), "Un utilisateur avec SUPER_ADMIN dans PostgreSQL doit être accepté : {:?}", res);
+
+        let body_case_insensitive = r#"[{"roles":{"name":"super_admin"}}]"#;
+        let res_ci = parse_cloud_super_admin_roles_response(200, body_case_insensitive);
+        assert!(res_ci.is_ok(), "La comparaison doit être insensible à la casse");
+    }
+
+    #[test]
+    fn test_parse_cloud_super_admin_roles_rejects_http_errors() {
+        let res_403 = parse_cloud_super_admin_roles_response(403, r#"{"message":"Forbidden"}"#);
+        assert!(res_403.is_err());
+        assert!(res_403.unwrap_err().contains("403"));
+
+        let res_500 = parse_cloud_super_admin_roles_response(500, r#"{"message":"Internal Server Error"}"#);
+        assert!(res_500.is_err());
+        assert!(res_500.unwrap_err().contains("500"));
+    }
+
+    #[test]
+    fn test_parse_cloud_super_admin_roles_rejects_malformed_json_and_shapes() {
+        let res_malformed = parse_cloud_super_admin_roles_response(200, r#"{not a valid json"#);
+        assert!(res_malformed.is_err());
+
+        let res_object = parse_cloud_super_admin_roles_response(200, r#"{"roles":{"name":"SUPER_ADMIN"}}"#);
+        assert!(res_object.is_err());
+        assert!(res_object.unwrap_err().contains("tableau attendu"));
+    }
+
+    #[test]
+    fn test_verify_cloud_functions_validate_input_parameters() {
+        let client = reqwest::Client::new();
+
+        // 1. Token vide
+        let res_empty_token = tauri::async_runtime::block_on(async {
+            verify_supabase_user_token("https://example.supabase.co", "anon-key", "   ", &client).await
+        });
+        assert!(res_empty_token.is_err());
+        assert!(res_empty_token.unwrap_err().contains("Jeton d'authentification absent ou vide"));
+
+        // 2. URL ou clé vide
+        let res_missing_config = tauri::async_runtime::block_on(async {
+            verify_supabase_user_token("", "anon-key", "valid-token", &client).await
+        });
+        assert!(res_missing_config.is_err());
+        assert!(res_missing_config.unwrap_err().contains("Configuration Supabase manquante"));
+
+        // 3. user_id manquant pour les rôles
+        let res_missing_user = tauri::async_runtime::block_on(async {
+            verify_cloud_super_admin_role("https://example.supabase.co", "anon-key", "", "valid-token", &client).await
+        });
+        assert!(res_missing_user.is_err());
+        assert!(res_missing_user.unwrap_err().contains("Identifiant utilisateur manquant"));
+    }
+
+    #[test]
+    fn test_parse_cloud_user_roles_response_extracts_roles_and_schools() {
+        let body = r#"[
+            {"school_id":"school-alpha","roles":{"name":"DIRECTION"}},
+            {"school_id":"school-beta","roles":{"name":"PROFESSEUR"}},
+            {"school_id":null,"roles":{"name":"SUPER_ADMIN"}}
+        ]"#;
+
+        let res = parse_cloud_user_roles_response(200, body);
+        assert!(res.is_ok());
+        let roles = res.unwrap();
+        assert_eq!(roles.len(), 3);
+        assert_eq!(roles[0], CloudUserRole { school_id: Some("school-alpha".to_string()), role_name: "DIRECTION".to_string() });
+        assert_eq!(roles[1], CloudUserRole { school_id: Some("school-beta".to_string()), role_name: "PROFESSEUR".to_string() });
+        assert_eq!(roles[2], CloudUserRole { school_id: None, role_name: "SUPER_ADMIN".to_string() });
+    }
+
+    #[test]
+    fn test_parse_cloud_user_roles_response_handles_empty_array() {
+        let body = r#"[]"#;
+        let res = parse_cloud_user_roles_response(200, body);
+        assert!(res.is_ok());
+        let roles = res.unwrap();
+        assert!(roles.is_empty());
+    }
+
+    #[test]
+    fn test_get_authenticated_user_works_from_current_session_without_secret() {
+        let _guard = lock_test_session();
+        clear_session();
+        let conn = setup_test_db();
+
         std::env::remove_var("SUPABASE_JWT_SECRET");
+
+        // 1. Sans session en mémoire : rejeté
+        let res_no_session = get_authenticated_user(&conn);
+        assert!(res_no_session.is_err());
+
+        // 2. Session établie explicitement dans SQLite
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+
+        // 3. get_authenticated_user réussit et extrait les rôles réels de SQLite
+        let user = get_authenticated_user(&conn).expect("Session active doit être acceptée");
+        assert_eq!(user.user_id, "u-dir-a");
+        assert_eq!(user.school_id, "school-A");
+        assert!(user.roles.contains(&"DIRECTION".to_string()));
+        assert!(!user.is_super_admin);
+
+        clear_session();
     }
 }
 

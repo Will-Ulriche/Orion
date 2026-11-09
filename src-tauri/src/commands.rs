@@ -1,6 +1,6 @@
 use tauri::State;
 use tauri::Manager;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::Mutex;
 use sysinfo::System;
 use serde::{Deserialize, Serialize};
@@ -309,112 +309,439 @@ pub fn get_current_user_roles(state: State<'_, DbState>, user_id: String, school
     Ok(roles)
 }
 
-/// Synchronise localement le rôle (issu du cloud) de l'utilisateur connecté.
-/// Crée le rôle s'il n'existe pas, puis l'associe à l'utilisateur pour l'école.
-/// Permet à l'app hors-ligne de connaître le rôle SUPER_ADMIN après la 1ère
-/// connexion en ligne.
+/// Synchronise localement le rôle d'un utilisateur.
+/// Nécessite une session authentifiée valide :
+/// - Seul un SUPER_ADMIN peut attribuer le rôle SUPER_ADMIN.
+/// - Pour les autres rôles, l'appelant doit être SUPER_ADMIN ou DIRECTION de l'établissement cible.
+/// - Les rôles inconnus ne peuvent pas être créés dynamiquement : ils doivent préexister dans `roles`.
 #[tauri::command]
 pub fn set_local_user_role(user_id: String, school_id: String, role_name: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    set_local_user_role_conn(&conn, &user_id, &school_id, &role_name)
+}
 
-    let is_target_super_admin = role_name.trim().eq_ignore_ascii_case("SUPER_ADMIN");
+/// Implémentation isolée de `set_local_user_role` directement testable sur une connexion SQLite.
+pub fn set_local_user_role_conn(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    school_id: &str,
+    role_name: &str,
+) -> Result<(), String> {
+    let caller = crate::auth_guard::get_authenticated_user(conn)
+        .map_err(|_| "Action refusée : session non authentifiée ou expirée.".to_string())?;
 
-    // (ORI-SEC-003) : L'attribution du rôle SUPER_ADMIN requiert d'être authentifié comme SUPER_ADMIN
+    let trimmed_role = role_name.trim();
+    if trimmed_role.is_empty() {
+        return Err("Le nom de rôle ne peut pas être vide.".to_string());
+    }
+
+    let is_target_super_admin = trimmed_role.eq_ignore_ascii_case("SUPER_ADMIN");
+
+    // Contrôle d'autorisation explicite
     if is_target_super_admin {
-        let auth_res = crate::auth_guard::require_super_admin(&conn);
-        if auth_res.is_err() {
-            // Seule exception : aucun SUPER_ADMIN n'existe encore en base locale (amorçage initial)
-            let existing_sa: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM user_roles ur
-                 JOIN roles r ON r.id = ur.role_id
-                 WHERE r.name = 'SUPER_ADMIN'",
-                [],
-                |row| row.get(0),
-            ).unwrap_or(0);
-            if existing_sa > 0 {
-                return Err("Action refusée : seul un Super Administrateur peut attribuer le rôle SUPER_ADMIN.".to_string());
-            }
+        // Seul un Super Administrateur authentifié peut attribuer le rôle SUPER_ADMIN
+        if !caller.is_super_admin {
+            return Err("Action refusée : seul un Super Administrateur peut attribuer le rôle SUPER_ADMIN.".to_string());
         }
     } else {
-        // Pour les autres rôles :
-        // L'appelant doit être Direction de cette école, Super Admin,
-        // OU s'il synchronise son propre compte lors de son login (en ligne ou hors-ligne).
-        let caller = crate::auth_guard::get_authenticated_user(&conn);
-        match caller {
-            Ok(ref sess) if sess.user_id == user_id => {
-                // Synchronisation de son propre rôle lors de la connexion
-            }
-            Ok(ref sess) if sess.is_super_admin => {
-                // Super admin autorisé sur tout
-            }
-            Ok(ref sess) if sess.roles.iter().any(|r| r == "DIRECTION") => {
-                if sess.school_id != school_id && school_id != "school-1" && school_id != "school-main" {
-                    return Err("Action refusée : vous n'avez pas autorité sur cet établissement.".to_string());
-                }
-            }
-            _ => {
-                // Si aucune session n'est encore enregistrée en mémoire, vérifier si l'utilisateur existe déjà
-                let user_exists: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM users WHERE id = ?1 AND status = 'ACTIVE'",
-                    rusqlite::params![user_id],
-                    |row| row.get(0),
-                ).unwrap_or(0);
-                if user_exists == 0 {
-                    return Err("Action refusée : session non authentifiée ou privilèges insuffisants.".to_string());
-                }
-            }
+        // Pour les autres rôles (DIRECTION, SECRETAIRE, PROFESSEUR, etc.) :
+        // L'appelant doit être SUPER_ADMIN (global) ou DIRECTION sur l'établissement cible school_id
+        let is_direction_for_school = caller.roles.iter().any(|r| r == "DIRECTION") && caller.school_id == school_id;
+        if !caller.is_super_admin && !is_direction_for_school {
+            return Err("Action refusée : vous n'avez pas l'autorité nécessaire pour attribuer des rôles dans cet établissement.".to_string());
         }
     }
 
-    // École : réutilise si déjà connue, sinon crée un libellé par défaut.
+    // Utilisateur cible : doit exister et être actif dans SQLite
+    let user_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM users WHERE id = ?1 AND status = 'ACTIVE'",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if user_exists == 0 {
+        return Err("Utilisateur local introuvable ou inactif.".to_string());
+    }
+
+    // Résolution stricte du rôle : doit préexister dans la table `roles` (pas de création dynamique)
+    let role_id: String = conn
+        .query_row(
+            "SELECT id FROM roles WHERE UPPER(name) = UPPER(?1)",
+            rusqlite::params![trimmed_role],
+            |row| row.get(0),
+        )
+        .map_err(|_| format!("Rôle invalide ou inexistant : '{}'. L'attribution est refusée.", trimmed_role))?;
+
+    // École : réutilise si déjà connue, sinon crée un libellé par défaut
     conn.execute(
         "INSERT INTO schools (id, name) VALUES (?1, ?2) ON CONFLICT(id) DO NOTHING",
         rusqlite::params![school_id, "École"],
-    ).map_err(|e| format!("Erreur sync école: {}", e))?;
+    )
+    .map_err(|e| format!("Erreur sync école: {}", e))?;
 
-    // Utilisateur : doit exister (normalement créé par sync_local_user).
-    let user_exists: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM users WHERE id = ?1",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).map_err(|e| e.to_string())?;
-    if user_exists == 0 {
-        return Err("Utilisateur local introuvable.".to_string());
-    }
+    // Association user_roles : évite les doublons
+    let link_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_roles WHERE user_id = ?1 AND school_id = ?2 AND role_id = ?3",
+            rusqlite::params![user_id, school_id, role_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
 
-    // Rôle : récupère par nom, sinon l'insère.
-    let existing_role: Option<String> = conn.query_row(
-        "SELECT id FROM roles WHERE name = ?1",
-        rusqlite::params![role_name],
-        |row| row.get::<_, String>(0),
-    ).ok();
-    let role_id = match existing_role {
-        Some(id) => id,
-        None => {
-            let new_id = format!("role-{}", role_name.to_lowercase());
-            conn.execute(
-                "INSERT INTO roles (id, name) VALUES (?1, ?2)",
-                rusqlite::params![new_id, role_name],
-            ).map_err(|e| format!("Erreur création rôle: {}", e))?;
-            new_id
-        }
-    };
-
-    // Association user_roles : évite les doublons.
-    let link_exists: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM user_roles WHERE user_id = ?1 AND school_id = ?2 AND role_id = ?3",
-        rusqlite::params![user_id, school_id, role_id],
-        |row| row.get(0),
-    ).map_err(|e| e.to_string())?;
     if link_exists == 0 {
         let link_id = format!("ur-{}-{}-{}", user_id, school_id, role_id);
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![link_id, user_id, school_id, role_id],
-        ).map_err(|e| format!("Erreur attribution rôle: {}", e))?;
+        )
+        .map_err(|e| format!("Erreur attribution rôle: {}", e))?;
     }
 
     Ok(())
+}
+
+/// Amorçage contrôlé et atomique du premier Super Administrateur local.
+/// Cette fonction opère sous verrou d'écriture SQLite immédiat (TransactionBehavior::Immediate)
+/// et ne peut réussir QUE si aucun Super Administrateur n'existe dans la base locale.
+/// En cas de concurrence ou d'erreur, un rollback immédiat et automatique est garanti.
+pub fn bootstrap_initial_super_admin_conn(
+    conn: &mut rusqlite::Connection,
+    user_id: &str,
+    school_id: &str,
+) -> Result<(), String> {
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Impossible de démarrer la transaction d'amorçage : {}", e))?;
+
+    // 1. Vérification atomique sous verrou exclusif immédiat
+    let existing_sa: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE r.name = 'SUPER_ADMIN'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if existing_sa > 0 {
+        return Err("Amorçage refusé : un Super Administrateur existe déjà dans la base locale.".to_string());
+    }
+
+    // 2. Vérification de l'utilisateur actif
+    let user_exists: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM users WHERE id = ?1 AND status = 'ACTIVE'",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if user_exists == 0 {
+        return Err("Amorçage refusé : utilisateur local introuvable ou inactif.".to_string());
+    }
+
+    // 3. Vérification du rôle dans le référentiel immuable
+    let role_id: String = tx
+        .query_row(
+            "SELECT id FROM roles WHERE name = 'SUPER_ADMIN'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Rôle SUPER_ADMIN introuvable dans le référentiel des rôles.".to_string())?;
+
+    // 4. Initialisation de l'établissement si nécessaire
+    tx.execute(
+        "INSERT INTO schools (id, name) VALUES (?1, 'École') ON CONFLICT(id) DO NOTHING",
+        rusqlite::params![school_id],
+    )
+    .map_err(|e| format!("Erreur initialisation école: {}", e))?;
+
+    // 5. Attribution du rôle SUPER_ADMIN
+    let link_id = format!("ur-{}-{}-{}", user_id, school_id, role_id);
+    tx.execute(
+        "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO NOTHING",
+        rusqlite::params![link_id, user_id, school_id, role_id],
+    )
+    .map_err(|e| format!("Erreur attribution amorçage SUPER_ADMIN: {}", e))?;
+
+    // 6. Validation atomique de la transaction
+    tx.commit().map_err(|e| format!("Erreur validation transaction amorçage: {}", e))?;
+
+    Ok(())
+}
+
+/// Amorçage sécurisé à partir d'une identité cloud vérifiée et autorisée.
+/// Vérifie la correspondance stricte de `target_user_id` si renseigné.
+pub fn bootstrap_super_admin_with_verified_user(
+    conn: &mut rusqlite::Connection,
+    verified_user: &crate::auth_guard::CloudAuthUser,
+    target_user_id: Option<&str>,
+    school_id: &str,
+    token: Option<&str>,
+) -> Result<String, String> {
+    if let Some(target) = target_user_id {
+        if target != verified_user.id {
+            return Err("Usurpation d'identité détectée : l'identifiant cible ne correspond pas à l'identité authentifiée.".to_string());
+        }
+    }
+
+    let email = verified_user.email.as_deref().unwrap_or("admin@orion.app");
+    conn.execute(
+        "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?2, 'ACTIVE')
+         ON CONFLICT(id) DO UPDATE SET email = excluded.email, status = 'ACTIVE'",
+        rusqlite::params![verified_user.id, email],
+    ).map_err(|e| format!("Erreur création utilisateur local : {}", e))?;
+
+    bootstrap_initial_super_admin_conn(conn, &verified_user.id, school_id)?;
+
+    if let Some(t) = token {
+        crate::sync::set_sync_access_token(Some(t.to_string()));
+    }
+    let _ = crate::auth_guard::establish_local_session(conn, &verified_user.id, school_id);
+
+    Ok(verified_user.id.clone())
+}
+
+/// Commande Tauri d'amorçage initial sécurisé du premier SUPER_ADMIN.
+/// Exige un jeton Supabase authentique validé par le cloud (Auth + table user_roles PostgreSQL).
+/// Aucun secret privé n'est nécessaire sur le poste client.
+/// Dès qu'un premier Super Administrateur existe, tout appel ultérieur est irrévocablement rejeté.
+#[tauri::command]
+pub async fn bootstrap_initial_super_admin(
+    token: String,
+    school_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let effective_school_id = school_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "school-main".to_string());
+
+    // 1. Validation de l'identité et des privilèges auprès du cloud (sans secret maître)
+    let auth_user = crate::auth_guard::verify_cloud_super_admin_credentials(&token).await?;
+
+    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données locale".to_string())?;
+
+    // L'identifiant local provient OBLIGATOIREMENT de l'identité validée par le cloud
+    let email = auth_user.email.unwrap_or_else(|| format!("{}@orion.app", &auth_user.id));
+    conn.execute(
+        "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?2, 'ACTIVE')
+         ON CONFLICT(id) DO UPDATE SET email = excluded.email, status = 'ACTIVE'",
+        rusqlite::params![auth_user.id, email],
+    ).map_err(|e| format!("Erreur initialisation utilisateur local : {}", e))?;
+
+    // 2. Amorçage atomique immédiat dans la base SQLite locale
+    bootstrap_initial_super_admin_conn(&mut *conn, &auth_user.id, &effective_school_id)?;
+
+    // 3. Établir la session locale et stocker le jeton de synchronisation
+    crate::sync::set_sync_access_token(Some(token));
+    let _ = crate::auth_guard::establish_local_session(&conn, &auth_user.id, &effective_school_id);
+
+    Ok(())
+}
+
+/// Établit la session locale en mémoire Rust pour un utilisateur authentifié auprès de Supabase.
+///
+/// Flux d'exécution sécurisé (ORI-SEC-01A-FIX3) :
+/// 1. Nettoyage préventif strict de toute ancienne session ou jeton en mémoire.
+/// 2. Validation d'authenticité et extraction de l'identité via Supabase Auth (GET /auth/v1/user) avec clé publique.
+/// 3. Extraction des rôles et des établissements rattachés via PostgREST (GET /rest/v1/user_roles) sous RLS (sec007_user_roles_select_self).
+/// 4. Déduction et contrôle de l'école effective :
+///    - SUPER_ADMIN : autorité globale sur tout établissement (school-main par défaut).
+///    - Autres rôles (DIRECTION, etc.) : restriction stricte aux établissements autorisés dans user_roles.
+/// 5. Transaction SQLite immédiate (users, schools, user_roles).
+/// 6. Enregistrement de CURRENT_SESSION et émission d'un jeton local de session opaque pour la persistance hors-ligne.
+#[tauri::command]
+pub async fn establish_online_session(
+    token: String,
+    school_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<LoginProfile, String> {
+    // 1. Nettoyage préventif : en cas d'échec ultérieur, aucune session fantôme ne subsiste
+    crate::auth_guard::clear_session();
+    crate::sync::set_sync_access_token(None);
+
+    let (supabase_url, supabase_anon_key) = crate::sync::get_supabase_config()?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Erreur création client HTTP : {}", e))?;
+
+    // 2. Vérification d'authenticité et extraction d'identité certifiée par Supabase Auth
+    let auth_user = crate::auth_guard::verify_supabase_user_token(&supabase_url, &supabase_anon_key, &token, &client).await?;
+
+    // 3. Extraction des autorisations réelles sous contrôle RLS
+    let cloud_roles = crate::auth_guard::fetch_cloud_user_roles(&supabase_url, &supabase_anon_key, &auth_user.id, &token, &client).await?;
+
+    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données locale".to_string())?;
+
+    establish_online_session_conn(&mut conn, &auth_user, &cloud_roles, school_id.as_deref(), &token)
+}
+
+/// Implémentation isolée testable de l'établissement de session en ligne sur une connexion SQLite.
+pub fn establish_online_session_conn(
+    conn: &mut rusqlite::Connection,
+    auth_user: &crate::auth_guard::CloudAuthUser,
+    cloud_roles: &[crate::auth_guard::CloudUserRole],
+    requested_school_id: Option<&str>,
+    token: &str,
+) -> Result<LoginProfile, String> {
+    // Nettoyer toute ancienne session
+    crate::auth_guard::clear_session();
+    crate::sync::set_sync_access_token(None);
+
+    let user_id = &auth_user.id;
+    let email = auth_user.email.as_deref().unwrap_or("user@orion.app");
+
+    // Vérifier l'état du compte dans SQLite s'il y existe déjà
+    let existing_status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM users WHERE id = ?1",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Erreur lecture utilisateur : {}", e))?;
+
+    if let Some(ref st) = existing_status {
+        if st != "ACTIVE" {
+            return Err("Ce compte est suspendu ou inactif dans la base locale.".to_string());
+        }
+    }
+
+    // Déterminer si l'utilisateur est SUPER_ADMIN (cloud ou SQLite local)
+    let has_cloud_sa = cloud_roles.iter().any(|r| r.role_name.eq_ignore_ascii_case("SUPER_ADMIN"));
+    let has_local_sa: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    let is_super_admin = has_cloud_sa || (has_local_sa > 0);
+
+    // Déterminer les écoles autorisées
+    let mut authorized_schools: Vec<String> = cloud_roles
+        .iter()
+        .filter_map(|r| r.school_id.clone())
+        .collect();
+
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT school_id FROM user_roles WHERE user_id = ?1 AND school_id IS NOT NULL") {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, String>(0)) {
+            for s in rows.filter_map(Result::ok) {
+                if !authorized_schools.contains(&s) {
+                    authorized_schools.push(s);
+                }
+            }
+        }
+    }
+
+    let effective_school_id = if is_super_admin {
+        requested_school_id
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("school-main")
+            .to_string()
+    } else {
+        if authorized_schools.is_empty() {
+            return Err("Aucun établissement autorisé n'est associé à ce compte.".to_string());
+        }
+
+        if let Some(req) = requested_school_id.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            if authorized_schools.iter().any(|s| s == req) {
+                req.to_string()
+            } else {
+                return Err(format!(
+                    "Accès refusé : vous n'êtes pas autorisé sur l'établissement '{}'.",
+                    req
+                ));
+            }
+        } else {
+            authorized_schools[0].clone()
+        }
+    };
+
+    // Transaction SQLite atomique
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Impossible de démarrer la transaction SQLite : {}", e))?;
+
+    tx.execute(
+        "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?2, 'ACTIVE')
+         ON CONFLICT(id) DO UPDATE SET email = excluded.email, status = 'ACTIVE'",
+        rusqlite::params![user_id, email],
+    ).map_err(|e| format!("Erreur synchronisation utilisateur : {}", e))?;
+
+    tx.execute(
+        "INSERT INTO schools (id, name) VALUES (?1, 'École') ON CONFLICT(id) DO NOTHING",
+        rusqlite::params![effective_school_id],
+    ).map_err(|e| format!("Erreur synchronisation école : {}", e))?;
+
+    for crole in cloud_roles {
+        let target_school = crole.school_id.as_deref().unwrap_or(&effective_school_id);
+        let _ = tx.execute(
+            "INSERT INTO schools (id, name) VALUES (?1, 'École') ON CONFLICT(id) DO NOTHING",
+            rusqlite::params![target_school],
+        );
+
+        let role_id: Option<String> = tx
+            .query_row(
+                "SELECT id FROM roles WHERE UPPER(name) = UPPER(?1)",
+                rusqlite::params![crole.role_name.trim()],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+
+        if let Some(rid) = role_id {
+            let link_id = format!("ur-{}-{}-{}", user_id, target_school, rid);
+            let _ = tx.execute(
+                "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO NOTHING",
+                rusqlite::params![link_id, user_id, target_school, rid],
+            );
+        }
+    }
+
+    tx.commit().map_err(|e| format!("Erreur validation transaction locale : {}", e))?;
+
+    // Établir la session locale en mémoire Rust
+    crate::sync::set_sync_access_token(Some(token.to_string()));
+    let session = crate::auth_guard::establish_local_session(conn, user_id, &effective_school_id)?;
+
+    // Émettre un jeton de session locale opaque pour la reprise hors-ligne
+    let issued = crate::auth_guard::issue_local_session_token(conn, user_id, &effective_school_id)?;
+
+    let (first_name, last_name, role_name): (Option<String>, Option<String>, Option<String>) = conn.query_row(
+        "SELECT p.first_name, p.last_name, r.name
+         FROM users u
+         LEFT JOIN profiles p ON p.user_id = u.id AND (p.school_id = ?2 OR p.school_id IS NULL)
+         LEFT JOIN user_roles ur ON ur.user_id = u.id AND (ur.school_id = ?2 OR ur.school_id IS NULL)
+         LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE u.id = ?1
+         LIMIT 1",
+        rusqlite::params![user_id, effective_school_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap_or((None, None, None));
+
+    Ok(LoginProfile {
+        user_id: user_id.to_string(),
+        email: email.to_string(),
+        username: Some(email.to_string()),
+        first_name,
+        last_name,
+        role_name: if session.is_super_admin { Some("SUPER_ADMIN".to_string()) } else { role_name },
+        school_id: effective_school_id,
+        session_token: issued.token,
+        session_expires_at: issued.expires_at,
+    })
 }
 
 
@@ -4978,7 +5305,7 @@ pub fn delete_local_user(user_id: String, state: State<'_, DbState>) -> Result<(
 // (identifiant + mot de passe attribués par la Direction)
 // ──────────────────────────────────────────────
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct LoginProfile {
     pub user_id: String,
     pub email: String,
@@ -6004,5 +6331,690 @@ mod auth_tests {
         assert_eq!(payload["est_prof_principal"], true);
         assert_eq!(payload["est_responsable_classe"], false);
         assert_eq!(payload["est_actif"], true);
+    }
+
+    #[test]
+    fn test_set_local_user_role_anonymous_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-target-1', 'target@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        // 1. Appel sans session pour rôle DIRECTION -> doit être rejeté
+        let res_dir = set_local_user_role_conn(&conn, "u-target-1", "school-1", "DIRECTION");
+        assert!(res_dir.is_err(), "Un appel anonyme ne doit pas pouvoir attribuer DIRECTION");
+        assert!(res_dir.unwrap_err().contains("session non authentifiée"));
+
+        // 2. Appel sans session pour rôle SUPER_ADMIN -> doit également être rejeté
+        let res_sa = set_local_user_role_conn(&conn, "u-target-1", "school-1", "SUPER_ADMIN");
+        assert!(res_sa.is_err(), "Un appel anonyme ne doit pas pouvoir attribuer SUPER_ADMIN");
+        assert!(res_sa.unwrap_err().contains("session non authentifiée"));
+    }
+
+    #[test]
+    fn test_set_local_user_role_standard_user_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let conn = setup_test_auth_db();
+
+        // Créer un utilisateur cible
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-target-2', 'target2@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        // Créer un utilisateur appelant avec rôle PROFESSEUR
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-caller-prof', 'prof@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let prof_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'PROFESSEUR'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-prof-caller', 'u-caller-prof', 'school-1', ?1)",
+            rusqlite::params![prof_role_id],
+        ).unwrap();
+
+        // Établir session professeur
+        crate::auth_guard::establish_local_session(&conn, "u-caller-prof", "school-1").unwrap();
+
+        // Le professeur ne peut pas s'auto-promouvoir DIRECTION
+        let res_self_dir = set_local_user_role_conn(&conn, "u-caller-prof", "school-1", "DIRECTION");
+        assert!(res_self_dir.is_err(), "Un professeur ne doit pas pouvoir s'auto-promouvoir DIRECTION");
+
+        // Le professeur ne peut pas promouvoir un autre utilisateur DIRECTION
+        let res_other_dir = set_local_user_role_conn(&conn, "u-target-2", "school-1", "DIRECTION");
+        assert!(res_other_dir.is_err(), "Un professeur ne doit pas pouvoir attribuer DIRECTION à autrui");
+
+        // Le professeur ne peut pas s'auto-promouvoir SUPER_ADMIN
+        let res_sa = set_local_user_role_conn(&conn, "u-caller-prof", "school-1", "SUPER_ADMIN");
+        assert!(res_sa.is_err(), "Un professeur ne doit pas pouvoir s'auto-promouvoir SUPER_ADMIN");
+    }
+
+    #[test]
+    fn test_set_local_user_role_direction_cannot_assign_super_admin() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-target-3', 'target3@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        // Créer session DIRECTION
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-caller-dir', 'dir@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-dir-caller', 'u-caller-dir', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-caller-dir", "school-1").unwrap();
+
+        // La direction ne peut JAMAIS attribuer le rôle SUPER_ADMIN
+        let res = set_local_user_role_conn(&conn, "u-target-3", "school-1", "SUPER_ADMIN");
+        assert!(res.is_err(), "La direction ne doit pas pouvoir attribuer le rôle SUPER_ADMIN");
+        assert!(res.unwrap_err().contains("seul un Super Administrateur"));
+    }
+
+    #[test]
+    fn test_set_local_user_role_direction_cross_school_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let conn = setup_test_auth_db();
+
+        // Créer deuxième école
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-target-4', 'target4@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        // Direction sur school-1
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-caller-dir-1', 'dir1@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-dir-1', 'u-caller-dir-1', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-caller-dir-1", "school-1").unwrap();
+
+        // Direction school-1 tente d'agir sur school-2
+        let res = set_local_user_role_conn(&conn, "u-target-4", "school-2", "SECRETAIRE");
+        assert!(res.is_err(), "La direction de school-1 ne doit pas pouvoir attribuer de rôle sur school-2");
+    }
+
+    #[test]
+    fn test_set_local_user_role_unknown_role_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-target-5', 'target5@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        // Créer session SUPER_ADMIN
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-caller-sa-5', 'sa5@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa-5', 'u-caller-sa-5', 'school-1', ?1)",
+            rusqlite::params![sa_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-caller-sa-5", "school-1").unwrap();
+
+        // Tentative d'attribuer un rôle inexistant dans le référentiel
+        let res = set_local_user_role_conn(&conn, "u-target-5", "school-1", "ROLE_INVENTE_MALVEILLANT");
+        assert!(res.is_err(), "L'attribution d'un rôle inconnu doit être rejetée");
+        assert!(res.unwrap_err().contains("Rôle invalide ou inexistant"));
+
+        // Vérifier que la table `roles` n'a pas été polluée par une création dynamique
+        let role_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM roles WHERE name = 'ROLE_INVENTE_MALVEILLANT'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(role_count, 0, "Aucun rôle inconnu ne doit être inséré dynamiquement dans roles");
+    }
+
+    #[test]
+    fn test_set_local_user_role_direction_and_super_admin_authorized_assignments() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-target-ok', 'ok@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        // 1. Direction school-1 attribue SECRETAIRE sur school-1
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-dir-ok', 'dir-ok@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-dir-ok', 'u-dir-ok', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-dir-ok", "school-1").unwrap();
+
+        let res_dir_sec = set_local_user_role_conn(&conn, "u-target-ok", "school-1", "SECRETAIRE");
+        assert!(res_dir_sec.is_ok(), "La direction doit pouvoir attribuer SECRETAIRE sur son école : {:?}", res_dir_sec);
+
+        let has_sec: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = 'u-target-ok' AND ur.school_id = 'school-1' AND r.name = 'SECRETAIRE'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(has_sec, 1);
+
+        // 2. Super Admin attribue SUPER_ADMIN à un utilisateur
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-sa-ok', 'sa-ok@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa-ok', 'u-sa-ok', 'school-1', ?1)",
+            rusqlite::params![sa_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-sa-ok", "school-1").unwrap();
+
+        let res_sa = set_local_user_role_conn(&conn, "u-target-ok", "school-1", "SUPER_ADMIN");
+        assert!(res_sa.is_ok(), "Le Super Admin doit pouvoir attribuer SUPER_ADMIN : {:?}", res_sa);
+    }
+
+    #[test]
+    fn test_bootstrap_initial_super_admin_isolated_and_strict() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-first-admin', 'firstadmin@orion.app', 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        // 1. set_local_user_role_conn sans session doit ÉCHOUER même s'il n'y a aucun Super Admin en base
+        let res_public = set_local_user_role_conn(&conn, "u-first-admin", "school-1", "SUPER_ADMIN");
+        assert!(res_public.is_err(), "set_local_user_role public sans session doit être rejeté même si aucun SA n'existe");
+
+        // 2. L'amorçage contrôlé séparé doit RÉUSSIR quand aucun SA n'existe
+        let res_bootstrap = bootstrap_initial_super_admin_conn(&mut conn, "u-first-admin", "school-1");
+        assert!(res_bootstrap.is_ok(), "L'amorçage initial doit réussir pour le premier Super Admin : {:?}", res_bootstrap);
+
+        // 3. Un second appel à bootstrap_initial_super_admin_conn doit être REJETÉ
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-second-admin', 'second@orion.app', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let res_bootstrap2 = bootstrap_initial_super_admin_conn(&mut conn, "u-second-admin", "school-1");
+        assert!(res_bootstrap2.is_err(), "Un deuxième appel d'amorçage doit être rejeté");
+        assert!(res_bootstrap2.unwrap_err().contains("un Super Administrateur existe déjà"));
+    }
+
+    #[test]
+    fn test_bootstrap_super_admin_with_verified_cloud_user_succeeds_without_secret() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        // Garantir formellement qu'aucun secret maître SUPABASE_JWT_SECRET n'est présent
+        std::env::remove_var("SUPABASE_JWT_SECRET");
+
+        let verified_user = crate::auth_guard::CloudAuthUser {
+            id: "u-legit-sa".to_string(),
+            email: Some("superadmin@orion.app".to_string()),
+        };
+
+        let res = bootstrap_super_admin_with_verified_user(
+            &mut conn,
+            &verified_user,
+            Some("u-legit-sa"),
+            "school-main",
+            Some("test-sync-token"),
+        );
+        assert!(res.is_ok(), "L'amorçage avec identité cloud vérifiée doit réussir sans secret maître : {:?}", res);
+
+        // Vérifier l'insertion effective du rôle en base
+        let sa_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = 'u-legit-sa' AND r.name = 'SUPER_ADMIN'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(sa_count, 1, "Le premier Super Admin doit avoir son rôle persisté");
+
+        // Vérifier que la session locale a été établie
+        let current_session = crate::auth_guard::get_authenticated_user(&conn).expect("Session active attendue");
+        assert_eq!(current_session.user_id, "u-legit-sa");
+        assert!(current_session.is_super_admin, "La session doit être reconnue comme Super Admin");
+    }
+
+    #[test]
+    fn test_bootstrap_super_admin_rejected_if_target_id_mismatch() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        std::env::remove_var("SUPABASE_JWT_SECRET");
+
+        // L'utilisateur authentifié par le cloud est u-legit-sa, mais la requête prétend cibler u-other-victim
+        let verified_user = crate::auth_guard::CloudAuthUser {
+            id: "u-legit-sa".to_string(),
+            email: Some("legit@orion.app".to_string()),
+        };
+        let res = bootstrap_super_admin_with_verified_user(
+            &mut conn,
+            &verified_user,
+            Some("u-other-victim"),
+            "school-main",
+            None,
+        );
+
+        assert!(res.is_err(), "Toute tentative d'usurpation avec un target_user_id divergent doit être rejetée");
+        assert!(res.unwrap_err().contains("Usurpation d'identité détectée"));
+    }
+
+    #[test]
+    fn test_bootstrap_super_admin_second_attempt_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        std::env::remove_var("SUPABASE_JWT_SECRET");
+
+        // Première tentative : réussit
+        let user1 = crate::auth_guard::CloudAuthUser {
+            id: "u-sa-premier".to_string(),
+            email: Some("premier@orion.app".to_string()),
+        };
+        let res1 = bootstrap_super_admin_with_verified_user(&mut conn, &user1, None, "school-main", None);
+        assert!(res1.is_ok(), "Le premier amorçage doit réussir");
+
+        // Deuxième tentative : même avec un utilisateur légitime, doit être irrévocablement rejetée
+        let user2 = crate::auth_guard::CloudAuthUser {
+            id: "u-sa-second".to_string(),
+            email: Some("second@orion.app".to_string()),
+        };
+        let res2 = bootstrap_super_admin_with_verified_user(&mut conn, &user2, None, "school-main", None);
+        assert!(res2.is_err(), "La deuxième tentative doit être rejetée");
+        assert!(res2.unwrap_err().contains("un Super Administrateur existe déjà"));
+    }
+
+    #[test]
+    fn test_bootstrap_super_admin_concurrency_race() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+
+        // Utiliser une base SQLite basée sur un fichier temporaire pour partager l'état entre deux connexions/threads
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("orion_race_test_{}.sqlite", uuid::Uuid::new_v4()));
+
+        {
+            let init_conn = rusqlite::Connection::open(&db_path).unwrap();
+            init_conn.execute_batch(
+                "CREATE TABLE roles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                );
+                CREATE TABLE users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT,
+                    username TEXT,
+                    status TEXT NOT NULL DEFAULT 'ACTIVE'
+                );
+                CREATE TABLE schools (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL
+                );
+                CREATE TABLE user_roles (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    school_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id),
+                    FOREIGN KEY(school_id) REFERENCES schools(id),
+                    FOREIGN KEY(role_id) REFERENCES roles(id)
+                );
+                INSERT INTO roles (id, name) VALUES ('r-sa', 'SUPER_ADMIN');
+                INSERT INTO users (id, email, status) VALUES ('u-thread-1', 't1@orion.app', 'ACTIVE');
+                INSERT INTO users (id, email, status) VALUES ('u-thread-2', 't2@orion.app', 'ACTIVE');"
+            ).unwrap();
+        }
+
+        let p1 = db_path.clone();
+        let handle1 = std::thread::spawn(move || {
+            let mut conn = rusqlite::Connection::open(&p1).unwrap();
+            conn.busy_timeout(std::time::Duration::from_millis(500)).unwrap();
+            bootstrap_initial_super_admin_conn(&mut conn, "u-thread-1", "school-1")
+        });
+
+        let p2 = db_path.clone();
+        let handle2 = std::thread::spawn(move || {
+            let mut conn = rusqlite::Connection::open(&p2).unwrap();
+            conn.busy_timeout(std::time::Duration::from_millis(500)).unwrap();
+            bootstrap_initial_super_admin_conn(&mut conn, "u-thread-2", "school-1")
+        });
+
+        let r1 = handle1.join().unwrap();
+        let r2 = handle2.join().unwrap();
+
+        let verify_conn = rusqlite::Connection::open(&db_path).unwrap();
+        let sa_count: i64 = verify_conn.query_row(
+            "SELECT COUNT(*) FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE r.name = 'SUPER_ADMIN'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+
+        // Exactement UN SEUL Super Admin doit avoir pu être créé, jamais deux
+        assert_eq!(sa_count, 1, "En concurrence stricte, un et un seul Super Administrateur doit être créé");
+
+        let successes = [r1.is_ok(), r2.is_ok()].into_iter().filter(|&ok| ok).count();
+        assert_eq!(successes, 1, "Exactement un des deux threads doit réussir");
+
+        // Nettoyer le fichier temporaire
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_bootstrap_super_admin_rollback_on_failure() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-rollback-candidate', 'rollback@orion.app', 'ACTIVE')",
+            [],
+        ).unwrap();
+
+        // Forcer un échec lors de l'insertion finale dans user_roles via un trigger d'avortement
+        conn.execute(
+            "CREATE TRIGGER force_ur_failure BEFORE INSERT ON user_roles
+             BEGIN
+                 SELECT RAISE(ABORT, 'Erreur forcée pour tester le rollback atomique');
+             END;",
+            [],
+        ).unwrap();
+
+        // Tentative d'amorçage avec une nouvelle école qui serait insérée juste avant l'échec de user_roles
+        let res = bootstrap_initial_super_admin_conn(&mut conn, "u-rollback-candidate", "school-must-rollback");
+        assert!(res.is_err(), "L'amorçage doit échouer lors de l'interruption de la transaction");
+
+        // Vérifier que la base est restée absolument propre :
+        // 1. Aucun rôle SUPER_ADMIN créé
+        let sa_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE r.name = 'SUPER_ADMIN'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(sa_count, 0, "En cas d'échec, aucun Super Admin ne doit subsister");
+
+        // 2. L'école insérée à l'étape précédente dans la même transaction a été rollbackée
+        let school_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schools WHERE id = 'school-must-rollback'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(school_count, 0, "L'école insérée dans la transaction a été annulée par le rollback");
+    }
+
+    #[test]
+    fn test_set_local_user_role_non_regression_and_integration() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        // Aucun secret JWT maître nécessaire
+        std::env::remove_var("SUPABASE_JWT_SECRET");
+
+        // 1. Sans session, set_local_user_role_conn est rejeté
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-target-integ', 'target@orion.app', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let res_no_session = set_local_user_role_conn(&conn, "u-target-integ", "school-1", "DIRECTION");
+        assert!(res_no_session.is_err(), "Appel anonyme doit être rejeté");
+
+        // 2. Amorçage légitime du premier Super Admin via identité cloud vérifiée
+        let verified_sa = crate::auth_guard::CloudAuthUser {
+            id: "u-founder-sa".to_string(),
+            email: Some("founder@orion.app".to_string()),
+        };
+        let res_boot = bootstrap_super_admin_with_verified_user(&mut conn, &verified_sa, None, "school-1", None);
+        assert!(res_boot.is_ok(), "Amorçage légitime doit réussir");
+
+        // 3. Le Super Admin maintenant authentifié peut utiliser set_local_user_role_conn
+        let res_assign_dir = set_local_user_role_conn(&conn, "u-target-integ", "school-1", "DIRECTION");
+        assert!(res_assign_dir.is_ok(), "Le Super Admin dûment amorcé doit pouvoir attribuer des rôles : {:?}", res_assign_dir);
+
+        let has_dir: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = 'u-target-integ' AND r.name = 'DIRECTION'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(has_dir, 1, "Le rôle DIRECTION doit être attribué avec succès");
+
+        // 4. L'utilisateur DIRECTION nouvellement promu ne peut PAS s'auto-promouvoir en SUPER_ADMIN
+        crate::auth_guard::establish_local_session(&conn, "u-target-integ", "school-1").unwrap();
+        let res_illegal_elevation = set_local_user_role_conn(&conn, "u-target-integ", "school-1", "SUPER_ADMIN");
+        assert!(res_illegal_elevation.is_err(), "Une DIRECTION ne peut pas s'auto-promouvoir en SUPER_ADMIN");
+    }
+
+    #[test]
+    fn test_establish_online_session_direction_success() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        std::env::remove_var("SUPABASE_JWT_SECRET");
+
+        let auth_user = crate::auth_guard::CloudAuthUser {
+            id: "u-cloud-dir-1".to_string(),
+            email: Some("dir@school1.edu".to_string()),
+        };
+        let cloud_roles = vec![crate::auth_guard::CloudUserRole {
+            school_id: Some("school-1".to_string()),
+            role_name: "DIRECTION".to_string(),
+        }];
+
+        let res = establish_online_session_conn(
+            &mut conn,
+            &auth_user,
+            &cloud_roles,
+            Some("school-1"),
+            "mock-valid-bearer-token",
+        );
+        assert!(res.is_ok(), "L'établissement de session en ligne doit réussir : {:?}", res);
+        let profile = res.unwrap();
+        assert_eq!(profile.user_id, "u-cloud-dir-1");
+        assert_eq!(profile.school_id, "school-1");
+
+        // Vérifier que CURRENT_SESSION est active et valide
+        let sess = crate::auth_guard::get_authenticated_user(&conn).expect("Session doit être reconnue");
+        assert_eq!(sess.user_id, "u-cloud-dir-1");
+        assert_eq!(sess.school_id, "school-1");
+        assert!(sess.roles.contains(&"DIRECTION".to_string()));
+        assert!(!sess.is_super_admin);
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_establish_online_session_super_admin_can_access_any_school() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        std::env::remove_var("SUPABASE_JWT_SECRET");
+
+        let auth_user = crate::auth_guard::CloudAuthUser {
+            id: "u-cloud-sa".to_string(),
+            email: Some("sa@orion.app".to_string()),
+        };
+        let cloud_roles = vec![crate::auth_guard::CloudUserRole {
+            school_id: None,
+            role_name: "SUPER_ADMIN".to_string(),
+        }];
+
+        let res = establish_online_session_conn(
+            &mut conn,
+            &auth_user,
+            &cloud_roles,
+            Some("school-custom-target"),
+            "token-sa",
+        );
+        assert!(res.is_ok());
+        let profile = res.unwrap();
+        assert_eq!(profile.school_id, "school-custom-target");
+        assert_eq!(profile.role_name.as_deref(), Some("SUPER_ADMIN"));
+
+        let sess = crate::auth_guard::get_authenticated_user(&conn).unwrap();
+        assert!(sess.is_super_admin);
+        assert_eq!(sess.school_id, "school-custom-target");
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_establish_online_session_rejects_unauthorized_school() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        let auth_user = crate::auth_guard::CloudAuthUser {
+            id: "u-attacker-dir".to_string(),
+            email: Some("attacker@school1.edu".to_string()),
+        };
+        let cloud_roles = vec![crate::auth_guard::CloudUserRole {
+            school_id: Some("school-1".to_string()),
+            role_name: "DIRECTION".to_string(),
+        }];
+
+        // L'utilisateur est autorisé sur school-1, mais tente d'ouvrir school-forbidden
+        let res = establish_online_session_conn(
+            &mut conn,
+            &auth_user,
+            &cloud_roles,
+            Some("school-forbidden"),
+            "token",
+        );
+        assert!(res.is_err(), "L'accès à un établissement non autorisé doit être rejeté");
+        assert!(res.unwrap_err().contains("Accès refusé"));
+
+        // Vérifier qu'aucune session n'a été créée
+        assert!(crate::auth_guard::get_authenticated_user(&conn).is_err());
+    }
+
+    #[test]
+    fn test_establish_online_session_rejects_user_without_any_school() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        let auth_user = crate::auth_guard::CloudAuthUser {
+            id: "u-no-school".to_string(),
+            email: Some("orphan@orion.app".to_string()),
+        };
+        // Aucun rôle cloud avec school_id
+        let cloud_roles: Vec<crate::auth_guard::CloudUserRole> = vec![];
+
+        let res = establish_online_session_conn(
+            &mut conn,
+            &auth_user,
+            &cloud_roles,
+            None,
+            "token",
+        );
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Aucun établissement autorisé"));
+        assert!(crate::auth_guard::get_authenticated_user(&conn).is_err());
+    }
+
+    #[test]
+    fn test_establish_online_session_rejects_suspended_local_account() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-suspended-user', 'susp@orion.app', 'SUSPENDED')",
+            [],
+        ).unwrap();
+
+        let auth_user = crate::auth_guard::CloudAuthUser {
+            id: "u-suspended-user".to_string(),
+            email: Some("susp@orion.app".to_string()),
+        };
+        let cloud_roles = vec![crate::auth_guard::CloudUserRole {
+            school_id: Some("school-1".to_string()),
+            role_name: "DIRECTION".to_string(),
+        }];
+
+        let res = establish_online_session_conn(
+            &mut conn,
+            &auth_user,
+            &cloud_roles,
+            Some("school-1"),
+            "token",
+        );
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("suspendu ou inactif"));
+        assert!(crate::auth_guard::get_authenticated_user(&conn).is_err());
+    }
+
+    #[test]
+    fn test_establish_online_session_replaces_active_session_and_cleans_on_failure() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        // 1. Établir une première session valide pour u-legit
+        let auth_legit = crate::auth_guard::CloudAuthUser {
+            id: "u-legit".to_string(),
+            email: Some("legit@orion.app".to_string()),
+        };
+        let roles_legit = vec![crate::auth_guard::CloudUserRole {
+            school_id: Some("school-1".to_string()),
+            role_name: "DIRECTION".to_string(),
+        }];
+        assert!(establish_online_session_conn(&mut conn, &auth_legit, &roles_legit, Some("school-1"), "token-1").is_ok());
+        assert_eq!(crate::auth_guard::get_authenticated_user(&conn).unwrap().user_id, "u-legit");
+
+        // 2. Une tentative frauduleuse ou invalide survient
+        let auth_bad = crate::auth_guard::CloudAuthUser {
+            id: "u-bad".to_string(),
+            email: Some("bad@orion.app".to_string()),
+        };
+        let res_bad = establish_online_session_conn(&mut conn, &auth_bad, &[], None, "bad-token");
+        assert!(res_bad.is_err());
+
+        // 3. Vérifier que l'ancienne session u-legit n'a PAS subsisté
+        let sess_after = crate::auth_guard::get_authenticated_user(&conn);
+        assert!(sess_after.is_err(), "En cas d'échec, aucune session résiduelle ne doit être conservée");
     }
 }
