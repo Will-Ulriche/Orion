@@ -1181,7 +1181,8 @@ pub fn get_school_settings(school_id: Option<String>, state: State<'_, DbState>)
 #[tauri::command]
 pub fn get_academic_years(school_id: String, state: State<'_, DbState>) -> Result<Vec<AcademicYear>, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+
     let mut stmt = conn.prepare("SELECT id, school_id, name, start_date, end_date, status, is_current FROM academic_years WHERE school_id = ?1 ORDER BY start_date DESC").map_err(|e| e.to_string())?;
     let year_iter = stmt.query_map(rusqlite::params![school_id], |row| {
         Ok(AcademicYear {
@@ -1209,7 +1210,8 @@ pub fn get_academic_years(school_id: String, state: State<'_, DbState>) -> Resul
 #[tauri::command]
 pub fn create_academic_year(school_id: String, name: String, start_date: String, end_date: String, user_id: String, state: State<'_, DbState>) -> Result<AcademicYear, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
+
     // Check if PLANNED exists
     let planned_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM academic_years WHERE school_id = ?1 AND status = 'PLANNED'",
@@ -1245,7 +1247,8 @@ pub fn create_academic_year(school_id: String, name: String, start_date: String,
 #[tauri::command]
 pub fn update_academic_year(id: String, school_id: String, name: String, start_date: String, end_date: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
+
     conn.execute(
         "UPDATE academic_years SET name = ?1, start_date = ?2, end_date = ?3, updated_at = CURRENT_TIMESTAMP WHERE id = ?4 AND school_id = ?5",
         rusqlite::params![name, start_date, end_date, id, school_id],
@@ -1260,7 +1263,8 @@ pub fn update_academic_year(id: String, school_id: String, name: String, start_d
 #[tauri::command]
 pub fn open_academic_year(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
+
     // Check if ACTIVE exists
     let active_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM academic_years WHERE school_id = ?1 AND status = 'ACTIVE'",
@@ -1286,7 +1290,8 @@ pub fn open_academic_year(id: String, school_id: String, state: State<'_, DbStat
 #[tauri::command]
 pub fn close_academic_year(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
+
     let status: String = conn.query_row(
         "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
         rusqlite::params![id, school_id],
@@ -1311,6 +1316,7 @@ pub fn close_academic_year(id: String, school_id: String, state: State<'_, DbSta
 #[tauri::command]
 pub fn archive_academic_year(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
     let status: String = conn.query_row(
         "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
@@ -1336,6 +1342,7 @@ pub fn archive_academic_year(id: String, school_id: String, state: State<'_, DbS
 #[tauri::command]
 pub fn delete_academic_year(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
     // On refuse de supprimer l'année active
     let status: String = conn.query_row(
@@ -1642,7 +1649,7 @@ fn ensure_year_is_open(conn: &rusqlite::Connection, school_id: &str, year_id: &s
 #[tauri::command(async)]
 pub fn get_classes(school_id: String, academic_year_id: String, state: State<'_, DbState>) -> Result<Vec<Class>, String> {
     let conn = state.0.lock().map_err(|_ | "Impossible de verrouiller la base de données".to_string())?;
-    
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare("
         SELECT c.id, c.school_id, c.academic_year_id, c.name, c.level,
                (SELECT COUNT(*) FROM enrollments e
@@ -1986,6 +1993,8 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
 #[tauri::command]
 pub fn get_student_details(student_id: String, state: State<'_, DbState>) -> Result<crate::models::Student, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+
+    // Résoudre le school_id depuis l'élève pour vérifier l'appartenance à l'établissement de la session
     let school_id: String = conn.query_row(
         "SELECT school_id FROM students WHERE id = ?1",
         rusqlite::params![student_id],
@@ -2026,6 +2035,8 @@ pub fn get_student_details(student_id: String, state: State<'_, DbState>) -> Res
 #[tauri::command]
 pub fn update_student(student: crate::models::Student, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+
+    // Résoudre le school_id depuis l'élève pour vérifier l'appartenance
     let school_id: String = conn.query_row(
         "SELECT school_id FROM students WHERE id = ?1",
         rusqlite::params![student.id],
@@ -2183,7 +2194,7 @@ pub fn get_fee_structures(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::FeeStructure>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE"])?;
     let mut stmt = conn.prepare(
         "SELECT f.id, f.school_id, f.academic_year_id, f.name, f.amount, f.fee_type,
                 f.applies_to, f.class_id, f.level, f.due_date, f.is_mandatory,
@@ -2360,7 +2371,7 @@ pub fn get_student_payments(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::Payment>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE"])?;
     let mut stmt = conn.prepare(
         "SELECT p.id, p.school_id, p.academic_year_id, p.enrollment_id, p.student_id,
                 p.fee_structure_id, p.amount, p.payment_date, p.payment_method, p.reference,
@@ -2411,7 +2422,7 @@ pub fn get_student_financial_summary(
     state: State<'_, DbState>
 ) -> Result<crate::models::StudentFinancialSummary, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE"])?;
     // 1. Fetch enrollment and class
     let (enrollment_id, class_id, first_name, last_name, class_name) = conn.query_row(
         "SELECT e.id, e.class_id, s.first_name, s.last_name, c.name
@@ -2548,6 +2559,7 @@ pub fn get_financial_dashboard(
     state: State<'_, DbState>
 ) -> Result<crate::models::FinancialDashboard, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
     build_financial_dashboard(&conn, &school_id, &academic_year_id)
 }
 
@@ -2771,6 +2783,7 @@ fn appreciation(avg: f64) -> String {
 #[tauri::command]
 pub fn get_subjects(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::Subject>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT id, school_id, name, code, color FROM subjects WHERE school_id = ?1 ORDER BY name"
     ).map_err(|e| e.to_string())?;
@@ -2797,6 +2810,7 @@ pub fn create_subject(
     state: State<'_, DbState>
 ) -> Result<crate::models::Subject, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -2822,6 +2836,7 @@ pub fn update_subject(
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE subjects SET name=?1, code=?2, color=?3, updated_at=?4 WHERE id=?5 AND school_id=?6",
@@ -2834,6 +2849,7 @@ pub fn update_subject(
 #[tauri::command]
 pub fn delete_subject(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM grades g JOIN class_subjects cs ON g.class_subject_id = cs.id WHERE cs.subject_id = ?1",
         rusqlite::params![id], |r| r.get(0)
@@ -2856,6 +2872,7 @@ pub fn get_class_subjects(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::ClassSubject>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
                 cs.teacher_id, cs.coefficient,
@@ -2905,6 +2922,7 @@ pub fn get_teacher_class_subjects(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::ClassSubject>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
                 cs.teacher_id, cs.coefficient,
@@ -2959,6 +2977,7 @@ pub fn assign_subject_to_class(
     state: State<'_, DbState>
 ) -> Result<crate::models::ClassSubject, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     // Check if the subject is already assigned to this class for the given academic year
@@ -3003,6 +3022,7 @@ pub fn update_class_subject(
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE class_subjects SET coefficient=?1, teacher_id=?2, weekly_hours=?3, subject_type=?4, is_mandatory=?5, order_index=?6, color_icon=?7, updated_at=?8 WHERE id=?9 AND school_id=?10",
@@ -3015,6 +3035,7 @@ pub fn update_class_subject(
 #[tauri::command]
 pub fn remove_class_subject(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM grades WHERE class_subject_id=?1",
         rusqlite::params![id], |r| r.get(0)
@@ -3038,6 +3059,7 @@ pub fn get_grading_periods(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::GradingPeriod>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
 
     let mut query = "SELECT id, school_id, academic_year_id, class_id, name, period_order, start_date, end_date, is_active
          FROM grading_periods WHERE school_id=?1 AND academic_year_id=?2".to_string();
@@ -3084,6 +3106,7 @@ pub fn create_grading_period(
     state: State<'_, DbState>
 ) -> Result<crate::models::GradingPeriod, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -3109,6 +3132,7 @@ pub fn update_grading_period(
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE grading_periods SET class_id=?1, name=?2, period_order=?3, start_date=?4, end_date=?5, is_active=?6, updated_at=?7 WHERE id=?8 AND school_id=?9",
@@ -3125,6 +3149,7 @@ pub fn delete_grading_period(
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute(
         "DELETE FROM grading_periods WHERE id=?1 AND school_id=?2",
         rusqlite::params![id, school_id]
@@ -3135,6 +3160,7 @@ pub fn delete_grading_period(
 #[tauri::command]
 pub fn activate_all_grading_periods(school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute(
         "UPDATE grading_periods SET is_active=1 WHERE school_id=?1",
         rusqlite::params![school_id]
@@ -3147,6 +3173,7 @@ pub fn activate_all_grading_periods(school_id: String, state: State<'_, DbState>
 #[tauri::command]
 pub fn get_grade_types(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::GradeType>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT id, school_id, name, max_score FROM grade_types WHERE school_id=?1 ORDER BY name"
     ).map_err(|e| e.to_string())?;
@@ -3166,6 +3193,7 @@ pub fn create_grade_type(
     state: State<'_, DbState>
 ) -> Result<crate::models::GradeType, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -3185,6 +3213,7 @@ pub fn update_grade_type(
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE grade_types SET name=?1, max_score=?2, updated_at=?3 WHERE id=?4 AND school_id=?5",
@@ -3205,6 +3234,7 @@ pub fn get_grades_by_class(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::Grade>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
                 g.class_subject_id, g.grading_period_id, g.grade_type_id,
@@ -3249,6 +3279,21 @@ pub fn get_grades_by_student(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::Grade>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+
+    // Vérifier que l'élève appartient bien à cet établissement
+    let student_school: String = conn.query_row(
+        "SELECT school_id FROM students WHERE id = ?1",
+        rusqlite::params![student_id],
+        |row| row.get(0),
+    ).map_err(|_| "Élève introuvable.".to_string())?;
+    if !sess.is_super_admin && student_school != sess.school_id {
+        return Err("Accès refusé : cet élève n'appartient pas à votre établissement.".to_string());
+    }
+    if student_school != school_id {
+        return Err("Cet élève n'appartient pas à cet établissement.".to_string());
+    }
+
     let mut stmt = conn.prepare(
         "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
                 g.class_subject_id, g.grading_period_id, g.grade_type_id,
@@ -3351,12 +3396,17 @@ pub fn get_student_averages(
     state: State<'_, DbState>
 ) -> Result<crate::models::StudentAverages, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
 
     // Infos élève
-    let (student_id, first_name, last_name): (String, String, String) = conn.query_row(
-        "SELECT e.student_id, s.first_name, s.last_name FROM enrollments e JOIN students s ON e.student_id = s.id WHERE e.id=?1",
-        rusqlite::params![enrollment_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    let (student_id, first_name, last_name, enrollment_school): (String, String, String, String) = conn.query_row(
+        "SELECT e.student_id, s.first_name, s.last_name, e.school_id FROM enrollments e JOIN students s ON e.student_id = s.id WHERE e.id=?1",
+        rusqlite::params![enrollment_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
     ).map_err(|e| e.to_string())?;
+
+    if enrollment_school != school_id {
+        return Err("Cette inscription n'appartient pas à cet établissement.".to_string());
+    }
 
     // Matières de la classe pour l'année
     let class_id: String = conn.query_row(
@@ -3452,6 +3502,7 @@ pub fn get_class_rankings(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::ClassRankingEntry>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT e.id, e.student_id, s.first_name, s.last_name,
                 SUM(g.score / g.max_score * 20.0 * cs.coefficient) / NULLIF(SUM(cs.coefficient), 0) AS gavg
@@ -3491,6 +3542,7 @@ pub fn get_class_statistics(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::SubjectStats>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT cs.id, s.name, s.code,
                 COUNT(DISTINCT g.enrollment_id),
@@ -3560,6 +3612,7 @@ pub fn get_class_notes_recap(
     state: State<'_, DbState>,
 ) -> Result<ClassNotesRecap, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
 
     // 1. Colonnes : matières de la classe (filtrées par professeur si besoin)
     let subjects: Vec<RecapSubjectColumn> = if let Some(tid) = teacher_id.as_ref() {
@@ -3684,6 +3737,7 @@ pub fn get_teacher_assignments(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::TeacherAssignment>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT ta.id, ta.school_id, ta.academic_year_id, ta.teacher_id, ta.class_subject_id,
                 (u.first_name || ' ' || u.last_name), s.name, c.name
@@ -3716,6 +3770,7 @@ pub fn assign_teacher_to_class_subject(
     state: State<'_, DbState>
 ) -> Result<crate::models::TeacherAssignment, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -3733,6 +3788,7 @@ pub fn assign_teacher_to_class_subject(
 #[tauri::command(async)]
 pub fn get_sections(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::Section>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare("SELECT id, school_id, name FROM sections WHERE school_id = ? ORDER BY name").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([school_id], |row| {
         Ok(crate::models::Section {
@@ -3747,6 +3803,7 @@ pub fn get_sections(school_id: String, state: State<'_, DbState>) -> Result<Vec<
 #[tauri::command]
 pub fn create_section(school_id: String, name: String, state: State<'_, DbState>) -> Result<crate::models::Section, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -3760,6 +3817,7 @@ pub fn create_section(school_id: String, name: String, state: State<'_, DbState>
 #[tauri::command]
 pub fn update_section(id: String, school_id: String, name: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE sections SET name = ?1, updated_at = ?2 WHERE id = ?3 AND school_id = ?4",
@@ -3772,6 +3830,7 @@ pub fn update_section(id: String, school_id: String, name: String, state: State<
 #[tauri::command]
 pub fn delete_section(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute("DELETE FROM sections WHERE id = ?1 AND school_id = ?2", rusqlite::params![id, school_id]).map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "sections", &school_id, &id);
     Ok(())
@@ -3780,6 +3839,7 @@ pub fn delete_section(id: String, school_id: String, state: State<'_, DbState>) 
 #[tauri::command(async)]
 pub fn get_levels(school_id: String, section_id: Option<String>, state: State<'_, DbState>) -> Result<Vec<crate::models::Level>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut levels = Vec::new();
     if let Some(sid) = section_id {
         let mut stmt = conn.prepare("SELECT id, school_id, section_id, name, level_order FROM levels WHERE school_id = ? AND section_id = ? ORDER BY level_order").map_err(|e| e.to_string())?;
@@ -3806,6 +3866,7 @@ pub fn get_levels(school_id: String, section_id: Option<String>, state: State<'_
 #[tauri::command]
 pub fn create_level(school_id: String, section_id: String, name: String, level_order: i64, state: State<'_, DbState>) -> Result<crate::models::Level, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -3819,6 +3880,7 @@ pub fn create_level(school_id: String, section_id: String, name: String, level_o
 #[tauri::command]
 pub fn update_level(id: String, school_id: String, name: String, level_order: i64, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE levels SET name = ?1, level_order = ?2, updated_at = ?3 WHERE id = ?4 AND school_id = ?5",
@@ -3831,6 +3893,7 @@ pub fn update_level(id: String, school_id: String, name: String, level_order: i6
 #[tauri::command]
 pub fn delete_level(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute("DELETE FROM levels WHERE id = ?1 AND school_id = ?2", rusqlite::params![id, school_id]).map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "levels", &school_id, &id);
     Ok(())
@@ -3839,6 +3902,7 @@ pub fn delete_level(id: String, school_id: String, state: State<'_, DbState>) ->
 #[tauri::command]
 pub fn get_series(school_id: String, level_id: Option<String>, state: State<'_, DbState>) -> Result<Vec<crate::models::Series>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut series = Vec::new();
     if let Some(lid) = level_id {
         let mut stmt = conn.prepare("SELECT id, school_id, level_id, name FROM series WHERE school_id = ? AND level_id = ?").map_err(|e| e.to_string())?;
@@ -3863,6 +3927,7 @@ pub fn get_series(school_id: String, level_id: Option<String>, state: State<'_, 
 #[tauri::command]
 pub fn create_series(school_id: String, level_id: String, name: String, state: State<'_, DbState>) -> Result<crate::models::Series, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -3876,6 +3941,7 @@ pub fn create_series(school_id: String, level_id: String, name: String, state: S
 #[tauri::command]
 pub fn update_series(id: String, school_id: String, name: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE series SET name = ?1, updated_at = ?2 WHERE id = ?3 AND school_id = ?4",
@@ -3888,6 +3954,7 @@ pub fn update_series(id: String, school_id: String, name: String, state: State<'
 #[tauri::command]
 pub fn delete_series(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute("DELETE FROM series WHERE id = ?1 AND school_id = ?2", rusqlite::params![id, school_id]).map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "series", &school_id, &id);
     Ok(())
@@ -3997,6 +4064,7 @@ const STAFF_SELECT: &str = "
 #[tauri::command(async)]
 pub fn get_staff(school_id: String, include_photos: Option<bool>, state: State<'_, DbState>) -> Result<Vec<crate::models::Staff>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
     let select_clause = if include_photos == Some(false) {
         STAFF_SELECT.replace("staff.photo_url,", "CAST(NULL AS TEXT) as photo_url,")
     } else {
@@ -4014,6 +4082,13 @@ pub fn get_staff(school_id: String, include_photos: Option<bool>, state: State<'
 #[tauri::command(async)]
 pub fn get_staff_photo(staff_id: String, state: State<'_, DbState>) -> Result<Option<String>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let school_id: String = conn.query_row(
+        "SELECT school_id FROM staff WHERE id = ?1",
+        rusqlite::params![staff_id],
+        |row| row.get(0),
+    ).map_err(|_| "Membre du personnel introuvable.".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+
     conn.query_row(
         "SELECT photo_url FROM staff WHERE id = ?1",
         rusqlite::params![staff_id],
@@ -4199,6 +4274,7 @@ pub fn get_timetable(
     state: State<'_, DbState>,
 ) -> Result<Vec<TimetableSlot>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
         "SELECT t.id, t.class_id, t.day_of_week, t.slot_index, t.subject_id,
                 s.code, s.name
@@ -4235,6 +4311,8 @@ pub fn save_timetable_slot(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
+    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
     let now = chrono::Utc::now().to_rfc3339();
     let id = uuid::Uuid::new_v4().to_string();
 
@@ -4483,6 +4561,7 @@ pub struct DeviceRec {
 #[tauri::command]
 pub fn get_devices(school_id: String, state: State<'_, DbState>) -> Result<Vec<DeviceRec>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let mut stmt = conn.prepare(
         "SELECT id, school_id, device_identifier, device_name, platform, status, last_seen_at 
          FROM devices WHERE school_id = ?1 ORDER BY last_seen_at DESC"
@@ -4523,6 +4602,7 @@ pub struct LicenseRec {
 #[tauri::command]
 pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<LicenseRec>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let mut stmt = conn.prepare(
         "SELECT id, school_id, license_key, status, starts_at, expires_at, max_devices 
          FROM licenses WHERE school_id = ?1"
@@ -5862,6 +5942,7 @@ pub fn get_school_dashboard_stats(
     state: State<'_, DbState>,
 ) -> Result<crate::models::SchoolDashboardStats, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
 
     // 1. Effectif des élèves inscrits (inscriptions actives de l'année)
     let mut total_students: i64 = 0;
@@ -7200,5 +7281,106 @@ mod auth_tests {
         );
         // Aucune session résiduelle
         assert!(crate::auth_guard::get_authenticated_user(&conn).is_err());
+    }
+
+    /// Vérifie l'isolation multi-tenant pour les élèves et le personnel par identifiant :
+    /// Un utilisateur de school-1 ne peut pas accéder aux élèves ou photos du personnel de school-2.
+    #[test]
+    fn test_cross_school_student_and_staff_access_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        // Créer une 2ème école et des entités rattachées
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École B')", []).unwrap();
+        conn.execute(
+            "INSERT INTO students (id, school_id, first_name, last_name) VALUES ('st-2', 'school-2', 'Alice', 'Dupont')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO staff (id, school_id, nom, prenoms, created_at, updated_at) VALUES ('stf-2', 'school-2', 'Martin', 'Bob', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        // Utilisateur Direction dans school-1
+        conn.execute(
+            "INSERT INTO users (id, email, username, status) VALUES ('u-dir-s1', 'dir@school1.com', 'dir1', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-dir-s1', 'u-dir-s1', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-dir-s1", "school-1").unwrap();
+
+        // 1. Accès à l'élève de school-2 depuis une session school-1 : doit échouer
+        let student_school: Result<String, _> = conn.query_row(
+            "SELECT school_id FROM students WHERE id = ?1",
+            rusqlite::params!["st-2"],
+            |r| r.get(0),
+        );
+        assert!(student_school.is_ok());
+        let res_student = crate::auth_guard::authorize(
+            &conn,
+            &student_school.unwrap(),
+            &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+        );
+        assert!(res_student.is_err(), "L'accès à un élève d'un autre établissement doit être bloqué");
+
+        // 2. Accès au personnel de school-2 depuis school-1 : doit échouer
+        let staff_school: Result<String, _> = conn.query_row(
+            "SELECT school_id FROM staff WHERE id = ?1",
+            rusqlite::params!["stf-2"],
+            |r| r.get(0),
+        );
+        assert!(staff_school.is_ok());
+        let res_staff = crate::auth_guard::authorize(
+            &conn,
+            &staff_school.unwrap(),
+            &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+        );
+        assert!(res_staff.is_err(), "L'accès au personnel d'un autre établissement doit être bloqué");
+    }
+
+    /// Vérifie la séparation des rôles (RBAC) pour les commandes sensibles :
+    /// - delete_academic_year réservé à DIRECTION
+    /// - get_financial_dashboard réservé à DIRECTION et COMPTABLE
+    #[test]
+    fn test_role_rbac_financial_and_academic_year_checks() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        // Créer un utilisateur PROFESSEUR
+        conn.execute(
+            "INSERT INTO users (id, email, username, status) VALUES ('u-prof', 'prof@school1.com', 'prof1', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let prof_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'PROFESSEUR'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-prof', 'u-prof', 'school-1', ?1)",
+            rusqlite::params![prof_role_id],
+        ).unwrap();
+
+        // Session PROFESSEUR
+        crate::auth_guard::establish_local_session(&conn, "u-prof", "school-1").unwrap();
+
+        // 1. Suppression année scolaire par un prof : rejeté
+        let res_delete_year = crate::auth_guard::authorize(&conn, "school-1", &["DIRECTION"]);
+        assert!(res_delete_year.is_err(), "Un professeur ne doit pas pouvoir supprimer une année scolaire");
+
+        // 2. Dashboard financier par un prof : rejeté
+        let res_finance = crate::auth_guard::authorize(&conn, "school-1", &["DIRECTION", "COMPTABLE"]);
+        assert!(res_finance.is_err(), "Un professeur ne doit pas pouvoir accéder au tableau de bord financier");
+
+        // 3. Consultation des élèves par un prof : autorisé
+        let res_students = crate::auth_guard::authorize(
+            &conn,
+            "school-1",
+            &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+        );
+        assert!(res_students.is_ok(), "Un professeur doit pouvoir consulter les élèves");
     }
 }

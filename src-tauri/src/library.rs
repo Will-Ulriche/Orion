@@ -188,6 +188,7 @@ pub fn get_library_settings(
     state: State<'_, DbState>,
 ) -> Result<LibrarySettings, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE"])?;
     load_settings(&conn, &school_id)
 }
 
@@ -203,6 +204,7 @@ pub fn save_library_settings(
     state: State<'_, DbState>,
 ) -> Result<LibrarySettings, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     load_settings(&conn, &school_id)?;
 
     let now = now_iso();
@@ -252,6 +254,7 @@ pub fn get_library_categories(
     state: State<'_, DbState>,
 ) -> Result<Vec<LibraryCategory>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE"])?;
     let mut stmt = conn
         .prepare(
             "SELECT c.id, c.school_id, c.name, c.code, c.description, c.color,
@@ -297,6 +300,7 @@ pub fn create_library_category(
     state: State<'_, DbState>,
 ) -> Result<LibraryCategory, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     if name.trim().is_empty() {
         return Err("Le nom de la catégorie est obligatoire.".to_string());
     }
@@ -343,6 +347,7 @@ pub fn update_library_category(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let now = now_iso();
     conn.execute(
         "UPDATE library_categories
@@ -372,6 +377,7 @@ pub fn delete_library_category(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM library_books WHERE category_id = ?1 AND school_id = ?2",
@@ -416,6 +422,7 @@ pub fn get_library_books(
     state: State<'_, DbState>,
 ) -> Result<Vec<LibraryBook>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE"])?;
 
     let mut clauses: Vec<String> = vec!["b.school_id = ?".to_string()];
     let mut params: Vec<SqlValue> = vec![SqlValue::Text(school_id.clone())];
@@ -502,6 +509,7 @@ pub fn create_library_book(
     state: State<'_, DbState>,
 ) -> Result<LibraryBook, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     if title.trim().is_empty() {
         return Err("Le titre de l'ouvrage est obligatoire.".to_string());
     }
@@ -596,6 +604,7 @@ pub fn update_library_book(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     if title.trim().is_empty() {
         return Err("Le titre de l'ouvrage est obligatoire.".to_string());
     }
@@ -659,6 +668,7 @@ pub fn delete_library_book(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let active: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM library_loans l
@@ -704,6 +714,7 @@ pub fn get_library_copies(
     state: State<'_, DbState>,
 ) -> Result<Vec<LibraryCopy>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE"])?;
 
     let mut clauses: Vec<String> = vec!["cp.school_id = ?".to_string()];
     let mut params: Vec<SqlValue> = vec![SqlValue::Text(school_id.clone())];
@@ -790,6 +801,7 @@ pub fn create_library_copies(
     state: State<'_, DbState>,
 ) -> Result<Vec<LibraryCopy>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     if quantity < 1 {
         return Err("Le nombre d'exemplaires doit être supérieur à zéro.".to_string());
     }
@@ -883,6 +895,7 @@ pub fn update_library_copy(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
 
     // Un exemplaire prêté ne peut pas changer de statut manuellement.
     let on_loan: i64 = conn
@@ -945,6 +958,7 @@ pub fn delete_library_copy(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let on_loan: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM library_loans WHERE copy_id = ?1 AND status = 'EN_COURS'",
@@ -987,6 +1001,7 @@ pub fn get_library_readers(
     state: State<'_, DbState>,
 ) -> Result<Vec<LibraryReader>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE"])?;
 
     let mut clauses: Vec<String> = vec!["r.school_id = ?".to_string()];
     let mut params: Vec<SqlValue> = vec![SqlValue::Text(school_id.clone())];
@@ -1069,6 +1084,7 @@ pub fn create_library_reader(
     state: State<'_, DbState>,
 ) -> Result<LibraryReader, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     if full_name.trim().is_empty() {
         return Err("Le nom du lecteur est obligatoire.".to_string());
     }
@@ -1171,6 +1187,7 @@ pub fn register_student_as_reader(
     state: State<'_, DbState>,
 ) -> Result<LibraryReader, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
 
     let student: Option<(String, String, Option<String>, Option<String>)> = conn
         .query_row(
@@ -1273,6 +1290,7 @@ pub fn update_library_reader(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let now = now_iso();
     conn.execute(
         "UPDATE library_readers
@@ -1326,6 +1344,7 @@ pub fn delete_library_reader(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let active: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM library_loans WHERE reader_id = ?1 AND status = 'EN_COURS'",
@@ -1369,6 +1388,7 @@ pub fn get_library_loans(
     state: State<'_, DbState>,
 ) -> Result<Vec<LibraryLoan>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE"])?;
     let settings = load_settings(&conn, &school_id)?;
     let current = today();
 
@@ -1466,6 +1486,7 @@ pub fn create_library_loan(
     state: State<'_, DbState>,
 ) -> Result<LibraryLoan, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     create_library_loan_inner(
         &conn, school_id, reader_id, copy_id, loan_date, due_date, notes, created_by,
     )
@@ -1653,6 +1674,7 @@ pub fn return_library_loan(
     state: State<'_, DbState>,
 ) -> Result<LibraryReturn, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     return_library_loan_inner(
         &conn,
         loan_id,
@@ -1867,6 +1889,7 @@ pub fn extend_library_loan(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     if days <= 0 {
         return Err("La prolongation doit être supérieure à zéro jour.".to_string());
     }
@@ -1914,6 +1937,11 @@ pub fn get_library_penalties(
     state: State<'_, DbState>,
 ) -> Result<Vec<LibraryPenalty>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE", "COMPTABLE"],
+    )?;
 
     let mut clauses: Vec<String> = vec!["p.school_id = ?".to_string()];
     let mut params: Vec<SqlValue> = vec![SqlValue::Text(school_id.clone())];
@@ -1980,6 +2008,7 @@ pub fn create_library_penalty(
     state: State<'_, DbState>,
 ) -> Result<LibraryPenalty, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_iso();
 
@@ -2037,6 +2066,11 @@ pub fn pay_library_penalty(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE", "COMPTABLE"],
+    )?;
     let now = now_iso();
 
     let updated = conn
@@ -2073,6 +2107,7 @@ pub fn waive_library_penalty(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let now = now_iso();
 
     let updated = conn
@@ -2113,6 +2148,11 @@ pub fn get_library_reservations(
     state: State<'_, DbState>,
 ) -> Result<Vec<LibraryReservation>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE"],
+    )?;
 
     let mut clauses: Vec<String> = vec!["rs.school_id = ?".to_string()];
     let mut params: Vec<SqlValue> = vec![SqlValue::Text(school_id.clone())];
@@ -2179,6 +2219,7 @@ pub fn create_library_reservation(
     state: State<'_, DbState>,
 ) -> Result<LibraryReservation, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let settings = load_settings(&conn, &school_id)?;
 
     let book_exists: i64 = conn
@@ -2319,6 +2360,7 @@ pub fn cancel_library_reservation(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
     let now = now_iso();
 
     let updated = conn
@@ -2356,6 +2398,7 @@ pub fn fulfill_library_reservation(
     state: State<'_, DbState>,
 ) -> Result<LibraryLoan, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "BIBLIOTHECAIRE"])?;
 
     let reservation: Option<(String, String, String)> = conn
         .query_row(
@@ -2437,6 +2480,11 @@ pub fn get_library_dashboard(
     state: State<'_, DbState>,
 ) -> Result<LibraryDashboard, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR", "BIBLIOTHECAIRE"],
+    )?;
     load_settings(&conn, &school_id)?;
     let current = today();
 
@@ -3336,6 +3384,7 @@ fn seed_library_demo_data_inner(conn: &Connection, school_id: &str) -> Result<()
 #[tauri::command]
 pub fn clear_library_data(school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
     conn.execute(
         "DELETE FROM library_returns WHERE school_id = ?1",
