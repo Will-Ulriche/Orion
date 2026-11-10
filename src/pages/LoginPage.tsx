@@ -99,8 +99,7 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
             Bienvenue sur <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-sky-600">Orion</span>
           </h1>
           <p className="text-lg text-slate-500 max-w-md">
-            Système de gestion scolaire intégré. Connectez-vous avec l'identifiant attribué par la direction
-            pour accéder à votre espace de travail.
+            Accédez à votre compte pour assurer le suivi de votre travail et retrouver les informations de votre établissement.
           </p>
         </div>
 
