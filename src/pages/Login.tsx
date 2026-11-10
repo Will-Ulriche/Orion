@@ -206,11 +206,13 @@ export default function Login({
 
         // Succès en ligne — enregistrer pour usage futur hors-ligne
         try {
-          await invoke('store_offline_credentials', {
-            userId: data.user.id,
-            email: data.user.email,
-            password,
-          });
+          const accessToken = data.session?.access_token;
+          if (accessToken) {
+            await invoke('store_offline_credentials', {
+              token: accessToken,
+              password,
+            });
+          }
         } catch (err) {
           console.error('Erreur sauvegarde creds hors ligne:', err);
         }

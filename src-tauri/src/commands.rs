@@ -943,13 +943,37 @@ pub fn enqueue_full_resync(school_id: String, state: State<'_, DbState>) -> Resu
 // ──────────────────────────────────────────────
 // COMMANDE : Synchronisation manuelle (bouton utilisateur)
 // ──────────────────────────────────────────────
+async fn accept_sync_token_for_session(user_id: &str, token: &str) -> Result<(), String> {
+    let (supabase_url, supabase_anon_key) = crate::sync::get_supabase_config()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Client HTTP : {}", e))?;
+    let auth_user = crate::auth_guard::verify_supabase_user_token(
+        &supabase_url,
+        &supabase_anon_key,
+        token,
+        &client,
+    ).await?;
+    if auth_user.id != user_id {
+        return Err("Le jeton de synchronisation ne correspond pas à la session active.".to_string());
+    }
+    crate::sync::set_sync_access_token(Some(token.to_string()));
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn trigger_sync(
     app: tauri::AppHandle,
     access_token: Option<String>,
+    state: State<'_, DbState>,
 ) -> Result<SyncStatus, String> {
-    if let Some(token) = access_token.as_ref() {
-        crate::sync::set_sync_access_token(Some(token.clone()));
+    let user_id = {
+        let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+        crate::auth_guard::require_authenticated(&conn)?.user_id
+    };
+    if let Some(token) = access_token.as_ref().filter(|t| !t.trim().is_empty()) {
+        accept_sync_token_for_session(&user_id, token).await?;
     }
 
     let db_path = app.path().app_data_dir()
@@ -961,8 +985,15 @@ pub async fn trigger_sync(
 
 /// Enregistre le JWT utilisateur pour la synchronisation (jamais une clé service_role).
 #[tauri::command]
-pub fn set_sync_access_token(token: Option<String>) -> Result<(), String> {
-    crate::sync::set_sync_access_token(token);
+pub async fn set_sync_access_token(token: Option<String>, state: State<'_, DbState>) -> Result<(), String> {
+    let user_id = {
+        let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+        crate::auth_guard::require_authenticated(&conn)?.user_id
+    };
+    match token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => accept_sync_token_for_session(&user_id, t).await?,
+        None => crate::sync::set_sync_access_token(None),
+    }
     Ok(())
 }
 
@@ -1012,7 +1043,13 @@ pub fn resolve_sync_conflict(
     inbox_id: String,
     choice: String,   // "LOCAL" ou "REMOTE"
     app: tauri::AppHandle,
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let session = crate::auth_guard::require_authenticated(&conn)?;
+    crate::auth_guard::authorize(&conn, &session.school_id, &["DIRECTION"])?;
+    drop(conn);
+
     let db_path = app.path().app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
@@ -1746,6 +1783,7 @@ pub fn delete_enrollment(id: String, state: State<'_, DbState>) -> Result<(), St
         rusqlite::params![id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
     ).map_err(|_| "Inscription introuvable".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     // Collecter les IDs d'historique liés avant suppression
@@ -1812,7 +1850,8 @@ pub fn get_students(
     state: State<'_, DbState>,
 ) -> Result<Vec<StudentEnrollment>, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+
     let photo_field = if include_photos == Some(false) {
         "CAST(NULL AS TEXT) as photo_url"
     } else {
@@ -1873,31 +1912,32 @@ pub fn get_students(
 
 #[tauri::command]
 pub fn create_student(school_id: String, academic_year_id: String, first_name: String, last_name: String, class_id: Option<String>, state: State<'_, DbState>) -> Result<StudentEnrollment, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
-    
+
     let student_id = uuid::Uuid::new_v4().to_string();
     let enrollment_id = uuid::Uuid::new_v4().to_string();
-    let matricule = format!("MAT-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap().to_uppercase());
-    
-    // Begin transaction conceptually
-    conn.execute(
+    let matricule = format!("MAT-{}", uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect::<String>().to_uppercase());
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
         "INSERT INTO students (id, school_id, first_name, last_name, matricule) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![student_id, school_id, first_name, last_name, matricule],
     ).map_err(|e| e.to_string())?;
-    
-    conn.execute(
+
+    tx.execute(
         "INSERT INTO enrollments (id, school_id, academic_year_id, student_id, class_id, enrollment_type, status)
          VALUES (?1, ?2, ?3, ?4, ?5, 'NEW', 'ACTIVE')",
         rusqlite::params![enrollment_id, school_id, academic_year_id, student_id, class_id],
     ).map_err(|e| e.to_string())?;
-    
+
     let (class_name, class_level): (Option<String>, Option<String>) = if let Some(ref cid) = class_id {
-        conn.query_row(
-            "SELECT name, level FROM classes WHERE id = ?1",
-            rusqlite::params![cid],
+        tx.query_row(
+            "SELECT name, level FROM classes WHERE id = ?1 AND school_id = ?2 AND academic_year_id = ?3",
+            rusqlite::params![cid, school_id, academic_year_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap_or((None, None))
+        ).map_err(|_| "Classe introuvable dans cet établissement.".to_string())?
     } else {
         (None, None)
     };
@@ -1920,8 +1960,9 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
         "status": "ACTIVE"
     });
 
-    record_mutation(&conn, &school_id, "students", &student_id, "INSERT", &student)?;
-    record_mutation(&conn, &school_id, "enrollments", &enrollment_id, "INSERT", &enrollment)?;
+    record_mutation(&tx, &school_id, "students", &student_id, "INSERT", &student)?;
+    record_mutation(&tx, &school_id, "enrollments", &enrollment_id, "INSERT", &enrollment)?;
+    tx.commit().map_err(|e| e.to_string())?;
 
     Ok(StudentEnrollment {
         id: enrollment_id,
@@ -1945,7 +1986,13 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
 #[tauri::command]
 pub fn get_student_details(student_id: String, state: State<'_, DbState>) -> Result<crate::models::Student, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
+    let school_id: String = conn.query_row(
+        "SELECT school_id FROM students WHERE id = ?1",
+        rusqlite::params![student_id],
+        |row| row.get(0),
+    ).map_err(|_| "Élève introuvable.".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+
     let mut stmt = conn.prepare("
         SELECT id, first_name, last_name, birth_date, birth_place, gender, photo_url, matricule,
                address, phone, parent_name, parent_phone, parent_email, blood_type, medical_notes
@@ -1979,7 +2026,13 @@ pub fn get_student_details(student_id: String, state: State<'_, DbState>) -> Res
 #[tauri::command]
 pub fn update_student(student: crate::models::Student, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    
+    let school_id: String = conn.query_row(
+        "SELECT school_id FROM students WHERE id = ?1",
+        rusqlite::params![student.id],
+        |row| row.get(0),
+    ).map_err(|_| "Élève introuvable.".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
+
     conn.execute(
         "UPDATE students SET
             first_name = ?1, last_name = ?2, birth_date = ?3, birth_place = ?4, gender = ?5,
@@ -2016,6 +2069,15 @@ pub fn migrate_student(
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
+    let student_in_school: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM students WHERE id = ?1 AND school_id = ?2",
+        rusqlite::params![student_id, school_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    if student_in_school == 0 {
+        return Err("Élève introuvable dans cet établissement.".to_string());
+    }
     ensure_year_is_open(&conn, &school_id, &target_academic_year_id)?;
     
     let exists: bool = conn.query_row(
@@ -2065,11 +2127,21 @@ pub fn bulk_migrate_students(
     state: State<'_, DbState>
 ) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &target_academic_year_id)?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     
     for item in students {
+        let student_in_school: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM students WHERE id = ?1 AND school_id = ?2",
+            rusqlite::params![item.student_id, school_id],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        if student_in_school == 0 {
+            return Err("Élève introuvable dans cet établissement.".to_string());
+        }
+
         let exists: bool = tx.query_row(
             "SELECT COUNT(*) FROM enrollments WHERE academic_year_id = ?1 AND student_id = ?2",
             rusqlite::params![target_academic_year_id, item.student_id],
@@ -4183,18 +4255,36 @@ pub fn save_timetable_slot(
 use bcrypt::{hash, DEFAULT_COST};
 
 #[tauri::command]
-pub fn store_offline_credentials(user_id: String, email: String, password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    
+pub async fn store_offline_credentials(token: String, password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    if password.chars().count() < 6 {
+        return Err("Le mot de passe doit contenir au moins 6 caractères.".to_string());
+    }
+
+    let (supabase_url, supabase_anon_key) = crate::sync::get_supabase_config()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Client HTTP : {}", e))?;
+    let auth_user = crate::auth_guard::verify_supabase_user_token(
+        &supabase_url,
+        &supabase_anon_key,
+        &token,
+        &client,
+    ).await?;
+    let email = auth_user.email.ok_or_else(|| "Compte sans adresse e-mail.".to_string())?;
     let password_hash = hash(&password, DEFAULT_COST).map_err(|e| format!("Erreur hash: {}", e))?;
 
-    // Update if exists, or do we insert? Better to just update since sync_local_user already inserts it, 
-    // but just in case sync_local_user is not finished, we can use an UPSERT.
-    conn.execute(
-        "INSERT INTO users (id, email, password_hash) VALUES (?1, ?2, ?3)
-         ON CONFLICT(id) DO UPDATE SET email = excluded.email, password_hash = excluded.password_hash",
-        rusqlite::params![user_id, email, password_hash],
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let updated = conn.execute(
+        "UPDATE users SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+        rusqlite::params![password_hash, auth_user.id],
     ).map_err(|e| e.to_string())?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO users (id, email, username, password_hash, status) VALUES (?1, ?2, ?2, ?3, 'ACTIVE')",
+            rusqlite::params![auth_user.id, email, password_hash],
+        ).map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
@@ -5395,56 +5485,59 @@ pub fn login_local_conn(
         |row| row.get(0),
     ).unwrap_or(0);
 
-    // ─── Vérification de l'établissement ─────────────────────────────────────
-    if is_super == 0 && !school_id.trim().is_empty() && school_id != "school-1" {
-        let school_exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM schools WHERE id = ?1",
-            rusqlite::params![school_id],
+    // L'établissement de session vient du rôle réel, pas d'un identifiant par défaut.
+    let requested = school_id.trim();
+    let target_school_id = if is_super > 0 {
+        if requested.is_empty() {
+            conn.query_row(
+                "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
+                rusqlite::params![user_id],
+                |row| row.get::<_, String>(0),
+            ).map_err(|_| "Aucun établissement n'est associé à ce compte.".to_string())?
+        } else {
+            let school_exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM schools WHERE id = ?1",
+                rusqlite::params![requested],
+                |row| row.get(0),
+            ).unwrap_or(0);
+            if school_exists == 0 {
+                return Err("Établissement introuvable ou supprimé. Accès refusé.".to_string());
+            }
+            requested.to_string()
+        }
+    } else {
+        if requested.is_empty() {
+            return Err("Établissement requis. Accès refusé.".to_string());
+        }
+        let member: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM user_roles WHERE user_id = ?1 AND school_id = ?2",
+            rusqlite::params![user_id, requested],
             |row| row.get(0),
         ).unwrap_or(0);
-        if school_exists == 0 {
-            return Err("Établissement introuvable ou supprimé. Accès refusé.".to_string());
+        if member == 0 {
+            return Err("Ce compte n'appartient pas à cet établissement. Accès refusé.".to_string());
         }
-    }
-
-    // Récupérer le profil complet (avec filtre school_id si fourni, sinon le premier profil actif)
-    let (first_name, last_name, mut role_name): (Option<String>, Option<String>, Option<String>) = if !school_id.trim().is_empty() {
-        conn.query_row(
-            "SELECT p.first_name, p.last_name, r.name
-             FROM users u
-             LEFT JOIN profiles p ON p.user_id = u.id AND (p.school_id = ?2 OR p.school_id IS NULL)
-             LEFT JOIN user_roles ur ON ur.user_id = u.id AND (ur.school_id = ?2 OR ur.school_id IS NULL)
-             LEFT JOIN roles r ON r.id = ur.role_id
-             WHERE u.id = ?1
-             LIMIT 1",
-            rusqlite::params![user_id, school_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).unwrap_or((None, None, None))
-    } else {
-        conn.query_row(
-            "SELECT p.first_name, p.last_name, r.name
-             FROM users u
-             LEFT JOIN profiles p ON p.user_id = u.id
-             LEFT JOIN user_roles ur ON ur.user_id = u.id
-             LEFT JOIN roles r ON r.id = ur.role_id
-             WHERE u.id = ?1
-             LIMIT 1",
-            rusqlite::params![user_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).unwrap_or((None, None, None))
+        requested.to_string()
     };
+
+    let (first_name, last_name, mut role_name): (Option<String>, Option<String>, Option<String>) = conn.query_row(
+        "SELECT p.first_name, p.last_name, r.name
+         FROM users u
+         LEFT JOIN profiles p ON p.user_id = u.id AND p.school_id = ?2
+         LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ?2
+         LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE u.id = ?1
+         LIMIT 1",
+        rusqlite::params![user_id, target_school_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap_or((None, None, None));
 
     if is_super > 0 {
         role_name = Some("SUPER_ADMIN".to_string());
     }
 
-    // (ORI-SEC-003) : Enregistrer la session active en mémoire Rust
-    let target_school_id = if school_id.trim().is_empty() { "school-1" } else { school_id };
-    crate::auth_guard::establish_local_session(conn, &user_id, target_school_id)?;
-
-    // (SEC-01) : émettre un jeton opaque servant uniquement à restaurer
-    // cette session après redémarrage. Sans ce jeton, aucune restauration.
-    let issued = crate::auth_guard::issue_local_session_token(conn, &user_id, target_school_id)?;
+    crate::auth_guard::establish_local_session(conn, &user_id, &target_school_id)?;
+    let issued = crate::auth_guard::issue_local_session_token(conn, &user_id, &target_school_id)?;
 
     Ok(LoginProfile {
         user_id,
@@ -6266,6 +6359,32 @@ mod auth_tests {
         let profile = login_local_conn(&conn, "stduser", "UserPassword123!", "school-1").unwrap();
         assert_eq!(profile.role_name, Some("DIRECTION".to_string()));
         assert_ne!(profile.role_name, Some("SUPER_ADMIN".to_string()));
+    }
+
+    #[test]
+    fn test_login_rejects_other_school() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let conn = setup_test_auth_db();
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'Autre école')", []).unwrap();
+        let hashed = bcrypt::hash("UserPassword123!", bcrypt::DEFAULT_COST).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, email, username, password_hash, status) VALUES ('u-std', 'user@school.com', 'stduser', ?1, 'ACTIVE')",
+            rusqlite::params![hashed],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-std', 'u-std', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        let wrong = login_local_conn(&conn, "stduser", "UserPassword123!", "school-2");
+        assert!(wrong.is_err(), "Un compte de l'école 1 ne doit pas ouvrir de session sur l'école 2");
+
+        let missing = login_local_conn(&conn, "stduser", "UserPassword123!", "");
+        assert!(missing.is_err(), "Un établissement vide ne doit pas retomber sur school-1");
+
+        let ok = login_local_conn(&conn, "stduser", "UserPassword123!", "school-1").unwrap();
+        assert_eq!(ok.school_id, "school-1");
     }
 
     #[test]
