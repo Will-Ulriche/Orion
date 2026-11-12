@@ -1,123 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Eye, EyeOff, WifiOff, Loader2, AlertCircle, Shield, ArrowLeft } from 'lucide-react';
+import { Eye, EyeOff, WifiOff, Loader2, AlertCircle, Shield } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { useNetwork } from '../hooks/useNetwork';
 import { isCloudManagedUserId, verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation';
-import orionLogo from '../assets/orion_logo.png';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-interface Star {
-  x: number;
-  y: number;
-  r: number;
-  ox: number;
-  oy: number;
-  speed: number;
-  opacity: number;
-}
-
-// ─── Constellation Canvas ────────────────────────────────────────────────────
-function ConstellationCanvas() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const starsRef = useRef<Star[]>([]);
-  const frameRef = useRef<number>(0);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const resize = () => {
-      canvas.width = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
-    };
-    resize();
-    window.addEventListener('resize', resize);
-
-    // Generate stars
-    const count = 90;
-    starsRef.current = Array.from({ length: count }, () => {
-      const x = Math.random() * canvas.width;
-      const y = Math.random() * canvas.height;
-      return {
-        x, y,
-        ox: x, oy: y,
-        r: Math.random() * 1.8 + 0.4,
-        speed: Math.random() * 0.4 + 0.1,
-        opacity: Math.random() * 0.6 + 0.2,
-      };
-    });
-
-    let t = 0;
-    const draw = () => {
-      t += 0.005;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      const stars = starsRef.current;
-
-      // Animate stars with a slow drift
-      stars.forEach((s) => {
-        s.x = s.ox + Math.sin(t * s.speed + s.oy) * 12;
-        s.y = s.oy + Math.cos(t * s.speed + s.ox) * 8;
-      });
-
-      // Draw connections
-      for (let i = 0; i < stars.length; i++) {
-        for (let j = i + 1; j < stars.length; j++) {
-          const dx = stars[i].x - stars[j].x;
-          const dy = stars[i].y - stars[j].y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < 120) {
-            const alpha = (1 - dist / 120) * 0.25;
-            ctx.beginPath();
-            ctx.moveTo(stars[i].x, stars[i].y);
-            ctx.lineTo(stars[j].x, stars[j].y);
-            ctx.strokeStyle = `rgba(139, 92, 246, ${alpha})`;
-            ctx.lineWidth = 0.8;
-            ctx.stroke();
-          }
-        }
-      }
-
-      // Draw stars
-      stars.forEach((s) => {
-        // Glow
-        const grd = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r * 4);
-        grd.addColorStop(0, `rgba(167, 139, 250, ${s.opacity})`);
-        grd.addColorStop(1, 'rgba(167, 139, 250, 0)');
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, s.r * 4, 0, Math.PI * 2);
-        ctx.fillStyle = grd;
-        ctx.fill();
-
-        // Core
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(216, 180, 254, ${s.opacity})`;
-        ctx.fill();
-      });
-
-      frameRef.current = requestAnimationFrame(draw);
-    };
-
-    draw();
-    return () => {
-      cancelAnimationFrame(frameRef.current);
-      window.removeEventListener('resize', resize);
-    };
-  }, []);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 w-full h-full"
-      style={{ display: 'block' }}
-    />
-  );
-}
 
 // ─── Main Login Component ─────────────────────────────────────────────────────
 export default function Login({
@@ -129,7 +16,7 @@ export default function Login({
 }) {
   const { setOfflineSession, schoolId } = useAuth();
   const isOnline = useNetwork();
-  
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -186,22 +73,32 @@ export default function Login({
           setError(error.message);
         }
       } else if (data.user) {
-        // L'établissement (ou le compte) a-t-il été supprimé/suspendu par
-        // l'administration ? On vérifie avant d'accorder l'accès.
-        const metaSchoolId = (data.user.user_metadata as any)?.school_id as string | undefined;
-        const accountState = await verifyCloudAccount(data.user.id);
-        const schoolState = isCloudManagedUserId(metaSchoolId)
-          ? await verifyCloudSchool(metaSchoolId!)
-          : 'unknown';
+        // Vérifier si l'utilisateur est SUPER_ADMIN (qui n'est rattaché à aucun établissement)
+        const { data: roleData } = await supabase
+          .from('user_roles')
+          .select('roles(name)')
+          .eq('user_id', data.user.id);
+        const isSuperAdmin = (roleData ?? []).some((r: any) => r.roles?.name === 'SUPER_ADMIN')
+          || (data.user.user_metadata as any)?.role === 'SUPER_ADMIN';
 
-        if (accountState === 'missing' || schoolState === 'missing') {
-          await supabase.auth.signOut().catch(() => {});
-          setError(
-            schoolState === 'missing'
-              ? "Cet établissement a été supprimé par l'administration. Accès refusé."
-              : "Ce compte a été supprimé ou suspendu par l'administration. Contactez le support."
-          );
-          return;
+        if (!isSuperAdmin) {
+          // L'établissement (ou le compte) a-t-il été supprimé/suspendu par
+          // l'administration ? On vérifie avant d'accorder l'accès.
+          const metaSchoolId = (data.user.user_metadata as any)?.school_id as string | undefined;
+          const accountState = await verifyCloudAccount(data.user.id);
+          const schoolState = isCloudManagedUserId(metaSchoolId)
+            ? await verifyCloudSchool(metaSchoolId!)
+            : 'unknown';
+
+          if (accountState === 'missing' || schoolState === 'missing') {
+            await supabase.auth.signOut().catch(() => { });
+            setError(
+              schoolState === 'missing'
+                ? "Cet établissement a été supprimé par l'administration. Accès refusé."
+                : "Ce compte a été supprimé ou suspendu par l'administration. Contactez le support."
+            );
+            return;
+          }
         }
 
         // Succès en ligne — enregistrer pour usage futur hors-ligne
@@ -225,138 +122,87 @@ export default function Login({
     }
   };
 
-  const quotes = [
-    { text: "L'éducation est l'arme la plus puissante pour changer le monde.", author: "Nelson Mandela" },
-    { text: "Investir dans le savoir rapporte les meilleurs intérêts.", author: "Benjamin Franklin" },
-    { text: "L'éducation est la clé pour ouvrir la porte dorée de la liberté.", author: "George Washington Carver" },
-  ];
-  const quote = quotes[Math.floor(Date.now() / 86400000) % quotes.length];
-
   return (
     <div
-      className="min-h-screen flex"
-      style={{ background: 'linear-gradient(135deg, #080d1f 0%, #0f1629 50%, #0d0a20 100%)' }}
+      className="h-screen flex overflow-hidden"
+      style={{ backgroundColor: '#f8fafc' }}
     >
       {/* ── LEFT PANEL ──────────────────────────────────────────────────── */}
-      <div className="hidden lg:flex lg:w-3/5 relative flex-col items-center justify-center overflow-hidden">
-        {/* Constellation background */}
-        <ConstellationCanvas />
+      <div
+        className="hidden lg:flex lg:w-3/5 relative flex-col items-center justify-center overflow-hidden border-r border-slate-200/80"
+        style={{
+          backgroundColor: '#f8fafc',
+          backgroundImage: `
+            radial-gradient(circle at 1px 1px, rgba(99, 102, 241, 0.12) 1.2px, transparent 0),
+            radial-gradient(ellipse 60% 50% at 20% 25%, rgba(99, 102, 241, 0.08) 0%, transparent 70%),
+            radial-gradient(ellipse 50% 60% at 80% 75%, rgba(14, 165, 233, 0.09) 0%, transparent 70%)
+          `,
+          backgroundSize: '24px 24px, 100% 100%, 100% 100%',
+        }}
+      >
+        {/* Soft glowing ambient orbs */}
+        <div className="absolute top-[-10%] left-[-10%] w-[55%] h-[55%] bg-indigo-500/10 blur-[110px] rounded-full pointer-events-none" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-sky-400/10 blur-[110px] rounded-full pointer-events-none" />
 
-        {/* Radial gradient overlays */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            background:
-              'radial-gradient(ellipse 60% 60% at 30% 40%, rgba(79,46,229,0.18) 0%, transparent 70%), radial-gradient(ellipse 40% 50% at 70% 70%, rgba(124,58,237,0.12) 0%, transparent 70%)',
-          }}
-        />
+        {/* Textured noise overlay for subtle tactile paper texture */}
+        <svg className="absolute inset-0 w-full h-full opacity-[0.22] pointer-events-none mix-blend-overlay">
+          <filter id="login-noise">
+            <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch" />
+            <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0" />
+          </filter>
+          <rect width="100%" height="100%" filter="url(#login-noise)" />
+        </svg>
 
         {/* Content */}
-        <div className="relative z-10 max-w-md px-12 text-white">
-          {/* Logo mark */}
-          <div className="mb-12">
-            <img src={orionLogo} alt="Orion ERP" className="h-12 brightness-0 invert opacity-90" />
-          </div>
-
+        <div className="relative z-10 max-w-lg px-12">
           <h1
-            className="text-4xl font-bold leading-tight mb-6"
-            style={{ letterSpacing: '-0.02em' }}
+            className="text-5xl font-black text-slate-900 leading-[1.12] mb-6 tracking-tight"
           >
-            Inspirer<br />
-            <span
-              style={{
-                background: 'linear-gradient(135deg, #a78bfa, #818cf8)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-              }}
-            >
-              l'excellence
+            Connexion<br />
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 via-indigo-500 to-sky-600">
+              et Activation
             </span>
-            <br />
-            éducative.
           </h1>
 
-          <p className="text-slate-400 text-base leading-relaxed mb-12">
-            Pilotez votre établissement avec une plateforme unifiée — élèves, finances,
-            pédagogie et personnel, en ligne comme hors-ligne.
+          <p className="text-slate-600 text-base leading-relaxed max-w-md font-normal">
+            Une interface intuitive et performante pour accompagner chaque étape du parcours scolaire de votre établissement.
           </p>
-
-          {/* Quote */}
-          <div
-            className="border-l-2 pl-5"
-            style={{ borderColor: 'rgba(139,92,246,0.6)' }}
-          >
-            <p className="text-slate-300 text-sm italic leading-relaxed">
-              « {quote.text} »
-            </p>
-            <p className="text-slate-500 text-xs mt-2">— {quote.author}</p>
-          </div>
         </div>
-
-        {/* Bottom gradient fade */}
-        <div
-          className="absolute bottom-0 left-0 right-0 h-32 pointer-events-none"
-          style={{
-            background: 'linear-gradient(to top, rgba(8,13,31,0.6) 0%, transparent 100%)',
-          }}
-        />
       </div>
 
       {/* ── RIGHT PANEL ─────────────────────────────────────────────────── */}
       <div
-        className="flex-1 flex items-center justify-center px-6 py-12 relative"
+        className="flex-1 flex items-center justify-center px-6 py-8 relative overflow-hidden"
         style={{
-          background: 'linear-gradient(180deg, rgba(15,22,41,0.95) 0%, rgba(10,8,30,0.98) 100%)',
-          borderLeft: '1px solid rgba(255,255,255,0.04)',
+          backgroundColor: '#f8fafc',
+          backgroundImage: `
+            radial-gradient(circle at 1px 1px, rgba(99, 102, 241, 0.08) 1.2px, transparent 0),
+            radial-gradient(ellipse 60% 50% at 80% 25%, rgba(99, 102, 241, 0.06) 0%, transparent 70%),
+            radial-gradient(ellipse 50% 60% at 20% 80%, rgba(14, 165, 233, 0.07) 0%, transparent 70%)
+          `,
+          backgroundSize: '24px 24px, 100% 100%, 100% 100%',
+          borderLeft: '1px solid rgba(99,102,241,0.1)',
         }}
       >
-        {/* Subtle top glow */}
-        <div
-          className="absolute top-0 left-1/2 -translate-x-1/2 w-64 h-64 rounded-full pointer-events-none"
-          style={{
-            background: 'radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 70%)',
-            filter: 'blur(40px)',
-          }}
-        />
+        {/* Soft ambient orbs */}
+        <div className="absolute top-[-10%] right-[-10%] w-[45%] h-[45%] bg-indigo-500/8 blur-[100px] rounded-full pointer-events-none" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-sky-400/8 blur-[100px] rounded-full pointer-events-none" />
+
+        {/* Noise overlay */}
+        <svg className="absolute inset-0 w-full h-full opacity-[0.15] pointer-events-none mix-blend-overlay">
+          <filter id="right-noise">
+            <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch" />
+            <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0" />
+          </filter>
+          <rect width="100%" height="100%" filter="url(#right-noise)" />
+        </svg>
 
         <div className="w-full max-w-sm relative z-10" style={{ animation: 'fadeInUp 0.45s cubic-bezier(0.16,1,0.3,1)' }}>
 
-          {/* Logo (mobile only) */}
-          <div className="flex justify-center mb-8 lg:hidden">
-            <img src={orionLogo} alt="Orion ERP" className="h-10 brightness-0 invert opacity-90" />
-          </div>
-
           {/* Header */}
-          <div className="mb-8">
-            {/* Icon */}
-            <div
-              className="w-14 h-14 rounded-2xl flex items-center justify-center mb-6 mx-auto lg:mx-0"
-              style={{
-                background: 'linear-gradient(135deg, rgba(99,102,241,0.3), rgba(139,92,246,0.2))',
-                border: '1px solid rgba(99,102,241,0.35)',
-                boxShadow: '0 0 24px rgba(99,102,241,0.2)',
-              }}
-            >
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-                {/* Constellation Orion simplified */}
-                <circle cx="12" cy="4" r="1.5" fill="#a78bfa" />
-                <circle cx="7" cy="9" r="1.2" fill="#818cf8" />
-                <circle cx="17" cy="9" r="1.2" fill="#818cf8" />
-                <circle cx="9" cy="14" r="1" fill="#c4b5fd" />
-                <circle cx="15" cy="14" r="1" fill="#c4b5fd" />
-                <circle cx="6" cy="19" r="1.3" fill="#a78bfa" />
-                <circle cx="18" cy="19" r="1.3" fill="#a78bfa" />
-                <line x1="12" y1="4" x2="7" y2="9" stroke="#6366f1" strokeWidth="0.8" strokeOpacity="0.7" />
-                <line x1="12" y1="4" x2="17" y2="9" stroke="#6366f1" strokeWidth="0.8" strokeOpacity="0.7" />
-                <line x1="7" y1="9" x2="9" y2="14" stroke="#6366f1" strokeWidth="0.8" strokeOpacity="0.7" />
-                <line x1="17" y1="9" x2="15" y2="14" stroke="#6366f1" strokeWidth="0.8" strokeOpacity="0.7" />
-                <line x1="9" y1="14" x2="6" y2="19" stroke="#6366f1" strokeWidth="0.8" strokeOpacity="0.7" />
-                <line x1="15" y1="14" x2="18" y2="19" stroke="#6366f1" strokeWidth="0.8" strokeOpacity="0.7" />
-              </svg>
-            </div>
-
+          <div className="mb-5">
             <h2
-              className="text-2xl font-bold text-white text-center lg:text-left"
+              className="text-2xl font-bold text-slate-900 text-center lg:text-left"
               style={{ letterSpacing: '-0.02em' }}
             >
               Bienvenue
@@ -370,9 +216,9 @@ export default function Login({
               <div
                 className="mt-3 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium w-fit mx-auto lg:mx-0"
                 style={{
-                  background: 'rgba(99,102,241,0.12)',
-                  border: '1px solid rgba(99,102,241,0.3)',
-                  color: '#a5b4fc',
+                  background: 'rgba(99,102,241,0.08)',
+                  border: '1px solid rgba(99,102,241,0.2)',
+                  color: '#4f46e5',
                 }}
               >
                 <Shield size={12} />
@@ -386,25 +232,24 @@ export default function Login({
             <div
               className="flex items-start gap-3 p-3.5 rounded-xl mb-5 text-sm"
               style={{
-                background: 'rgba(239,68,68,0.1)',
-                border: '1px solid rgba(239,68,68,0.25)',
-                color: '#fca5a5',
+                background: 'rgba(239,68,68,0.07)',
+                border: '1px solid rgba(239,68,68,0.2)',
+                color: '#dc2626',
                 animation: 'fadeInUp 0.2s ease',
               }}
             >
-              <AlertCircle size={16} className="mt-0.5 flex-shrink-0" style={{ color: '#f87171' }} />
+              <AlertCircle size={16} className="mt-0.5 flex-shrink-0" style={{ color: '#ef4444' }} />
               <span>{error}</span>
             </div>
           )}
 
           {/* Form */}
-          <form onSubmit={handleLogin} className="space-y-4">
+          <form onSubmit={handleLogin} className="space-y-3">
             {/* Email */}
             <div>
               <label
                 className="block text-xs font-medium mb-2"
-                style={{ color: '#94a3b8' }}
-              >
+                style={{ color: '#94a3b8' }}              >
                 Identifiant ou e-mail
               </label>
               <input
@@ -412,24 +257,25 @@ export default function Login({
                 type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@ecole.com ou Admin"
+                placeholder=""
                 required
                 autoComplete="username"
-                className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-slate-600 transition-all duration-200"
+                className="w-full px-4 py-3 rounded-xl text-sm text-slate-900 placeholder-slate-400 transition-all duration-200"
                 style={{
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(255,255,255,0.7)',
+                  border: '1.5px solid #cbd5e1',
                   outline: 'none',
+                  color: '#1e293b',
                 }}
                 onFocus={(e) => {
-                  e.target.style.border = '1px solid rgba(99,102,241,0.6)';
-                  e.target.style.boxShadow = '0 0 0 3px rgba(99,102,241,0.1)';
-                  e.target.style.background = 'rgba(255,255,255,0.06)';
+                  e.target.style.border = '1.5px solid #6366f1';
+                  e.target.style.boxShadow = '0 0 0 3px rgba(99,102,241,0.12)';
+                  e.target.style.background = '#ffffff';
                 }}
                 onBlur={(e) => {
-                  e.target.style.border = '1px solid rgba(255,255,255,0.08)';
+                  e.target.style.border = '1.5px solid #cbd5e1';
                   e.target.style.boxShadow = 'none';
-                  e.target.style.background = 'rgba(255,255,255,0.04)';
+                  e.target.style.background = 'rgba(255,255,255,0.7)';
                 }}
               />
             </div>
@@ -438,8 +284,7 @@ export default function Login({
             <div>
               <label
                 className="block text-xs font-medium mb-2"
-                style={{ color: '#94a3b8' }}
-              >
+                style={{ color: '#94a3b8' }}              >
                 Mot de passe
               </label>
               <div className="relative">
@@ -451,21 +296,22 @@ export default function Login({
                   placeholder="••••••••"
                   required
                   autoComplete="current-password"
-                  className="w-full px-4 py-3 pr-12 rounded-xl text-sm text-white placeholder-slate-600 transition-all duration-200"
+                  className="w-full px-4 py-3 pr-12 rounded-xl text-sm text-slate-900 placeholder-slate-400 transition-all duration-200"
                   style={{
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.08)',
+                    background: 'rgba(255,255,255,0.7)',
+                    border: '1.5px solid #cbd5e1',
                     outline: 'none',
+                    color: '#1e293b',
                   }}
                   onFocus={(e) => {
-                    e.target.style.border = '1px solid rgba(99,102,241,0.6)';
-                    e.target.style.boxShadow = '0 0 0 3px rgba(99,102,241,0.1)';
-                    e.target.style.background = 'rgba(255,255,255,0.06)';
+                    e.target.style.border = '1.5px solid #6366f1';
+                    e.target.style.boxShadow = '0 0 0 3px rgba(99,102,241,0.12)';
+                    e.target.style.background = '#ffffff';
                   }}
                   onBlur={(e) => {
-                    e.target.style.border = '1px solid rgba(255,255,255,0.08)';
+                    e.target.style.border = '1.5px solid #cbd5e1';
                     e.target.style.boxShadow = 'none';
-                    e.target.style.background = 'rgba(255,255,255,0.04)';
+                    e.target.style.background = 'rgba(255,255,255,0.7)';
                   }}
                 />
                 <button
@@ -521,19 +367,15 @@ export default function Login({
             <button
               type="button"
               onClick={onSwitchToLocal}
-              className="w-full mt-3 py-2.5 rounded-xl border border-slate-750 hover:border-slate-600 text-slate-300 hover:text-white text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer bg-slate-800/40 hover:bg-slate-800/80"
-              style={{
-                border: '1px solid rgba(255,255,255,0.1)',
-              }}
+              className="w-full mt-3 py-2.5 rounded-xl text-slate-500 hover:text-indigo-600 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer hover:bg-indigo-50/60"
             >
-              <ArrowLeft size={14} />
               Retour à la connexion locale
             </button>
           )}
 
           {/* Offline badge */}
-          <div className="mt-8 flex items-center justify-center gap-2">
-            {offlineMode ? (
+          {offlineMode && (
+            <div className="mt-8 flex items-center justify-center gap-2">
               <div
                 className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium"
                 style={{
@@ -545,31 +387,8 @@ export default function Login({
                 <WifiOff size={12} />
                 Mode hors-ligne — authentification locale
               </div>
-            ) : (
-              <div
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs"
-                style={{ color: '#334155' }}
-              >
-                <span
-                  className="w-1.5 h-1.5 rounded-full inline-block"
-                  style={{
-                    background: '#22c55e',
-                    boxShadow: '0 0 6px rgba(34,197,94,0.8)',
-                    animation: 'pulse 2s infinite',
-                  }}
-                />
-                Connecté · Supabase
-              </div>
-            )}
-          </div>
-
-          {/* Footer */}
-          <p
-            className="text-center text-xs mt-6"
-            style={{ color: '#1e293b' }}
-          >
-            Orion ERP · v2.0 · Socle Tauri + Supabase
-          </p>
+            </div>
+          )}
         </div>
       </div>
 

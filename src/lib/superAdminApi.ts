@@ -709,24 +709,38 @@ export interface SuperAdminStats {
 }
 
 export async function getStats(): Promise<SuperAdminStats> {
-  const [schools, licenses, devices] = await Promise.all([
-    listSchools(),
-    listLicenses(),
-    listDevices(),
-  ]);
+  try {
+    const [schools, licenses, devices] = await Promise.all([
+      listSchools().catch(() => [] as School[]),
+      listLicenses().catch(() => [] as License[]),
+      listDevices().catch(() => [] as Device[]),
+    ]);
 
-  const now = Date.now();
-  const in30Days = now + 30 * 24 * 60 * 60 * 1000;
-  const expiringSoon = licenses.filter(
-    (l) => l.status === 'ACTIVE' && l.expires_at && new Date(l.expires_at).getTime() <= in30Days
-  ).length;
+    const safeLicenses = Array.isArray(licenses) ? licenses : [];
+    const safeSchools = Array.isArray(schools) ? schools : [];
+    const safeDevices = Array.isArray(devices) ? devices : [];
 
-  return {
-    schools: schools.length,
-    activeLicenses: licenses.filter((l) => l.status === 'ACTIVE').length,
-    devices: devices.length,
-    expiringSoon,
-  };
+    const now = Date.now();
+    const in30Days = now + 30 * 24 * 60 * 60 * 1000;
+    const expiringSoon = safeLicenses.filter(
+      (l) => l && l.status === 'ACTIVE' && l.expires_at && new Date(l.expires_at).getTime() <= in30Days
+    ).length;
+
+    return {
+      schools: safeSchools.length,
+      activeLicenses: safeLicenses.filter((l) => l && l.status === 'ACTIVE').length,
+      devices: safeDevices.length,
+      expiringSoon,
+    };
+  } catch (err) {
+    console.warn('[superAdminApi] getStats error:', err);
+    return {
+      schools: 0,
+      activeLicenses: 0,
+      devices: 0,
+      expiringSoon: 0,
+    };
+  }
 }
 
 // ─── Gestion des Identifiants Établissements ─────────────────

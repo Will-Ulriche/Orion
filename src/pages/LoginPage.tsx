@@ -3,7 +3,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { isCloudManagedUserId, verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation';
 import { UserCircle2, KeyRound, Loader2, X, Eye, EyeOff, Globe, ArrowRight } from 'lucide-react';
-import orionLogo from '../assets/orion_logo.png';
 
 interface LoginResult {
   user_id: string;
@@ -80,7 +79,7 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
   };
 
   const inputClass =
-    'w-full pl-11 pr-4 py-3.5 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all text-slate-700 placeholder:text-slate-400';
+    'w-full pl-11 pr-4 py-3.5 bg-slate-50/80 hover:bg-white border-2 border-slate-200/90 hover:border-indigo-300 focus:border-indigo-600 focus:bg-white rounded-2xl outline-none focus:outline-none focus:ring-0 focus:shadow-[0_8px_24px_-4px_rgba(99,102,241,0.22)] transition-all duration-200 text-slate-800 placeholder:text-slate-400 font-medium text-[15px]';
 
   return (
     <div className="flex min-h-screen bg-slate-50 relative overflow-hidden">
@@ -92,9 +91,6 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
 
         {/* Left Side - Branding */}
         <div className="hidden lg:flex w-1/2 flex-col justify-center px-16 relative z-10">
-          <div className="w-20 h-20 rounded-2xl flex items-center justify-center p-2.5 bg-white/80 border border-slate-200/80 shadow-lg shadow-indigo-500/10 mb-8 backdrop-blur-sm">
-            <img src={orionLogo} alt="Orion" className="w-full h-full object-contain" />
-          </div>
           <h1 className="text-5xl font-bold text-slate-800 mb-6 leading-tight">
             Bienvenue sur <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-sky-600">Orion</span>
           </h1>
@@ -119,8 +115,11 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
                   <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
                     Identifiant
                   </label>
-                  <div className="relative">
-                    <UserCircle2 size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <div className="relative group">
+                    <UserCircle2
+                      size={19}
+                      className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-600 group-focus-within:scale-110 group-hover:text-slate-500 transition-all duration-200 pointer-events-none"
+                    />
                     <input
                       type="text"
                       autoFocus
@@ -138,8 +137,11 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
                   <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
                     Mot de passe
                   </label>
-                  <div className="relative">
-                    <KeyRound size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <div className="relative group">
+                    <KeyRound
+                      size={19}
+                      className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-600 group-focus-within:scale-110 group-hover:text-slate-500 transition-all duration-200 pointer-events-none"
+                    />
                     <input
                       type={showPassword ? 'text' : 'password'}
                       autoComplete="current-password"
@@ -152,7 +154,7 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
                       type="button"
                       tabIndex={-1}
                       onClick={() => setShowPassword(v => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-xl text-slate-400 hover:text-indigo-600 hover:bg-indigo-50/80 active:scale-90 transition-all cursor-pointer"
                     >
                       {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
@@ -165,7 +167,10 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
                       <X size={16} className="flex-shrink-0 mt-0.5 text-rose-500" />
                       <span className="leading-snug">{error}</span>
                     </div>
-                    {onSwitchToOnline && (
+                    {onSwitchToOnline &&
+                      !error.toLowerCase().includes('incorrect') &&
+                      !error.toLowerCase().includes('mot de passe') &&
+                      (error.toLowerCase().includes('synchronis') || error.toLowerCase().includes('en ligne')) && (
                       <button
                         type="button"
                         onClick={onSwitchToOnline}
@@ -196,16 +201,11 @@ export default function LoginPage({ onSwitchToOnline }: LoginPageProps = {}) {
                     onClick={onSwitchToOnline}
                     className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 transition-colors py-2 px-3 rounded-xl hover:bg-indigo-50 cursor-pointer"
                   >
-                    <Globe size={14} />
                     Connexion en ligne / Activer un compte
-                    <ArrowRight size={13} />
                   </button>
                 </div>
               )}
 
-              <p className="text-center text-xs text-slate-400 mt-4">
-                Les identifiants sont créés et attribués par la direction de l'école.
-              </p>
             </div>
 
           </div>

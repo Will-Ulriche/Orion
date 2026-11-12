@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   LayoutDashboard, Building2, KeyRound, MonitorSmartphone, ArrowRight, Cloud, WifiOff, ShieldCheck, BarChart2, FileSpreadsheet,
 } from 'lucide-react';
-import { Badge, Btn, Card, Kpi } from '../../components/ui';
+import { Btn, Card, Kpi } from '../../components/ui';
 import SuperAdminShell from './SuperAdminShell';
 import { getStats, type SuperAdminStats } from '../../lib/superAdminApi';
 
@@ -31,7 +31,6 @@ export default function SuperAdminHome() {
       title="Vue globale"
       subtitle="Pilotage du parc d'établissements et des licences Orion"
       icon={LayoutDashboard}
-      actions={<Badge tone="amber">Données cloud (Supabase)</Badge>}
     >
       {error && (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">{error}</div>

@@ -153,7 +153,7 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
       </div>
     );
   }
-  if (state === 'ready') return <>{children}</>;
+  if (roles.includes('SUPER_ADMIN') || onboarded || state === 'ready') return <>{children}</>;
 
   const isBlocked = state === 'need-key' || state === 'offline-error';
 
@@ -211,9 +211,6 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
                         required
                         disabled={activating}
                       />
-                      <p className="text-[11px] text-slate-400 mt-1.5">
-                        Format : ORION-XXXX-XXXX-XXXX — fournie par votre administrateur Orion.
-                      </p>
                     </div>
 
                     {activationError && (

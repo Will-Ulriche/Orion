@@ -172,18 +172,13 @@ pub(crate) fn get_supabase_config() -> Result<(String, String), String> {
         .ok()
         .or_else(|| env::var("SUPABASE_URL").ok())
         .or_else(|| option_env!("VITE_SUPABASE_URL").map(String::from))
-        .ok_or_else(|| {
-            "VITE_SUPABASE_URL (ou SUPABASE_URL) doit être définie pour la sync".to_string()
-        })?;
+        .unwrap_or_else(|| "https://reyxonfhvlybjhxlthvy.supabase.co".to_string());
 
     let supabase_anon_key = env::var("VITE_SUPABASE_ANON_KEY")
         .ok()
         .or_else(|| env::var("SUPABASE_ANON_KEY").ok())
         .or_else(|| option_env!("VITE_SUPABASE_ANON_KEY").map(String::from))
-        .ok_or_else(|| {
-            "VITE_SUPABASE_ANON_KEY (ou SUPABASE_ANON_KEY) doit être définie pour la sync"
-                .to_string()
-        })?;
+        .unwrap_or_else(|| "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJleXhvbmZodmx5YmpoeGx0aHZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA1NDg1MDIsImV4cCI6MjEwNjEyNDUwMn0.E1r_pWl09sqbr0pjakApgC2YgSXzfsuOLoSFmk5efaw".to_string());
 
     reject_privileged_jwt(&supabase_anon_key)?;
     Ok((supabase_url, supabase_anon_key))

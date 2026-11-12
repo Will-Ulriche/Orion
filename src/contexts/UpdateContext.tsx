@@ -139,7 +139,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         if (!navigator.onLine || rawMsg.toLowerCase().includes('network') || rawMsg.toLowerCase().includes('failed to fetch')) {
           friendly = "Vous êtes actuellement hors ligne ou le réseau est indisponible.";
         } else if (rawMsg.includes('404') || rawMsg.toLowerCase().includes('release')) {
-          friendly = "Votre application est à jour : aucune nouvelle version n'est disponible sur le serveur.";
+          friendly = "Votre application est à jour : aucune nouvelle version n'est disponible.";
         } else if (rawMsg) {
           friendly = `Vérification échouée : ${rawMsg}`;
         }

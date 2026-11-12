@@ -287,13 +287,11 @@ fn supabase_expected_issuers() -> Vec<String> {
     let mut issuers = vec!["supabase".to_string()];
     let configured_url = std::env::var("VITE_SUPABASE_URL")
         .or_else(|_| std::env::var("SUPABASE_URL"))
-        .ok();
-    if let Some(url) = configured_url {
-        let trimmed = url.trim().trim_end_matches('/');
-        if !trimmed.is_empty() {
-            issuers.push(format!("{}/auth/v1", trimmed));
-            issuers.push(trimmed.to_string());
-        }
+        .unwrap_or_else(|_| "https://reyxonfhvlybjhxlthvy.supabase.co".to_string());
+    let trimmed = configured_url.trim().trim_end_matches('/');
+    if !trimmed.is_empty() {
+        issuers.push(format!("{}/auth/v1", trimmed));
+        issuers.push(trimmed.to_string());
     }
     issuers
 }

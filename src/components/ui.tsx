@@ -21,10 +21,10 @@ export const cx = (...parts: (string | false | null | undefined)[]) =>
   parts.filter(Boolean).join(' ');
 
 const FOCUS =
-  'focus:border-brand-500 focus:bg-white focus:ring-4 focus:ring-brand-500/10';
+  'focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-0 focus:shadow-[0_4px_16px_-2px_rgba(99,102,241,0.18)]';
 
 const CONTROL =
-  'w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 ' +
+  'w-full rounded-xl border border-slate-200/90 bg-slate-50/70 hover:bg-white hover:border-slate-300 px-3.5 py-2.5 text-sm text-slate-700 outline-none transition-all duration-200 placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 ' +
   FOCUS;
 
 export const inputClass = CONTROL;
@@ -219,8 +219,11 @@ export function SearchInput({
   className?: string;
 }) {
   return (
-    <div className={cx('relative', className)}>
-      <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+    <div className={cx('relative group', className)}>
+      <Search
+        size={15}
+        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-brand-500 group-focus-within:scale-110 group-hover:text-slate-500 transition-all duration-200"
+      />
       <input
         type="search"
         value={value}
@@ -233,7 +236,7 @@ export function SearchInput({
           type="button"
           aria-label="Effacer la recherche"
           onClick={() => onChange('')}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 transition-all hover:bg-slate-100 hover:text-slate-600 active:scale-90 cursor-pointer"
         >
           <X size={13} />
         </button>

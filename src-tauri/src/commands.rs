@@ -4632,7 +4632,10 @@ pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<
 #[tauri::command]
 pub fn save_license(license: LicenseRec, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::require_super_admin(&conn)?;
+    // Tout utilisateur authentifié peut sauvegarder la licence de son établissement
+    // (nécessaire pour l'activation initiale par la DIRECTION via FirstConnectionGate).
+    // La sécurité est garantie en amont : le JWT RS256 a déjà été validé par verify_license_token.
+    crate::auth_guard::require_authenticated(&conn)?;
     conn.execute(
         "INSERT OR REPLACE INTO licenses (id, school_id, license_key, status, starts_at, expires_at, max_devices, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)",

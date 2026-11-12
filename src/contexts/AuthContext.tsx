@@ -7,6 +7,7 @@ import { verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation'
 interface AuthContextType {
   session: Session | null;
   user: User | null;
+  loading: boolean;
   roles: string[];
   rolesLoaded: boolean;
   schoolId: string;
@@ -482,7 +483,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      session, user, roles, rolesLoaded,
+      session, user, loading, roles, rolesLoaded,
       schoolId,
       forcedSchoolId,
       forcedSchoolName,

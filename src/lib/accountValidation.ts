@@ -22,6 +22,13 @@ export type CloudAccountState = 'active' | 'missing' | 'unknown';
 export async function verifyCloudAccount(userId: string): Promise<CloudAccountState> {
   if (!isCloudManagedUserId(userId)) return 'unknown';
   try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    // Sans session Supabase active (ex: connexion locale hors ligne),
+    // la politique RLS bloque la lecture anonyme de la table 'users'.
+    // Ne JAMAIS déduire que le compte est 'missing' quand la requête est anonyme.
+    if (!sessionData?.session) {
+      return 'unknown';
+    }
     const { data, error } = await supabase
       .from('users')
       .select('id, status')
@@ -39,7 +46,7 @@ export async function verifyCloudAccount(userId: string): Promise<CloudAccountSt
  * Vérifie que l'établissement existe toujours et est actif côté cloud.
  *  - 'active'  : l'établissement existe et n'est pas clôturé
  *  - 'missing' : l'établissement a été supprimé (ou suspendu/clôturé)
- *  - 'unknown' : cloud injoignable → aucune conclusion (mode hors-ligne toléré)
+ *  - 'unknown' : cloud injoignable ou non authentifié → aucune conclusion
  *
  * Sert à bloquer l'accès aux comptes d'un établissement supprimé par le
  * Super Admin, même si la ligne utilisateur correspondante subsiste.
@@ -47,6 +54,10 @@ export async function verifyCloudAccount(userId: string): Promise<CloudAccountSt
 export async function verifyCloudSchool(schoolId: string): Promise<CloudAccountState> {
   if (!isCloudManagedUserId(schoolId)) return 'unknown';
   try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (!sessionData?.session) {
+      return 'unknown';
+    }
     const { data, error } = await supabase
       .from('schools')
       .select('id, status')

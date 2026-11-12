@@ -47,7 +47,6 @@ const superAdminItems = [
 
 export default function Sidebar() {
   const { user, roles, rolesLoaded, inSchoolMode, forcedSchoolName, exitSchoolMode, schoolId } = useAuth();
-  const { status, currentVersion, openModal, checkForUpdates } = useUpdater();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(() => typeof window !== 'undefined' && window.innerWidth < 1180);
   const [schoolName, setSchoolName] = useState('');
@@ -254,44 +253,6 @@ export default function Sidebar() {
 
       </nav>
 
-      {/* Tag de version au pied du menu */}
-      <div className={`sb-version py-[var(--sb-v-sm)] px-[var(--sb-gutter)] transition-all duration-300 flex ${collapsed ? 'justify-center' : 'justify-start'}`}>
-        <button
-          onClick={() => {
-            openModal();
-            if (status === 'idle' || status === 'up-to-date') {
-              checkForUpdates(false);
-            }
-          }}
-          className="flex items-center text-[length:var(--sb-label-font)] font-mono text-slate-400 hover:text-slate-200 transition-colors py-[var(--sb-v-sm)] cursor-pointer"
-          title="Vérifier les mises à jour logicielles"
-        >
-          <span
-            className={`w-2 h-2 rounded-full flex-shrink-0 transition-transform duration-300 ${
-              status === 'available' || status === 'downloaded'
-                ? 'bg-blue-400 animate-pulse'
-                : status === 'checking'
-                ? 'bg-amber-400 animate-spin'
-                : 'bg-emerald-500'
-            }`}
-          />
-          <div
-            className={`flex items-center overflow-hidden transition-all duration-300 ease-in-out ${
-              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-[160px] opacity-100 ml-2'
-            }`}
-          >
-            <span className="flex items-center gap-1.5 whitespace-nowrap">
-              <span>Orion v{currentVersion}</span>
-              {(status === 'available' || status === 'downloaded') && (
-                <span className="px-1.5 py-0.5 rounded text-[9px] font-sans font-bold bg-blue-500/25 text-blue-300 border border-blue-500/40">
-                  Màj dispo
-                </span>
-              )}
-            </span>
-          </div>
-        </button>
-      </div>
-
       {/* User Profile — cliquable avec menu popup */}
       <UserProfileMenu collapsed={collapsed} displayName={displayName} email={email} />
     </aside>
@@ -472,7 +433,7 @@ function UserProfileMenu({
         }}
         title={collapsed ? `${displayName} — Options` : undefined}
       >
-        {/* Avatar avec indicateur de statut */}
+        {/* Avatar */}
         <div className="relative flex-shrink-0">
           <div className="w-[var(--sb-avatar)] h-[var(--sb-avatar)] rounded-full bg-slate-600 overflow-hidden border border-slate-500 transition-all duration-300">
             <img
@@ -481,10 +442,6 @@ function UserProfileMenu({
               className="w-full h-full object-cover"
             />
           </div>
-          <span
-            className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#2b2a33]"
-            style={{ backgroundColor: isOffline ? '#f59e0b' : '#22c55e' }}
-          />
         </div>
 
         <div

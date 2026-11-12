@@ -30,31 +30,44 @@ import ExportSuperAdmin from './pages/superadmin/ExportSuperAdmin';
 import LicenseGuard from './components/LicenseGuard';
 import FirstConnectionGate from './components/FirstConnectionGate';
 import { UpdateProvider } from './contexts/UpdateContext';
+import ErrorBoundary from './components/ErrorBoundary';
 import './App.css';
 
 // Route protégée : redirige vers /login si non connecté
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const { session } = useAuth();
-  if (!session) return <Navigate to="/login" />;
+  const { session, loading } = useAuth();
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#1a1921]">
+        <div className="w-7 h-7 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  if (!session) return <Navigate to="/login" replace />;
   return <>{children}</>;
 };
 
 // Route avec vérification de rôle
 const RoleProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles: string[] }) => {
-  const { session, roles, rolesLoaded } = useAuth();
+  const { session, roles, rolesLoaded, loading } = useAuth();
   
-  if (!session) return <Navigate to="/login" />;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#1a1921]">
+        <div className="w-7 h-7 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!session) return <Navigate to="/login" replace />;
   
   // Attendre que les rôles soient chargés avant de bloquer l'accès
   if (!rolesLoaded) {
-    return <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <p className="text-center text-sm text-slate-500">Chargement en cours...</p>
-    </div>;
-  }
-  
-  // B. Utilisateur non authentifié - rediriger vers /login
-  if (!session) {
-    return <Navigate to="/login" />;
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2" />
+      </div>
+    );
   }
   
   // C. Erreur ou rôle absent - refuser l'accès
@@ -85,8 +98,15 @@ const RoleProtectedRoute = ({ children, allowedRoles }: { children: React.ReactN
 
 // Route publique : redirige vers / si déjà connecté
 const PublicRoute = ({ children }: { children: React.ReactNode }) => {
-  const { session } = useAuth();
-  if (session) return <Navigate to="/" />;
+  const { session, loading } = useAuth();
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#1a1921]">
+        <div className="w-7 h-7 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  if (session) return <Navigate to="/" replace />;
   return <>{children}</>;
 };
 
@@ -180,15 +200,17 @@ function AppRoutes() {
 
 function App() {
   return (
-    <AuthProvider>
-      <YearProvider>
-        <BrowserRouter>
-          <UpdateProvider>
-            <AppRoutes />
-          </UpdateProvider>
-        </BrowserRouter>
-      </YearProvider>
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <YearProvider>
+          <BrowserRouter>
+            <UpdateProvider>
+              <AppRoutes />
+            </UpdateProvider>
+          </BrowserRouter>
+        </YearProvider>
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
 

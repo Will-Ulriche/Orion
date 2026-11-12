@@ -3,7 +3,6 @@ import {
   ArrowRight, ShieldCheck, HardDriveDownload, Rocket
 } from 'lucide-react';
 import { useUpdater } from '../contexts/UpdateContext';
-import orionLogo from '../assets/orion_logo.png';
 
 export default function UpdateModal() {
   const {
@@ -46,19 +45,9 @@ export default function UpdateModal() {
       >
         {/* Barre d'en-tête décorative */}
         <div className="relative px-6 pt-6 pb-4 border-b border-white/5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-white/5 border border-white/10 p-1.5 flex items-center justify-center shadow-inner">
-              <img src={orionLogo} alt="Orion" className="w-full h-full object-contain" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-base font-semibold text-white tracking-wide">Mise à jour d'Orion</h3>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-blue-500/20 text-blue-400 border border-blue-500/30">
-                  OTA
-                </span>
-              </div>
-              <p className="text-[12px] text-slate-400">Centre de mise à niveau directe</p>
-            </div>
+          <div>
+            <h3 className="text-base font-semibold text-white tracking-wide">Mise à jour d'Orion</h3>
+            <p className="text-[12px] text-slate-400">Centre de mise à niveau directe</p>
           </div>
 
           {!isDownloading && (
@@ -254,7 +243,7 @@ export default function UpdateModal() {
                 <p className="font-medium text-slate-300">Que faire ?</p>
                 <ul className="list-disc list-inside space-y-1 text-[11.5px]">
                   <li>Vérifiez votre connexion Internet locale.</li>
-                  <li>Si aucune nouvelle version n'est disponible sur le serveur, votre application est déjà à jour.</li>
+                  <li>Si aucune nouvelle version n'est disponible, votre application est déjà à jour.</li>
                 </ul>
               </div>
             </div>

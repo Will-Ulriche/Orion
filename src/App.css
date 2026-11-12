@@ -49,9 +49,46 @@ button {
   cursor: pointer;
 }
 
+/* Indicateur d'accessibilité uniquement pour la navigation clavier sur les éléments non textuels */
 :focus-visible {
   outline: 2px solid var(--color-brand-500);
   outline-offset: 2px;
+}
+
+/* Supprime le double contour bleu / halo natif de WebView2/navigateur sur tous les champs de saisie */
+input,
+textarea,
+select {
+  outline: none !important;
+}
+
+input:focus,
+input:focus-visible,
+textarea:focus,
+textarea:focus-visible,
+select:focus,
+select:focus-visible {
+  outline: none !important;
+  outline-offset: 0 !important;
+}
+
+/* Amélioration esthétique et dynamique des champs de saisie et de recherche */
+input[type="text"],
+input[type="password"],
+input[type="search"],
+input[type="email"],
+input[type="number"],
+input[type="tel"] {
+  transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.15s ease;
+}
+
+input[type="search"]:focus,
+input[placeholder*="Recherch"]:focus,
+input[placeholder*="recherch"]:focus {
+  box-shadow: 0 4px 20px -2px rgba(99, 102, 241, 0.16) !important;
 }
 
 @keyframes fadeInScale {
