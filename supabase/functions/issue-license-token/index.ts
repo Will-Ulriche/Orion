@@ -224,7 +224,7 @@ export async function handleIssueLicenseRequest(
     // 5. Vérifier la licence en base (via adminClient)
     const { data: lic, error: licErr } = await adminClient
       .from("licenses")
-      .select("id, school_id, license_key, status, starts_at, expires_at")
+      .select("id, school_id, license_key, status, starts_at, expires_at, is_current")
       .eq("id", license_id)
       .maybeSingle();
 
@@ -237,7 +237,12 @@ export async function handleIssueLicenseRequest(
       return jsonResponse({ error: "Licence non associée à cet établissement" }, 403);
     }
 
-    // 7. Statut et dates de validité
+    // 7. Licence courante obligatoire : l'historique ne réautorise jamais l'accès.
+    if (lic.is_current !== true) {
+      return jsonResponse({ error: "Licence remplacée ou archivée" }, 403);
+    }
+
+    // 8. Statut et dates de validité (comparaisons UTC via Date)
     const now = new Date();
     if (lic.status !== "ACTIVE") {
       return jsonResponse({ error: `Licence ${String(lic.status).toLowerCase()}` }, 403);
@@ -249,7 +254,7 @@ export async function handleIssueLicenseRequest(
       return jsonResponse({ error: "Licence expirée" }, 403);
     }
 
-    // 8. Calcul de la durée de grâce du jeton (maximum 7 jours imposé par le serveur)
+    // 9. Calcul de la durée de grâce du jeton (maximum 7 jours imposé par le serveur)
     const MAX_GRACE_SECONDS = 7 * 24 * 60 * 60;
     const iat = Math.floor(now.getTime() / 1000);
     let exp = iat + MAX_GRACE_SECONDS;
@@ -262,7 +267,7 @@ export async function handleIssueLicenseRequest(
       }
     }
 
-    // 9. Signature du jeton RS256
+    // 10. Signature du jeton RS256
     // Ni la clé privée ni le jeton complet ne sont affichés dans les logs
     const sign = deps?.signFn ?? signRS256;
     const token = await sign(
@@ -274,6 +279,7 @@ export async function handleIssueLicenseRequest(
         status: lic.status,
         starts_at: lic.starts_at ?? null,
         expires_at: lic.expires_at ?? null,
+        is_current: true,
         iat,
         exp,
       },

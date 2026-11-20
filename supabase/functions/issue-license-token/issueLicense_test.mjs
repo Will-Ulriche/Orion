@@ -74,6 +74,10 @@ async function handleIssueLicenseMock(req, mockConfig, signFn = async () => "dum
     return { status: 403, body: { error: "Licence non associée à cet établissement" } };
   }
 
+  if (lic.is_current !== true) {
+    return { status: 403, body: { error: "Licence remplacée ou archivée" } };
+  }
+
   const now = new Date();
   if (lic.status !== "ACTIVE") {
     return { status: 403, body: { error: `Licence ${lic.status.toLowerCase()}` } };
@@ -106,6 +110,7 @@ function validLicense(overrides = {}) {
     school_id: "school-123",
     license_key: "ORION-KEY-123",
     status: "ACTIVE",
+    is_current: true,
     starts_at: new Date(now.getTime() - 86400000).toISOString(),
     expires_at: new Date(now.getTime() + 30 * 86400000).toISOString(),
     ...overrides,
@@ -260,6 +265,29 @@ test("[Mock Handler HTTP] Refuse une licence suspendue (403)", async () => {
   });
   assert.equal(res.status, 403);
   assert.equal(res.body.token, undefined);
+});
+
+test("[Mock Handler HTTP] Refuse une licence révoquée (403)", async () => {
+  const req = makeRequest({ license_id: "lic-001", school_id: "school-123" });
+  const res = await handleIssueLicenseMock(req, {
+    user: { id: "u-1" },
+    isSuperAdmin: true,
+    license: validLicense({ status: "REVOKED" }),
+  });
+  assert.equal(res.status, 403);
+  assert.equal(res.body.token, undefined);
+});
+
+test("[Mock Handler HTTP] Refuse une ancienne licence ACTIVE non courante (403)", async () => {
+  const req = makeRequest({ license_id: "lic-001", school_id: "school-123" });
+  const res = await handleIssueLicenseMock(req, {
+    user: { id: "u-1" },
+    isSuperAdmin: true,
+    license: validLicense({ status: "ACTIVE", is_current: false }),
+  });
+  assert.equal(res.status, 403);
+  assert.equal(res.body.token, undefined);
+  assert.match(res.body.error, /remplacée/i);
 });
 
 test("[Mock Handler HTTP] Refuse une licence pas encore active (starts_at futur) (403)", async () => {

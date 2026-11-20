@@ -1,9 +1,10 @@
 -- ============================================================
 -- ORI-SEC-007 — Durcissement RLS et isolation multi-établissement
 -- ------------------------------------------------------------
--- MIGRATION PROPOSEE : ne pas appliquer automatiquement en production.
--- A valider sur une base Supabase de test après récupération du schéma
--- réel et des politiques distantes (voir le rapport d'audit).
+-- Migration intégrée au schéma de référence supabase/migrations.
+-- Sa validation doit être faite sur une base Supabase de test : comparer le
+-- catalogue réel (pg_policies) avec supabase/tests/sec09_rls_catalog_test.sql
+-- avant tout déploiement.
 --
 -- Objectifs :
 --  1. Corriger l'escalade via public.roles (RLS absente).

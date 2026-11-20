@@ -15,504 +15,846 @@ BEGIN;
 -- 1. FIXTURES
 -- ============================================================
 
--- Deux écoles distinctes pour tester l'isolation par établissement
+INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at) VALUES
+  ('a1111111-1111-4111-8111-111111111111', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'active@test.local', '', NOW(), NOW(), NOW()),
+  ('a2222222-2222-4222-8222-222222222222', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'softdel@test.local', '', NOW(), NOW(), NOW()),
+  ('a3333333-3333-4333-8333-333333333333', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'noprofile@test.local', '', NOW(), NOW(), NOW()),
+  ('a4444444-4444-4444-8444-444444444444', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'wrongschool@test.local', '', NOW(), NOW(), NOW()),
+  ('a5555555-5555-4555-8555-555555555555', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'inactive@test.local', '', NOW(), NOW(), NOW()),
+  ('a6666666-6666-4666-8666-666666666666', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'norole@test.local', '', NOW(), NOW(), NOW()),
+  ('a7777777-7777-4777-8777-777777777777', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'active2@test.local', '', NOW(), NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO public.schools (id, name) VALUES
   ('11111111-1111-4111-8111-111111111111', 'École Alpha'),
   ('22222222-2222-4222-8222-222222222222', 'École Bêta')
 ON CONFLICT (id) DO NOTHING;
 
--- Rôles de base (déjà présents, mais on s'assure)
+INSERT INTO public.academic_years (id, school_id, name, start_date, end_date, status, is_current, created_at, updated_at) VALUES
+  ('90111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', '2026-2027', DATE '2026-09-01', DATE '2027-06-30', 'ACTIVE', true, NOW(), NOW()),
+  ('90222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', '2026-2027', DATE '2026-09-01', DATE '2027-06-30', 'ACTIVE', true, NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.students (id, school_id, first_name, last_name, created_at, updated_at) VALUES
+  ('90311111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'Finance', 'Alpha', NOW(), NOW()),
+  ('90322222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', 'Finance', 'Beta', NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.enrollments (id, school_id, academic_year_id, student_id, enrollment_type, created_at, updated_at) VALUES
+  ('90411111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', 'INITIAL', NOW(), NOW()),
+  ('90422222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', '90222222-2222-4222-8222-222222222222', '90322222-2222-4222-8222-222222222222', 'INITIAL', NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO public.roles (id, name) VALUES
   ('role_dir', 'DIRECTION'),
   ('role_sec', 'SECRETAIRE'),
+  ('role_compta', 'COMPTABLE'),
   ('role_prof', 'PROFESSEUR')
 ON CONFLICT (id) DO NOTHING;
 
--- Utilisateurs de test
 INSERT INTO public.users (id, email, status) VALUES
-  ('u-active-1', 'active@test.com', 'ACTIVE'),        -- profil actif, rôle DIRECTION
-  ('u-softdel-1', 'softdel@test.com', 'ACTIVE'),      -- profil SOFT-DELETÉ, rôle DIRECTION
-  ('u-noprofile-1', 'noprofile@test.com', 'ACTIVE'),  -- AUCUN profil, rôle DIRECTION persistant
-  ('u-wrongschool-1', 'wrongschool@test.com', 'ACTIVE'), -- profil actif, école Bêta, rôle DIRECTION
-  ('u-inactive-1', 'inactive@test.com', 'INACTIVE'),  -- compte désactivé, rôle persistant
-  ('u-no-role-1', 'norole@test.com', 'ACTIVE')        -- profil actif, AUCUN rôle DIRECTION/COMPTABLE
+  ('a1111111-1111-4111-8111-111111111111', 'active@test.local', 'ACTIVE'),
+  ('a2222222-2222-4222-8222-222222222222', 'softdel@test.local', 'ACTIVE'),
+  ('a3333333-3333-4333-8333-333333333333', 'noprofile@test.local', 'ACTIVE'),
+  ('a4444444-4444-4444-8444-444444444444', 'wrongschool@test.local', 'ACTIVE'),
+  ('a5555555-5555-4555-8555-555555555555', 'inactive@test.local', 'INACTIVE'),
+  ('a6666666-6666-4666-8666-666666666666', 'norole@test.local', 'ACTIVE'),
+  ('a7777777-7777-4777-8777-777777777777', 'active2@test.local', 'ACTIVE')
 ON CONFLICT (id) DO NOTHING;
 
--- Profils
 INSERT INTO public.profiles (id, user_id, school_id, first_name, last_name, deleted_at) VALUES
-  ('p-active-1', 'u-active-1', '11111111-1111-4111-8111-111111111111', 'Active', 'One', NULL),           -- actif, école Alpha
-  ('p-active-2', 'u-active-2', '11111111-1111-4111-8111-111111111111', 'Active', 'Two', NULL),           -- actif, école Alpha (pas de rôle)
-  ('p-softdel-1', 'u-softdel-1', '11111111-1111-4111-8111-111111111111', 'Soft', 'Deleted', NOW()),      -- SOFT-DELETÉ, école Alpha
-  ('p-wrongschool-1', 'u-wrongschool-1', '22222222-2222-4222-8222-222222222222', 'Wrong', 'School', NULL), -- actif, école Bêta
-  ('p-inactive-1', 'u-inactive-1', '11111111-1111-4111-8111-111111111111', 'Inactive', 'One', NULL),     -- actif, école Alpha (mais compte INACTIVE)
-  ('p-no-role-1', 'u-no-role-1', '11111111-1111-4111-8111-111111111111', 'NoRole', 'One', NULL)          -- actif, école Alpha, aucun rôle financier
+  ('b1111111-1111-4111-8111-111111111111', 'a1111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'Active', 'One', NULL),
+  ('b2222222-2222-4222-8222-222222222222', 'a2222222-2222-4222-8222-222222222222', '11111111-1111-4111-8111-111111111111', 'Soft', 'Deleted', NOW()),
+  ('b4444444-4444-4444-8444-444444444444', 'a4444444-4444-4444-8444-444444444444', '22222222-2222-4222-8222-222222222222', 'Wrong', 'School', NULL),
+  ('b5555555-5555-4555-8555-555555555555', 'a5555555-5555-4555-8555-555555555555', '11111111-1111-4111-8111-111111111111', 'Inactive', 'One', NULL),
+  ('b6666666-6666-4666-8666-666666666666', 'a6666666-6666-4666-8666-666666666666', '11111111-1111-4111-8111-111111111111', 'NoRole', 'One', NULL),
+  ('b7777777-7777-4777-8777-777777777777', 'a7777777-7777-4777-8777-777777777777', '11111111-1111-4111-8111-111111111111', 'Active', 'Two', NULL)
 ON CONFLICT (id) DO NOTHING;
 
--- Rôles (user_roles)
 INSERT INTO public.user_roles (id, user_id, school_id, role_id) VALUES
-  ('ur-active-1-dir', 'u-active-1', '11111111-1111-4111-8111-111111111111', 'role_dir'),   -- DIRECTION, école Alpha, profil actif
-  ('ur-active-2-norole', 'u-active-2', '11111111-1111-4111-8111-111111111111', 'role_prof'),   -- PROFESSEUR, école Alpha, profil actif (pas DIRECTION/COMPTABLE)
-  ('ur-softdel-1-dir', 'u-softdel-1', '11111111-1111-4111-8111-111111111111', 'role_dir'),   -- DIRECTION, école Alpha, profil SOFT-DELETÉ
-  ('ur-noprofile-1-dir', 'u-noprofile-1', '11111111-1111-4111-8111-111111111111', 'role_dir'), -- DIRECTION, école Alpha, AUCUN profil
+  ('c1111111-1111-4111-8111-111111111111', 'a1111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'role_dir'),
+  ('c2222222-2222-4222-8222-222222222222', 'a2222222-2222-4222-8222-222222222222', '11111111-1111-4111-8111-111111111111', 'role_dir'),
+  ('c3333333-3333-4333-8333-333333333333', 'a3333333-3333-4333-8333-333333333333', '11111111-1111-4111-8111-111111111111', 'role_dir'),
+  ('c4444444-4444-4444-8444-444444444444', 'a4444444-4444-4444-8444-444444444444', '22222222-2222-4222-8222-222222222222', 'role_dir'),
+  ('c5555555-5555-4555-8555-555555555555', 'a5555555-5555-4555-8555-555555555555', '11111111-1111-4111-8111-111111111111', 'role_dir'),
+  ('c7777777-7777-4777-8777-777777777777', 'a7777777-7777-4777-8777-777777777777', '11111111-1111-4111-8111-111111111111', 'role_prof')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at) VALUES
+  ('d1111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', 'Frais Alpha', 1000.00, 'SCOLARITE', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW()),
+  ('d2222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', '90222222-2222-4222-8222-222222222222', 'Frais Bêta', 1000.00, 'SCOLARITE', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, cancelled_at, cancel_reason, created_at, updated_at) VALUES
+  ('e1111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90411111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', NULL, 500.00, NOW(), 'ESPECES', NULL, 'SEC06-A-1', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW()),
+  ('e2222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', '90222222-2222-4222-8222-222222222222', '90422222-2222-4222-8222-222222222222', '90322222-2222-4222-8222-222222222222', NULL, 500.00, NOW(), 'ESPECES', NULL, 'SEC06-B-1', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================
--- 2. TESTS SCÉNARIO A : Profil soft-deleté (u-softdel-1)
--- ============================================================
--- L'utilisateur a un compte actif, un rôle DIRECTION, mais son profil
--- est soft-deleté. Aucune opération financière ne doit être autorisée.
+-- 2. SCÉNARIO A — Profil soft-deleté : tout refusé
 -- ============================================================
 
--- Test A.1 : SELECT sur fee_structures - doit retourner 0 lignes
-SELECT set_config('request.jwt.claim.sub', 'u-softdel-1', true);
+SELECT set_config('request.jwt.claim.sub', 'a2222222-2222-4222-8222-222222222222', true);
 SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', 'a2222222-2222-4222-8222-222222222222', 'role', 'authenticated')::text, true);
 SET LOCAL ROLE authenticated;
 
-DO $$
+DO $sec06$
 DECLARE
   v_count integer;
+  v_refused boolean := false;
 BEGIN
-  SELECT count(*) INTO v_count
-  FROM public.fee_structures
-  WHERE school_id = '11111111-1111-4111-8111-111111111111';
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'TEST A.1 ÉCHEC : Soft-deleted peut SELECT % ligne(s) sur fee_structures', v_count;
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.fee_structures WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST A.1 ÉCHEC : soft-deleted voit % ligne(s) sur fee_structures', v_count;
   END IF;
-  RAISE NOTICE 'OK A.1 — Profil soft-deleté : SELECT fee_structures = 0 ligne';
-END $$;
+  RAISE NOTICE 'OK A.1';
+END
+$sec06$;
 
--- Test A.2 : INSERT sur fee_structures - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
 BEGIN
-  INSERT INTO public.fee_structures (id, school_id, name, amount, fee_type, applies_to, created_at, updated_at)
-  VALUES ('fs-test-softdel-1', '11111111-1111-4111-8111-111111111111', 'Test insert', 100.00, 'TEST', 'TOUS', NOW(), NOW());
-  RAISE EXCEPTION 'TEST A.2 ÉCHEC : Soft-deleted a pu INSERT sur fee_structures';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK A.2 — Profil soft-deleté : INSERT fee_structures refusé';
-  WHEN others THEN
-    RAISE NOTICE 'OK A.2 — Profil soft-deleté : INSERT fee_structures refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    INSERT INTO public.fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+    VALUES ('f1111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', 'A.2', 100.00, 'TEST', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST A.2 ÉCHEC : INSERT fee_structures autorisé';
+  END IF;
+  RAISE NOTICE 'OK A.2';
+END
+$sec06$;
 
--- Test A.3 : UPDATE sur fee_structures - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_rows integer;
+  v_refused boolean := false;
 BEGIN
-  UPDATE public.fee_structures
-  SET amount = 2000.00
-  WHERE id = 'fs-active-1';
-  RAISE EXCEPTION 'TEST A.3 ÉCHEC : Soft-deleted a pu UPDATE fee_structures';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK A.3 — Profil soft-deleté : UPDATE fee_structures refusé';
-  WHEN others THEN
-    RAISE NOTICE 'OK A.3 — Profil soft-deleté : UPDATE fee_structures refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    UPDATE public.fee_structures SET amount = 2000.00 WHERE id = 'd1111111-1111-4111-8111-111111111111';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_refused := (coalesce(v_rows, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST A.3 ÉCHEC : % ligne(s) modifiée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK A.3';
+END
+$sec06$;
 
--- Test A.4 : DELETE sur fee_structures - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_rows integer;
+  v_refused boolean := false;
 BEGIN
-  DELETE FROM public.fee_structures
-  WHERE id = 'fs-active-1';
-  RAISE EXCEPTION 'TEST A.4 ÉCHEC : Soft-deleted a pu DELETE fee_structures';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK A.4 — Profil soft-deleté : DELETE fee_structures refusé';
-  WHEN others THEN
+  BEGIN
+    DELETE FROM public.fee_structures WHERE id = 'd1111111-1111-4111-8111-111111111111';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_refused := (coalesce(v_rows, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST A.4 ÉCHEC : % ligne(s) supprimée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK A.4';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_count integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.payments WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST A.5 ÉCHEC : soft-deleted voit % ligne(s) sur payments', v_count;
+  END IF;
+  RAISE NOTICE 'OK A.5';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, cancelled_at, cancel_reason, created_at, updated_at)
+    VALUES ('f2222222-2222-4222-8222-222222222222', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90411111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', NULL, 100.00, NOW(), 'ESPECES', NULL, 'SEC06-A2', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST A.6 ÉCHEC : INSERT payments autorisé';
+  END IF;
+  RAISE NOTICE 'OK A.6';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_rows integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    UPDATE public.payments SET amount = 600.00 WHERE id = 'e1111111-1111-4111-8111-111111111111';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_refused := (coalesce(v_rows, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST A.7 ÉCHEC : % ligne(s) modifiée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK A.7';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_rows integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    DELETE FROM public.payments WHERE id = 'e1111111-1111-4111-8111-111111111111';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_refused := (coalesce(v_rows, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST A.8 ÉCHEC : % ligne(s) supprimée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK A.8';
+END
+$sec06$;
 
 -- ============================================================
--- 3. TESTS SCÉNARIO B : Profil actif (u-active-1)
--- ============================================================
--- L'utilisateur a un compte actif, un rôle DIRECTION, et un profil actif.
--- Les opérations doivent être autorisées.
+-- 3. SCÉNARIO B — Profil actif DIRECTION : tout autorisé
 -- ============================================================
 
--- Test B.1 : SELECT sur fee_structures - doit retourner les lignes
-SELECT set_config('request.jwt.claim.sub', 'u-active-1', true);
+SELECT set_config('request.jwt.claim.sub', 'a1111111-1111-4111-8111-111111111111', true);
 SELECT set_config('request.jwt.claim.role', 'authenticated', true);
-SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', json_build_object('sub', 'a1111111-1111-4111-8111-111111111111', 'role', 'authenticated')::text, true);
 
-DO $$
+DO $sec06$
 DECLARE
   v_count integer;
 BEGIN
-  SELECT count(*) INTO v_count
-  FROM public.fee_structures
-  WHERE school_id = '11111111-1111-4111-8111-111111111111';
+  SELECT count(*) INTO v_count FROM public.fee_structures WHERE school_id = '11111111-1111-4111-8111-111111111111';
   IF v_count = 0 THEN
-    RAISE EXCEPTION 'TEST B.1 ÉCHEC : Profil actif ne voit aucune ligne sur fee_structures';
+    RAISE EXCEPTION 'TEST B.1 ÉCHEC : aucune ligne visible sur fee_structures';
   END IF;
-  RAISE NOTICE 'OK B.1 — Profil actif : SELECT fee_structures = % ligne(s)', v_count;
-END $$;
+  RAISE NOTICE 'OK B.1';
+END
+$sec06$;
 
--- Test B.2 : SELECT sur payments - doit retourner les lignes
-DO $$
+DO $sec06$
 DECLARE
   v_count integer;
 BEGIN
-  SELECT count(*) INTO v_count
-  FROM public.payments
-  WHERE school_id = '11111111-1111-4111-8111-111111111111';
+  SELECT count(*) INTO v_count FROM public.payments WHERE school_id = '11111111-1111-4111-8111-111111111111';
   IF v_count = 0 THEN
-    RAISE EXCEPTION 'TEST B.2 ÉCHEC : Profil actif ne voit aucune ligne sur payments';
+    RAISE EXCEPTION 'TEST B.2 ÉCHEC : aucune ligne visible sur payments';
   END IF;
-  RAISE NOTICE 'OK B.2 — Profil actif : SELECT payments = % ligne(s)', v_count;
-END $$;
+  RAISE NOTICE 'OK B.2';
+END
+$sec06$;
 
--- Test B.3 : INSERT sur fee_structures - doit être autorisé
-DO $$
+DO $sec06$
 BEGIN
-  INSERT INTO public.fee_structures (id, school_id, name, amount, fee_type, applies_to, created_at, updated_at)
-  VALUES ('fs-test-active-1', '11111111-1111-4111-8111-111111111111', 'Test insert actif', 200.00, 'TEST', 'TOUS', NOW(), NOW());
-  RAISE NOTICE 'OK B.3 — Profil actif : INSERT fee_structures autorisé';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE EXCEPTION 'TEST B.3 ÉCHEC : Profil actif ne peut pas INSERT sur fee_structures';
-  WHEN others THEN
-    RAISE EXCEPTION 'TEST B.3 ÉCHEC : Erreur inattendue sur INSERT fee_structures : %', SQLERRM;
-END $$;
+  INSERT INTO public.fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+  VALUES ('f3333333-3333-4333-8333-333333333333', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', 'B.3', 200.00, 'TEST', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW());
+  RAISE NOTICE 'OK B.3';
+END
+$sec06$;
 
--- Test B.4 : UPDATE sur fee_structures - doit être autorisé
-DO $$
+DO $sec06$
+DECLARE
+  v_rows integer;
 BEGIN
-  UPDATE public.fee_structures
-  SET amount = 1500.00
-  WHERE id = 'fs-test-active-1';
-  RAISE NOTICE 'OK B.4 — Profil actif : UPDATE fee_structures autorisé';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE EXCEPTION 'TEST B.4 ÉCHEC : Profil actif ne peut pas UPDATE fee_structures';
-  WHEN others THEN
-    RAISE EXCEPTION 'TEST B.4 ÉCHEC : Erreur inattendue sur UPDATE fee_structures : %', SQLERRM;
-END $$;
+  UPDATE public.fee_structures SET amount = 1500.00 WHERE id = 'f3333333-3333-4333-8333-333333333333';
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  IF v_rows <> 1 THEN
+    RAISE EXCEPTION 'TEST B.4 ÉCHEC : % ligne(s) modifiée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK B.4';
+END
+$sec06$;
 
--- Test B.5 : DELETE sur fee_structures - doit être autorisé
-DO $$
+DO $sec06$
+DECLARE
+  v_rows integer;
 BEGIN
-  DELETE FROM public.fee_structures
-  WHERE id = 'fs-test-active-1';
-  RAISE NOTICE 'OK B.5 — Profil actif : DELETE fee_structures autorisé';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE EXCEPTION 'TEST B.5 ÉCHEC : Profil actif ne peut pas DELETE fee_structures';
-  WHEN others THEN
-    RAISE EXCEPTION 'TEST B.5 ÉCHEC : Erreur inattendue sur DELETE fee_structures : %', SQLERRM;
-END $$;
+  DELETE FROM public.fee_structures WHERE id = 'f3333333-3333-4333-8333-333333333333';
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  IF v_rows <> 1 THEN
+    RAISE EXCEPTION 'TEST B.5 ÉCHEC : % ligne(s) supprimée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK B.5';
+END
+$sec06$;
 
+DO $sec06$
+BEGIN
+  INSERT INTO public.payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, cancelled_at, cancel_reason, created_at, updated_at)
+  VALUES ('f4444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90411111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', NULL, 300.00, NOW(), 'ESPECES', NULL, 'SEC06-B6', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW());
+  RAISE NOTICE 'OK B.6';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_rows integer;
+BEGIN
+  UPDATE public.payments SET amount = 400.00 WHERE id = 'f4444444-4444-4444-8444-444444444444';
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  IF v_rows <> 1 THEN
+    RAISE EXCEPTION 'TEST B.7 ÉCHEC : % ligne(s) modifiée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK B.7';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_rows integer;
+BEGIN
+  DELETE FROM public.payments WHERE id = 'f4444444-4444-4444-8444-444444444444';
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  IF v_rows <> 1 THEN
+    RAISE EXCEPTION 'TEST B.8 ÉCHEC : % ligne(s) supprimée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK B.8';
+END
+$sec06$;
 
 -- ============================================================
--- 4. TESTS SCÉNARIO C : Isolation inter-établissements (u-wrongschool-1)
--- ============================================================
--- L'utilisateur a un profil actif et un rôle DIRECTION dans l'école Bêta,
--- mais tente d'accéder aux données de l'école Alpha. Doit être refusé.
+-- 4. SCÉNARIO C — Isolation inter-établissements : tout refusé sur Alpha
 -- ============================================================
 
--- Test C.1 : SELECT sur fee_structures de l'école Alpha - doit retourner 0 lignes
-SELECT set_config('request.jwt.claim.sub', 'u-wrongschool-1', true);
+SELECT set_config('request.jwt.claim.sub', 'a4444444-4444-4444-8444-444444444444', true);
 SELECT set_config('request.jwt.claim.role', 'authenticated', true);
-SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', json_build_object('sub', 'a4444444-4444-4444-8444-444444444444', 'role', 'authenticated')::text, true);
 
-DO $$
+DO $sec06$
 DECLARE
   v_count integer;
+  v_refused boolean := false;
 BEGIN
-  SELECT count(*) INTO v_count
-  FROM public.fee_structures
-  WHERE school_id = '11111111-1111-4111-8111-111111111111';
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'TEST C.1 ÉCHEC : Utilisateur école Bêta peut SELECT % ligne(s) sur fee_structures école Alpha', v_count;
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.fee_structures WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST C.1 ÉCHEC : Bêta voit % ligne(s) sur Alpha', v_count;
   END IF;
-  RAISE NOTICE 'OK C.1 — Isolation : Utilisateur école Bêta ne voit pas fee_structures école Alpha';
-END $$;
+  RAISE NOTICE 'OK C.1';
+END
+$sec06$;
 
--- Test C.2 : INSERT sur fee_structures de l'école Alpha - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
 BEGIN
-  INSERT INTO public.fee_structures (id, school_id, name, amount, fee_type, applies_to, created_at, updated_at)
-  VALUES ('fs-test-isolation-1', '11111111-1111-4111-8111-111111111111', 'Test isolation', 100.00, 'TEST', 'TOUS', NOW(), NOW());
-  RAISE EXCEPTION 'TEST C.2 ÉCHEC : Utilisateur école Bêta a pu INSERT sur fee_structures école Alpha';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK C.2 — Isolation : Utilisateur école Bêta ne peut pas INSERT sur fee_structures école Alpha';
-  WHEN others THEN
-    RAISE NOTICE 'OK C.2 — Isolation : Utilisateur école Bêta INSERT refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    INSERT INTO public.fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+    VALUES ('f5555555-5555-4555-8555-555555555555', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', 'C.2', 100.00, 'TEST', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST C.2 ÉCHEC : INSERT sur Alpha autorisé';
+  END IF;
+  RAISE NOTICE 'OK C.2';
+END
+$sec06$;
 
--- Test C.3 : UPDATE sur fee_structures de l'école Alpha - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_rows integer;
+  v_refused boolean := false;
 BEGIN
-  UPDATE public.fee_structures
-  SET amount = 9999.00
-  WHERE id = 'fs-active-1';
-  RAISE EXCEPTION 'TEST C.3 ÉCHEC : Utilisateur école Bêta a pu UPDATE fee_structures école Alpha';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK C.3 — Isolation : Utilisateur école Bêta ne peut pas UPDATE fee_structures école Alpha';
-  WHEN others THEN
-    RAISE NOTICE 'OK C.3 — Isolation : Utilisateur école Bêta UPDATE refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    UPDATE public.fee_structures SET amount = 9999.00 WHERE id = 'd1111111-1111-4111-8111-111111111111';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_refused := (coalesce(v_rows, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST C.3 ÉCHEC : % ligne(s) modifiée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK C.3';
+END
+$sec06$;
 
--- Test C.4 : DELETE sur fee_structures de l'école Alpha - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_rows integer;
+  v_refused boolean := false;
 BEGIN
-  DELETE FROM public.fee_structures
-  WHERE id = 'fs-active-1';
-  RAISE EXCEPTION 'TEST C.4 ÉCHEC : Utilisateur école Bêta a pu DELETE fee_structures école Alpha';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK C.4 — Isolation : Utilisateur école Bêta ne peut pas DELETE fee_structures école Alpha';
-  WHEN others THEN
-    RAISE NOTICE 'OK C.4 — Isolation : Utilisateur école Bêta DELETE refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    DELETE FROM public.fee_structures WHERE id = 'd1111111-1111-4111-8111-111111111111';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_refused := (coalesce(v_rows, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST C.4 ÉCHEC : % ligne(s) supprimée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK C.4';
+END
+$sec06$;
 
--- Test C.5 : SELECT sur payments de l'école Alpha - doit retourner 0 lignes
-DO $$
+DO $sec06$
 DECLARE
   v_count integer;
+  v_refused boolean := false;
 BEGIN
-  SELECT count(*) INTO v_count
-  FROM public.payments
-  WHERE school_id = '11111111-1111-4111-8111-111111111111';
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'TEST C.5 ÉCHEC : Utilisateur école Bêta peut SELECT % ligne(s) sur payments école Alpha', v_count;
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.payments WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST C.5 ÉCHEC : Bêta voit % ligne(s) sur Alpha', v_count;
   END IF;
-  RAISE NOTICE 'OK C.5 — Isolation : Utilisateur école Bêta ne voit pas payments école Alpha';
-END $$;
+  RAISE NOTICE 'OK C.5';
+END
+$sec06$;
 
--- Test C.6 : INSERT sur payments de l'école Alpha - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
 BEGIN
-  INSERT INTO public.payments (id, school_id, amount, payment_date, status, created_at, updated_at)
-  VALUES ('pay-test-isolation-1', '11111111-1111-4111-8111-111111111111', 100.00, NOW(), 'PAYE', NOW(), NOW());
-  RAISE EXCEPTION 'TEST C.6 ÉCHEC : Utilisateur école Bêta a pu INSERT sur payments école Alpha';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK C.6 — Isolation : Utilisateur école Bêta ne peut pas INSERT sur payments école Alpha';
-  WHEN others THEN
-    RAISE NOTICE 'OK C.6 — Isolation : Utilisateur école Bêta INSERT refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    INSERT INTO public.payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, cancelled_at, cancel_reason, created_at, updated_at)
+    VALUES ('f6666666-6666-4666-8666-666666666666', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90411111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', NULL, 100.00, NOW(), 'ESPECES', NULL, 'SEC06-C6', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST C.6 ÉCHEC : INSERT payments sur Alpha autorisé';
+  END IF;
+  RAISE NOTICE 'OK C.6';
+END
+$sec06$;
 
--- Test C.7 : UPDATE sur payments de l'école Alpha - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_rows integer;
+  v_refused boolean := false;
 BEGIN
-  UPDATE public.payments
-  SET amount = 9999.00
-  WHERE id = 'pay-active-1';
-  RAISE EXCEPTION 'TEST C.7 ÉCHEC : Utilisateur école Bêta a pu UPDATE payments école Alpha';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK C.7 — Isolation : Utilisateur école Bêta ne peut pas UPDATE payments école Alpha';
-  WHEN others THEN
-    RAISE NOTICE 'OK C.7 — Isolation : Utilisateur école Bêta UPDATE refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    UPDATE public.payments SET amount = 9999.00 WHERE id = 'e1111111-1111-4111-8111-111111111111';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_refused := (coalesce(v_rows, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST C.7 ÉCHEC : % ligne(s) modifiée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK C.7';
+END
+$sec06$;
 
--- Test C.8 : DELETE sur payments de l'école Alpha - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_rows integer;
+  v_refused boolean := false;
 BEGIN
-  DELETE FROM public.payments
-  WHERE id = 'pay-active-1';
-  RAISE EXCEPTION 'TEST C.8 ÉCHEC : Utilisateur école Bêta a pu DELETE payments école Alpha';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK C.8 — Isolation : Utilisateur école Bêta ne peut pas DELETE payments école Alpha';
-  WHEN others THEN
-    RAISE NOTICE 'OK C.8 — Isolation : Utilisateur école Bêta DELETE refusé (erreur : %)', SQLERRM;
-END $$;
-
+  BEGIN
+    DELETE FROM public.payments WHERE id = 'e1111111-1111-4111-8111-111111111111';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    v_refused := (coalesce(v_rows, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST C.8 ÉCHEC : % ligne(s) supprimée(s)', v_rows;
+  END IF;
+  RAISE NOTICE 'OK C.8';
+END
+$sec06$;
 
 -- ============================================================
--- 5. TESTS SCÉNARIO D : Utilisateur sans rôle financier (u-no-role-1)
--- ============================================================
--- L'utilisateur a un compte actif, un profil actif, mais aucun rôle
--- DIRECTION ou COMPTABLE. Les opérations financières doivent être refusées.
+-- 5. SCÉNARIO D — Profil actif sans rôle financier : tout refusé
 -- ============================================================
 
--- Test D.1 : SELECT sur fee_structures - doit retourner 0 lignes
-SELECT set_config('request.jwt.claim.sub', 'u-no-role-1', true);
+SELECT set_config('request.jwt.claim.sub', 'a7777777-7777-4777-8777-777777777777', true);
 SELECT set_config('request.jwt.claim.role', 'authenticated', true);
-SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', json_build_object('sub', 'a7777777-7777-4777-8777-777777777777', 'role', 'authenticated')::text, true);
 
-DO $$
+DO $sec06$
 DECLARE
   v_count integer;
+  v_refused boolean := false;
 BEGIN
-  SELECT count(*) INTO v_count
-  FROM public.fee_structures
-  WHERE school_id = '11111111-1111-4111-8111-111111111111';
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'TEST D.1 ÉCHEC : Utilisateur sans rôle peut SELECT % ligne(s) sur fee_structures', v_count;
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.fee_structures WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST D.1 ÉCHEC : sans rôle voit % ligne(s) sur fee_structures', v_count;
   END IF;
-  RAISE NOTICE 'OK D.1 — Pas de rôle : SELECT fee_structures = 0 ligne';
-END $$;
+  RAISE NOTICE 'OK D.1';
+END
+$sec06$;
 
--- Test D.2 : INSERT sur fee_structures - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
 BEGIN
-  INSERT INTO public.fee_structures (id, school_id, name, amount, fee_type, applies_to, created_at, updated_at)
-  VALUES ('fs-test-norole-1', '11111111-1111-4111-8111-111111111111', 'Test insert sans rôle', 100.00, 'TEST', 'TOUS', NOW(), NOW());
-  RAISE EXCEPTION 'TEST D.2 ÉCHEC : Utilisateur sans rôle a pu INSERT sur fee_structures';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK D.2 — Pas de rôle : INSERT fee_structures refusé';
-  WHEN others THEN
-    RAISE NOTICE 'OK D.2 — Pas de rôle : INSERT fee_structures refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    INSERT INTO public.fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+    VALUES ('f7777777-7777-4777-8777-777777777777', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', 'D.2', 100.00, 'TEST', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST D.2 ÉCHEC : INSERT fee_structures autorisé';
+  END IF;
+  RAISE NOTICE 'OK D.2';
+END
+$sec06$;
 
--- Test D.3 : SELECT sur payments - doit retourner 0 lignes
-DO $$
+DO $sec06$
 DECLARE
   v_count integer;
+  v_refused boolean := false;
 BEGIN
-  SELECT count(*) INTO v_count
-  FROM public.payments
-  WHERE school_id = '11111111-1111-4111-8111-111111111111';
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'TEST D.3 ÉCHEC : Utilisateur sans rôle peut SELECT % ligne(s) sur payments', v_count;
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.payments WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST D.3 ÉCHEC : sans rôle voit % ligne(s) sur payments', v_count;
   END IF;
-  RAISE NOTICE 'OK D.3 — Pas de rôle : SELECT payments = 0 ligne';
-END $$;
+  RAISE NOTICE 'OK D.3';
+END
+$sec06$;
 
--- Test D.4 : INSERT sur payments - doit être refusé
-DO $$
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
 BEGIN
-  INSERT INTO public.payments (id, school_id, amount, payment_date, status, created_at, updated_at)
-  VALUES ('pay-test-norole-1', '11111111-1111-4111-8111-111111111111', 100.00, NOW(), 'PAYE', NOW(), NOW());
-  RAISE EXCEPTION 'TEST D.4 ÉCHEC : Utilisateur sans rôle a pu INSERT sur payments';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK D.4 — Pas de rôle : INSERT payments refusé';
-  WHEN others THEN
-    RAISE NOTICE 'OK D.4 — Pas de rôle : INSERT payments refusé (erreur : %)', SQLERRM;
-END $$;
+  BEGIN
+    INSERT INTO public.payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, cancelled_at, cancel_reason, created_at, updated_at)
+    VALUES ('f8888888-8888-4888-8888-888888888888', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90411111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', NULL, 100.00, NOW(), 'ESPECES', NULL, 'SEC06-D4', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST D.4 ÉCHEC : INSERT payments autorisé';
+  END IF;
+  RAISE NOTICE 'OK D.4';
+END
+$sec06$;
 
 -- ============================================================
--- 6. RÉCAPITULATIF
+-- 6. SCÉNARIO E — Compte INACTIVE : tout refusé
 -- ============================================================
 
-DO $$
+SELECT set_config('request.jwt.claim.sub', 'a5555555-5555-4555-8555-555555555555', true);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', 'a5555555-5555-4555-8555-555555555555', 'role', 'authenticated')::text, true);
+
+DO $sec06$
+DECLARE
+  v_count integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.fee_structures WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST E.1 ÉCHEC : compte inactif voit % ligne(s) sur fee_structures', v_count;
+  END IF;
+  RAISE NOTICE 'OK E.1';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+    VALUES ('f9999999-9999-4999-8999-999999999999', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', 'E.2', 100.00, 'TEST', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST E.2 ÉCHEC : INSERT fee_structures autorisé';
+  END IF;
+  RAISE NOTICE 'OK E.2';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_count integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.payments WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST E.3 ÉCHEC : compte inactif voit % ligne(s) sur payments', v_count;
+  END IF;
+  RAISE NOTICE 'OK E.3';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, cancelled_at, cancel_reason, created_at, updated_at)
+    VALUES ('faaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90411111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', NULL, 100.00, NOW(), 'ESPECES', NULL, 'SEC06-E4', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST E.4 ÉCHEC : INSERT payments autorisé';
+  END IF;
+  RAISE NOTICE 'OK E.4';
+END
+$sec06$;
+
+-- ============================================================
+-- 7. SCÉNARIO F — Rôle DIRECTION sans profil : tout refusé
+-- ============================================================
+
+SELECT set_config('request.jwt.claim.sub', 'a3333333-3333-4333-8333-333333333333', true);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', 'a3333333-3333-4333-8333-333333333333', 'role', 'authenticated')::text, true);
+
+DO $sec06$
+DECLARE
+  v_count integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.fee_structures WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST F.1 ÉCHEC : sans profil voit % ligne(s) sur fee_structures', v_count;
+  END IF;
+  RAISE NOTICE 'OK F.1';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+    VALUES ('fbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', 'F.2', 100.00, 'TEST', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST F.2 ÉCHEC : INSERT fee_structures autorisé';
+  END IF;
+  RAISE NOTICE 'OK F.2';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_count integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.payments WHERE school_id = '11111111-1111-4111-8111-111111111111';
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST F.3 ÉCHEC : sans profil voit % ligne(s) sur payments', v_count;
+  END IF;
+  RAISE NOTICE 'OK F.3';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, cancelled_at, cancel_reason, created_at, updated_at)
+    VALUES ('fccccccc-cccc-4ccc-8ccc-cccccccccccc', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90411111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', NULL, 100.00, NOW(), 'ESPECES', NULL, 'SEC06-F4', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST F.4 ÉCHEC : INSERT payments autorisé';
+  END IF;
+  RAISE NOTICE 'OK F.4';
+END
+$sec06$;
+
+SELECT set_config('request.jwt.claim.sub', '', true);
+SELECT set_config('request.jwt.claim.role', 'anon', true);
+SELECT set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
+SET LOCAL ROLE anon;
+
+DO $sec06$
+DECLARE
+  v_count integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.fee_structures;
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST G.1 ÉCHEC : anon voit % ligne(s) sur fee_structures', v_count;
+  END IF;
+  RAISE NOTICE 'OK G.1';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_count integer;
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    SELECT count(*) INTO v_count FROM public.payments;
+    v_refused := (coalesce(v_count, 0) = 0);
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST G.2 ÉCHEC : anon voit % ligne(s) sur payments', v_count;
+  END IF;
+  RAISE NOTICE 'OK G.2';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
+    VALUES ('fddddddd-dddd-4ddd-8ddd-dddddddddddd', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', 'G.3', 100.00, 'TEST', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST G.3 ÉCHEC : INSERT fee_structures anon autorisé';
+  END IF;
+  RAISE NOTICE 'OK G.3';
+END
+$sec06$;
+
+DO $sec06$
+DECLARE
+  v_refused boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, cancelled_at, cancel_reason, created_at, updated_at)
+    VALUES ('feeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', '11111111-1111-4111-8111-111111111111', '90111111-1111-4111-8111-111111111111', '90411111-1111-4111-8111-111111111111', '90311111-1111-4111-8111-111111111111', NULL, 100.00, NOW(), 'ESPECES', NULL, 'SEC06-G4', NULL, 'test', 'VALID', NULL, NULL, NOW(), NOW());
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_refused := true;
+    WHEN SQLSTATE '42501' THEN v_refused := true;
+  END;
+  IF NOT v_refused THEN
+    RAISE EXCEPTION 'TEST G.4 ÉCHEC : INSERT payments anon autorisé';
+  END IF;
+  RAISE NOTICE 'OK G.4';
+END
+$sec06$;
+
+RESET ROLE;
+
+DO $sec06$
 BEGIN
   RAISE NOTICE '';
   RAISE NOTICE '===== RÉSUMÉ DES TESTS SEC06 =====';
-  RAISE NOTICE 'A. Profil soft-deleté : Toutes les opérations refusées';
-  RAISE NOTICE 'B. Profil actif : Toutes les opérations autorisées';
-  RAISE NOTICE 'C. Isolation inter-établissements : Toutes les opérations refusées';
-  RAISE NOTICE 'D. Utilisateur sans rôle : Toutes les opérations refusées';
+  RAISE NOTICE 'A. Profil soft-deleté : refusé';
+  RAISE NOTICE 'B. Profil actif DIRECTION : autorisé';
+  RAISE NOTICE 'C. Isolation inter-établissements : refusé';
+  RAISE NOTICE 'D. Profil actif sans rôle financier : refusé';
+  RAISE NOTICE 'E. Compte INACTIVE : refusé';
+  RAISE NOTICE 'F. Rôle DIRECTION sans profil : refusé';
+  RAISE NOTICE 'G. Rôle anon : refusé';
   RAISE NOTICE '===== FIN DES TESTS SEC06 =====';
-END $$;
+END
+$sec06$;
 
--- ============================================================
--- ROLLBACK (ne pas valider les fixtures de test)
--- ============================================================
 ROLLBACK;
-
-SELECT 'Tous les tests sec06_financial_rls_profile_check_test.sql sont terminés.' AS status;
-
--- Test B.6 : INSERT sur payments - doit être autorisé
-DO $$
-BEGIN
-  INSERT INTO public.payments (id, school_id, amount, payment_date, status, created_at, updated_at)
-  VALUES ('pay-test-active-1', '11111111-1111-4111-8111-111111111111', 300.00, NOW(), 'PAYE', NOW(), NOW());
-  RAISE NOTICE 'OK B.6 — Profil actif : INSERT payments autorisé';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE EXCEPTION 'TEST B.6 ÉCHEC : Profil actif ne peut pas INSERT sur payments';
-  WHEN others THEN
-    RAISE EXCEPTION 'TEST B.6 ÉCHEC : Erreur inattendue sur INSERT payments : %', SQLERRM;
-END $$;
-
--- Test B.7 : UPDATE sur payments - doit être autorisé
-DO $$
-BEGIN
-  UPDATE public.payments
-  SET amount = 400.00
-  WHERE id = 'pay-test-active-1';
-  RAISE NOTICE 'OK B.7 — Profil actif : UPDATE payments autorisé';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE EXCEPTION 'TEST B.7 ÉCHEC : Profil actif ne peut pas UPDATE payments';
-  WHEN others THEN
-    RAISE EXCEPTION 'TEST B.7 ÉCHEC : Erreur inattendue sur UPDATE payments : %', SQLERRM;
-END $$;
-
--- Test B.8 : DELETE sur payments - doit être autorisé
-DO $$
-BEGIN
-  DELETE FROM public.payments
-  WHERE id = 'pay-test-active-1';
-  RAISE NOTICE 'OK B.8 — Profil actif : DELETE payments autorisé';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE EXCEPTION 'TEST B.8 ÉCHEC : Profil actif ne peut pas DELETE payments';
-  WHEN others THEN
-    RAISE EXCEPTION 'TEST B.8 ÉCHEC : Erreur inattendue sur DELETE payments : %', SQLERRM;
-END $$;
-
-    RAISE NOTICE 'OK A.4 — Profil soft-deleté : DELETE fee_structures refusé (erreur : %)', SQLERRM;
-END $$;
-
--- Test A.5 : SELECT sur payments - doit retourner 0 lignes
-DO $$
-DECLARE
-  v_count integer;
-BEGIN
-  SELECT count(*) INTO v_count
-  FROM public.payments
-  WHERE school_id = '11111111-1111-4111-8111-111111111111';
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'TEST A.5 ÉCHEC : Soft-deleted peut SELECT % ligne(s) sur payments', v_count;
-  END IF;
-  RAISE NOTICE 'OK A.5 — Profil soft-deleté : SELECT payments = 0 ligne';
-END $$;
-
--- Test A.6 : INSERT sur payments - doit être refusé
-DO $$
-BEGIN
-  INSERT INTO public.payments (id, school_id, amount, payment_date, status, created_at, updated_at)
-  VALUES ('pay-test-softdel-1', '11111111-1111-4111-8111-111111111111', 100.00, NOW(), 'PAYE', NOW(), NOW());
-  RAISE EXCEPTION 'TEST A.6 ÉCHEC : Soft-deleted a pu INSERT sur payments';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK A.6 — Profil soft-deleté : INSERT payments refusé';
-  WHEN others THEN
-    RAISE NOTICE 'OK A.6 — Profil soft-deleté : INSERT payments refusé (erreur : %)', SQLERRM;
-END $$;
-
--- Test A.7 : UPDATE sur payments - doit être refusé
-DO $$
-BEGIN
-  UPDATE public.payments
-  SET amount = 600.00
-  WHERE id = 'pay-active-1';
-  RAISE EXCEPTION 'TEST A.7 ÉCHEC : Soft-deleted a pu UPDATE payments';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK A.7 — Profil soft-deleté : UPDATE payments refusé';
-  WHEN others THEN
-    RAISE NOTICE 'OK A.7 — Profil soft-deleté : UPDATE payments refusé (erreur : %)', SQLERRM;
-END $$;
-
--- Test A.8 : DELETE sur payments - doit être refusé
-DO $$
-BEGIN
-  DELETE FROM public.payments
-  WHERE id = 'pay-active-1';
-  RAISE EXCEPTION 'TEST A.8 ÉCHEC : Soft-deleted a pu DELETE payments';
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'OK A.8 — Profil soft-deleté : DELETE payments refusé';
-  WHEN others THEN
-    RAISE NOTICE 'OK A.8 — Profil soft-deleté : DELETE payments refusé (erreur : %)', SQLERRM;
-END $$;
-
-  ('ur-wrongschool-1-dir', 'u-wrongschool-1', '22222222-2222-4222-8222-222222222222', 'role_dir'), -- DIRECTION, école Bêta, profil actif école Bêta
-  ('ur-inactive-1-dir', 'u-inactive-1', '11111111-1111-4111-8111-111111111111', 'role_dir')    -- DIRECTION, école Alpha, compte INACTIVE
-ON CONFLICT (id) DO NOTHING;
-
--- Données de test financières
-INSERT INTO public.fee_structures (id, school_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at) VALUES
-  ('fs-active-1', '11111111-1111-4111-8111-111111111111', 'Frais de scolarité Alpha', 1000.00, 'SCOLARITE', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW()),
-  ('fs-wrongschool-1', '22222222-2222-4222-8222-222222222222', 'Frais de scolarité Beta', 1000.00, 'SCOLARITE', 'TOUS', NULL, NULL, NULL, true, NOW(), NOW())
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO public.payments (id, school_id, student_id, amount, payment_date, status, created_at, updated_at) VALUES
-  ('pay-active-1', '11111111-1111-4111-8111-111111111111', NULL, 500.00, NOW(), 'PAYE', NOW(), NOW()),
-  ('pay-wrongschool-1', '22222222-2222-4222-8222-222222222222', NULL, 500.00, NOW(), 'PAYE', NOW(), NOW())
-ON CONFLICT (id) DO NOTHING;
