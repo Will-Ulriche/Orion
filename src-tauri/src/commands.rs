@@ -336,43 +336,89 @@ pub fn register_device(state: State<'_, DbState>, school_id: Option<String>) -> 
 #[tauri::command]
 pub fn check_user_role(state: State<'_, DbState>, user_id: String, school_id: String, required_role: String) -> Result<bool, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    check_user_role_conn(&conn, &user_id, &school_id, &required_role)
+}
 
-    // SUPER_ADMIN a accès partout
-    let is_super_admin: bool = conn.query_row(
-        "SELECT COUNT(*) FROM user_roles ur
-         JOIN roles r ON ur.role_id = r.id
-         WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
-        rusqlite::params![user_id],
-        |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) > 0;
+pub fn check_user_role_conn(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    school_id: &str,
+    required_role: &str,
+) -> Result<bool, String> {
+    let session = crate::auth_guard::require_authenticated(conn)?;
 
-    if is_super_admin {
+    if user_id != session.user_id.as_str() {
+        return Err("Accès refusé : vous ne pouvez vérifier que vos propres rôles.".to_string());
+    }
+
+    let target_school = school_id.trim();
+    if target_school.is_empty() {
+        return Err("Établissement requis.".to_string());
+    }
+    if !session.is_super_admin && target_school != session.school_id.as_str() {
+        return Err(format!(
+            "Accès refusé : vous n'avez pas autorité sur l'établissement '{}'.",
+            target_school
+        ));
+    }
+
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM users WHERE id = ?1",
+            rusqlite::params![session.user_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Compte utilisateur introuvable.".to_string())?;
+    if status != "ACTIVE" {
+        return Err("Compte utilisateur inactif.".to_string());
+    }
+
+    let profile_active: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM profiles
+                WHERE user_id = ?1 AND school_id = ?2 AND deleted_at IS NULL
+             )",
+            rusqlite::params![session.user_id, session.school_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !profile_active {
+        return Err("Profil utilisateur supprimé ou introuvable.".to_string());
+    }
+
+    if session.is_super_admin {
         return Ok(true);
     }
 
-    // DIRECTION a toutes les permissions de son établissement
-    if required_role != "SUPER_ADMIN" {
-        let is_direction: bool = conn.query_row(
-            "SELECT COUNT(*) FROM user_roles ur
-             JOIN roles r ON ur.role_id = r.id
-             WHERE ur.user_id = ?1 AND ur.school_id = ?2 AND r.name = 'DIRECTION'",
-            rusqlite::params![user_id, school_id],
-            |row| row.get::<_, i64>(0),
-        ).unwrap_or(0) > 0;
+    let role = required_role.trim();
+    if role != "SUPER_ADMIN" {
+        let is_direction: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_roles ur
+                 JOIN roles r ON ur.role_id = r.id
+                 WHERE ur.user_id = ?1 AND ur.school_id = ?2 AND r.name = 'DIRECTION'",
+                rusqlite::params![session.user_id, target_school],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| e.to_string())?
+            > 0;
 
         if is_direction {
             return Ok(true);
         }
     }
 
-    // Vérifier le rôle spécifique demandé
-    let has_role: bool = conn.query_row(
-        "SELECT COUNT(*) FROM user_roles ur
-         JOIN roles r ON ur.role_id = r.id
-         WHERE ur.user_id = ?1 AND ur.school_id = ?2 AND r.name = ?3",
-        rusqlite::params![user_id, school_id, required_role],
-        |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) > 0;
+    let has_role: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_roles ur
+             JOIN roles r ON ur.role_id = r.id
+             WHERE ur.user_id = ?1 AND ur.school_id = ?2 AND r.name = ?3",
+            rusqlite::params![session.user_id, target_school, role],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| e.to_string())?
+        > 0;
 
     Ok(has_role)
 }
@@ -6814,6 +6860,33 @@ mod auth_tests {
         conn
     }
 
+    fn insert_check_role_user(conn: &Connection, id: &str, school_id: &str, status: &str, profile_deleted: bool) {
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, format!("{id}@orion.test"), status],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, deleted_at)
+             VALUES (?1, ?2, ?3, 'Test', 'Utilisateur', ?4)",
+            rusqlite::params![
+                format!("profile-{id}"),
+                id,
+                school_id,
+                if profile_deleted { Some("2026-01-01 00:00:00") } else { None }
+            ],
+        ).unwrap();
+    }
+
+    fn grant_check_role(conn: &Connection, user_id: &str, school_id: &str, role_name: &str) {
+        let role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = ?1", rusqlite::params![role_name], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![uuid::Uuid::new_v4().to_string(), user_id, school_id, role_id],
+        ).unwrap();
+    }
+
     #[test]
     fn test_super_admin_individual_password_login() {
         let _guard = crate::auth_guard::lock_test_session();
@@ -8035,6 +8108,159 @@ mod auth_tests {
         ).unwrap();
         let after_release = register_device_conn(&mut conn, Some("school-1".to_string()), "device-2", "PC 2", "Windows");
         assert!(after_release.is_ok(), "Un nouvel appareil doit pouvoir prendre la place libérée : {:?}", after_release);
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_check_user_role_requires_authenticated_session() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        let result = check_user_role_conn(&conn, "u-caller", "school-1", "DIRECTION");
+        assert!(result.is_err(), "Sans session, aucun rôle ne doit être révélé");
+        assert!(result.unwrap_err().contains("Non authentifié"));
+    }
+
+    #[test]
+    fn test_check_user_role_rejects_another_user_even_if_super_admin() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        insert_check_role_user(&conn, "u-caller", "school-1", "ACTIVE", false);
+        insert_check_role_user(&conn, "u-target-sa", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-target-sa", "school-1", "SUPER_ADMIN");
+        crate::auth_guard::establish_local_session(&conn, "u-caller", "school-1").unwrap();
+
+        let result = check_user_role_conn(&conn, "u-target-sa", "school-1", "SUPER_ADMIN");
+        assert!(result.is_err(), "Le user_id du frontend ne doit jamais désigner un autre compte");
+        assert!(result.unwrap_err().contains("vos propres rôles"));
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_check_user_role_rejects_inactive_account() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        insert_check_role_user(&conn, "u-caller", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-caller", "school-1", "DIRECTION");
+        crate::auth_guard::establish_local_session(&conn, "u-caller", "school-1").unwrap();
+        conn.execute("UPDATE users SET status = 'INACTIVE' WHERE id = 'u-caller'", []).unwrap();
+
+        let result = check_user_role_conn(&conn, "u-caller", "school-1", "DIRECTION");
+        assert!(result.is_err(), "Un compte inactif ne doit plus consulter ses rôles");
+        assert!(result.unwrap_err().contains("Non authentifié"));
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_check_user_role_rejects_soft_deleted_profile() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        insert_check_role_user(&conn, "u-caller", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-caller", "school-1", "DIRECTION");
+        crate::auth_guard::establish_local_session(&conn, "u-caller", "school-1").unwrap();
+        conn.execute(
+            "UPDATE profiles SET deleted_at = '2026-01-01 00:00:00' WHERE user_id = 'u-caller'",
+            [],
+        ).unwrap();
+
+        let result = check_user_role_conn(&conn, "u-caller", "school-1", "DIRECTION");
+        assert!(result.is_err(), "Un profil supprimé logiquement ne doit plus consulter ses rôles");
+        assert!(result.unwrap_err().contains("Profil utilisateur supprimé"));
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_check_user_role_rejects_school_change_for_non_super_admin() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+
+        insert_check_role_user(&conn, "u-caller", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-caller", "school-1", "DIRECTION");
+        crate::auth_guard::establish_local_session(&conn, "u-caller", "school-1").unwrap();
+
+        let result = check_user_role_conn(&conn, "u-caller", "school-2", "DIRECTION");
+        assert!(result.is_err(), "Un DIRECTION ne doit pas vérifier de rôles dans un autre établissement");
+        assert!(result.unwrap_err().contains("pas autorité"));
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_check_user_role_allows_super_admin_cross_school() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+
+        insert_check_role_user(&conn, "u-sa", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-sa", "school-1", "SUPER_ADMIN");
+        crate::auth_guard::establish_local_session(&conn, "u-sa", "school-1").unwrap();
+
+        let result = check_user_role_conn(&conn, "u-sa", "school-2", "DIRECTION");
+        assert_eq!(result, Ok(true), "Le SUPER_ADMIN authentifié peut vérifier un rôle dans un autre établissement");
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_check_user_role_normal_access_and_specific_roles() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        insert_check_role_user(&conn, "u-caller", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-caller", "school-1", "DIRECTION");
+        crate::auth_guard::establish_local_session(&conn, "u-caller", "school-1").unwrap();
+
+        assert_eq!(
+            check_user_role_conn(&conn, "u-caller", "school-1", "PROFESSEUR"),
+            Ok(true),
+            "La logique DIRECTION doit rester conservée"
+        );
+        assert_eq!(
+            check_user_role_conn(&conn, "u-caller", "school-1", "SECRETAIRE"),
+            Ok(true),
+            "La logique DIRECTION existante accorde tous les rôles sauf SUPER_ADMIN"
+        );
+        assert_eq!(
+            check_user_role_conn(&conn, "u-caller", "school-1", "SUPER_ADMIN"),
+            Ok(false),
+            "DIRECTION ne doit jamais être traité comme SUPER_ADMIN"
+        );
+
+        crate::auth_guard::clear_session();
+        insert_check_role_user(&conn, "u-prof", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-prof", "school-1", "PROFESSEUR");
+        crate::auth_guard::establish_local_session(&conn, "u-prof", "school-1").unwrap();
+
+        assert_eq!(
+            check_user_role_conn(&conn, "u-prof", "school-1", "PROFESSEUR"),
+            Ok(true),
+            "La vérification de rôle spécifique doit rester fonctionnelle"
+        );
+        assert_eq!(
+            check_user_role_conn(&conn, "u-prof", "school-1", "DIRECTION"),
+            Ok(false),
+            "Un PROFESSEUR ne doit pas hériter des droits DIRECTION"
+        );
+        assert_eq!(
+            check_user_role_conn(&conn, "u-prof", "school-1", "SECRETAIRE"),
+            Ok(false),
+            "Un rôle non détenu doit rester refusé hors DIRECTION"
+        );
 
         crate::auth_guard::clear_session();
     }
