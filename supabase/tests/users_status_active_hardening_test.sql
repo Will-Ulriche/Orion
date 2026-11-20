@@ -48,22 +48,30 @@ BEGIN
     RAISE EXCEPTION 'ÉCHEC : contrainte CHECK users_status_allowed absente';
   END IF;
 
+  WITH function_defs AS MATERIALIZED (
+    SELECT pg_get_functiondef(p.oid) AS definition
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+  )
   SELECT count(*) INTO v_permissive_functions
-  FROM pg_proc p
-  JOIN pg_namespace n ON n.oid = p.pronamespace
-  WHERE n.nspname = 'public'
-    AND pg_get_functiondef(p.oid) LIKE '%public.users u%'
-    AND pg_get_functiondef(p.oid) LIKE '%status <> %ACTIVE%';
+  FROM function_defs
+  WHERE definition LIKE '%public.users u%'
+    AND definition LIKE '%status <> %ACTIVE%';
   IF v_permissive_functions <> 0 THEN
     RAISE EXCEPTION 'ÉCHEC : % fonction(s) conservent NOT EXISTS(... status <> ACTIVE)', v_permissive_functions;
   END IF;
 
-  SELECT count(DISTINCT p.oid) INTO v_hardened_functions
-  FROM pg_proc p
-  JOIN pg_namespace n ON n.oid = p.pronamespace
-  WHERE n.nspname = 'public'
-    AND p.proname IN ('is_super_admin', 'user_school_ids', 'has_school_role', 'check_user_has_role')
-    AND pg_get_functiondef(p.oid) LIKE '%u.status = %ACTIVE%';
+  WITH function_defs AS MATERIALIZED (
+    SELECT p.oid, p.proname, pg_get_functiondef(p.oid) AS definition
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+  )
+  SELECT count(DISTINCT oid) INTO v_hardened_functions
+  FROM function_defs
+  WHERE proname IN ('is_super_admin', 'user_school_ids', 'has_school_role', 'check_user_has_role')
+    AND definition LIKE '%u.status = %ACTIVE%';
   IF v_hardened_functions <> 4 THEN
     RAISE EXCEPTION 'ÉCHEC : seulement % helper(s) exigent explicitement un compte ACTIVE (attendu 4)', v_hardened_functions;
   END IF;
@@ -125,11 +133,6 @@ INSERT INTO public.schools (id, name) VALUES
   ('c0000000-0000-4000-8000-000000000001', 'École statut')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO public.roles (id, name) VALUES
-  ('status_role_dir', 'DIRECTION'),
-  ('status_role_sa', 'SUPER_ADMIN')
-ON CONFLICT (id) DO NOTHING;
-
 -- Le statut NULL est introduit ci-dessous, après levée temporaire de NOT NULL,
 -- afin de simuler une ligne héritée d'une base antérieure à la migration.
 -- La contrainte est restaurée par le ROLLBACK final.
@@ -165,15 +168,15 @@ INSERT INTO public.profiles (id, user_id, school_id, first_name, last_name, dele
 ON CONFLICT (id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at;
 
 INSERT INTO public.user_roles (id, user_id, school_id, role_id) VALUES
-  ('e0000001-0000-4000-8000-000000000001', 'b0000001-0000-4000-8000-000000000001', 'c0000000-0000-4000-8000-000000000001', 'status_role_dir'),
-  ('e0000002-0000-4000-8000-000000000002', 'b0000002-0000-4000-8000-000000000002', 'c0000000-0000-4000-8000-000000000001', 'status_role_dir'),
-  ('e0000003-0000-4000-8000-000000000003', 'b0000003-0000-4000-8000-000000000003', 'c0000000-0000-4000-8000-000000000001', 'status_role_dir'),
-  ('e0000004-0000-4000-8000-000000000004', 'b0000004-0000-4000-8000-000000000004', 'c0000000-0000-4000-8000-000000000001', 'status_role_dir'),
-  ('e0000005-0000-4000-8000-000000000005', 'b0000005-0000-4000-8000-000000000005', 'c0000000-0000-4000-8000-000000000001', 'status_role_dir'),
-  ('e0000006-0000-4000-8000-000000000006', 'b0000006-0000-4000-8000-000000000006', 'c0000000-0000-4000-8000-000000000001', 'status_role_dir'),
-  ('e0000007-0000-4000-8000-000000000007', 'b0000007-0000-4000-8000-000000000007', 'c0000000-0000-4000-8000-000000000001', 'status_role_sa'),
-  ('e0000008-0000-4000-8000-000000000008', 'b0000008-0000-4000-8000-000000000008', 'c0000000-0000-4000-8000-000000000001', 'status_role_sa'),
-  ('e0000009-0000-4000-8000-000000000009', 'b0000009-0000-4000-8000-000000000009', 'c0000000-0000-4000-8000-000000000001', 'status_role_sa')
+  ('e0000001-0000-4000-8000-000000000001', 'b0000001-0000-4000-8000-000000000001', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'DIRECTION')),
+  ('e0000002-0000-4000-8000-000000000002', 'b0000002-0000-4000-8000-000000000002', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'DIRECTION')),
+  ('e0000003-0000-4000-8000-000000000003', 'b0000003-0000-4000-8000-000000000003', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'DIRECTION')),
+  ('e0000004-0000-4000-8000-000000000004', 'b0000004-0000-4000-8000-000000000004', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'DIRECTION')),
+  ('e0000005-0000-4000-8000-000000000005', 'b0000005-0000-4000-8000-000000000005', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'DIRECTION')),
+  ('e0000006-0000-4000-8000-000000000006', 'b0000006-0000-4000-8000-000000000006', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'DIRECTION')),
+  ('e0000007-0000-4000-8000-000000000007', 'b0000007-0000-4000-8000-000000000007', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'SUPER_ADMIN')),
+  ('e0000008-0000-4000-8000-000000000008', 'b0000008-0000-4000-8000-000000000008', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'SUPER_ADMIN')),
+  ('e0000009-0000-4000-8000-000000000009', 'b0000009-0000-4000-8000-000000000009', 'c0000000-0000-4000-8000-000000000001', (SELECT id FROM public.roles WHERE name = 'SUPER_ADMIN'))
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================

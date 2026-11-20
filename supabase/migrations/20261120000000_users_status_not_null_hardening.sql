@@ -182,12 +182,16 @@ DO $status_guard$
 DECLARE
   v_leftovers integer;
 BEGIN
+  WITH function_defs AS MATERIALIZED (
+    SELECT pg_get_functiondef(p.oid) AS definition
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+  )
   SELECT count(*) INTO v_leftovers
-  FROM pg_proc p
-  JOIN pg_namespace n ON n.oid = p.pronamespace
-  WHERE n.nspname = 'public'
-    AND pg_get_functiondef(p.oid) LIKE '%public.users u%'
-    AND pg_get_functiondef(p.oid) LIKE '%status <> %ACTIVE%';
+  FROM function_defs
+  WHERE definition LIKE '%public.users u%'
+    AND definition LIKE '%status <> %ACTIVE%';
 
   IF v_leftovers > 0 THEN
     RAISE EXCEPTION 'Durcissement incomplet : % fonction(s) publique(s) utilisent encore NOT EXISTS(... users.status <> ''ACTIVE'')', v_leftovers;
