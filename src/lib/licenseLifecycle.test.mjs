@@ -138,3 +138,32 @@ test('LIC-02 Frontend : LicenseGuard ne sélectionne plus dans tout l’historiq
   assert.doesNotMatch(guard, /cloudLics\.find\(/);
   assert.doesNotMatch(guard, /cloudLics\[0\]/);
 });
+
+test('LIC-03 : quota appareils, liaison JWT et libération SUPER_ADMIN', () => {
+  const migration = read('../../supabase/migrations/20261121000000_device_binding_hardening.sql');
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS license_id uuid/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS deleted_at timestamptz/);
+  assert.match(migration, /CHECK \(max_devices >= 1\)/);
+  assert.match(migration, /CREATE OR REPLACE FUNCTION public\.register_or_reactivate_device/);
+  assert.match(migration, /SELECT \* INTO v_lic[\s\S]*FOR UPDATE/);
+  assert.match(migration, /DEVICE_LIMIT_REACHED/);
+  assert.match(migration, /CREATE OR REPLACE FUNCTION public\.release_device/);
+  assert.match(migration, /Action réservée au SUPER_ADMIN/);
+
+  const edge = read('../../supabase/functions/issue-license-token/index.ts');
+  assert.match(edge, /register_or_reactivate_device/);
+  assert.match(edge, /device_identifier: binding\.device_identifier/);
+  assert.match(edge, /max_devices: maxDevices/);
+  assert.match(edge, /jti: crypto\.randomUUID\(\)/);
+
+  const rust = read('../../src-tauri/src/commands.rs');
+  assert.match(rust, /fn current_device_identifier\(\)/);
+  assert.match(rust, /pub device_identifier: String,/);
+  assert.match(rust, /fn ensure_local_device_quota\(/);
+  assert.match(rust, /license_claims_match_record\(/);
+  assert.match(rust, /pub fn save_license\(\s*token: String,/);
+
+  const localMigration = read('../../src-tauri/migrations/28_device_license_binding.sql');
+  assert.match(localMigration, /ALTER TABLE devices ADD COLUMN license_id TEXT/);
+  assert.match(localMigration, /idx_devices_active_license_identifier/);
+});

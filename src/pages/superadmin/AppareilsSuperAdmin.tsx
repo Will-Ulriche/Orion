@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { MonitorSmartphone, RefreshCw } from 'lucide-react';
+import { MonitorSmartphone, RefreshCw, Trash2 } from 'lucide-react';
 import { Badge, Btn, EmptyState, Loader, SearchInput, TableShell, Td, Th, type Tone } from '../../components/ui';
 import SuperAdminShell from './SuperAdminShell';
-import { listDevices, type Device } from '../../lib/superAdminApi';
+import { listDevices, releaseDevice, type Device } from '../../lib/superAdminApi';
 
 const STATUS_META: Record<string, { label: string; tone: Tone }> = {
   ACTIVE: { label: 'Actif', tone: 'emerald' },
@@ -34,6 +34,17 @@ export default function AppareilsSuperAdmin() {
   };
 
   useEffect(() => { load(); }, []);
+
+  const release = async (device: Device) => {
+    if (!window.confirm(`Libérer l'appareil « ${device.device_name || device.device_identifier} » ?`)) return;
+    setError('');
+    try {
+      await releaseDevice(device.id);
+      await load();
+    } catch (e: any) {
+      setError(e.message ?? String(e));
+    }
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -78,6 +89,7 @@ export default function AppareilsSuperAdmin() {
                 <Th>Plateforme</Th>
                 <Th>Dernière activité</Th>
                 <Th className="text-center">Statut</Th>
+                <Th className="text-center">Action</Th>
               </tr>
             </thead>
             <tbody>
@@ -93,6 +105,16 @@ export default function AppareilsSuperAdmin() {
                     <Td><span className="text-[13px] text-slate-600">{d.platform ?? '—'}</span></Td>
                     <Td><span className="text-[12.5px] text-slate-500">{fmt(d.last_seen_at)}</span></Td>
                     <Td className="text-center"><Badge tone={meta.tone}>{meta.label}</Badge></Td>
+                    <Td className="text-center">
+                      <Btn
+                        variant="ghost"
+                        title="Libérer cet appareil"
+                        disabled={d.status !== 'ACTIVE'}
+                        onClick={() => release(d)}
+                      >
+                        <Trash2 size={15} />
+                      </Btn>
+                    </Td>
                   </tr>
                 );
               })}

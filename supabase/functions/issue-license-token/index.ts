@@ -16,7 +16,7 @@
  *     - Vérification de type stricte (isSuperAdmin === true).
  *     - Toute erreur RPC, réponse nulle ou format inattendu entraîne un refus (fail-closed).
  *     - Si non super-admin, school_id doit appartenir strictement aux user_school_ids() (403).
- *  3. Paramètres requis license_id et school_id fournis (400 si manquants).
+ *  3. Paramètres requis license_id, school_id et device_identifier fournis (400 si manquants).
  *  4. Licence existante en base (table licenses) (404 si introuvable).
  *  5. school_id de la licence correspondant exactement à l'établissement demandé (403).
  *  6. Statut == 'ACTIVE' (403 si suspendue, révoquée ou inactive).
@@ -171,16 +171,29 @@ export async function handleIssueLicenseRequest(
     }
 
     // 3. Extraction et validation des paramètres
-    let body: { license_id?: string; school_id?: string };
+    let body: {
+      license_id?: string;
+      school_id?: string;
+      device_identifier?: string;
+      device_name?: string;
+      platform?: string;
+    };
     try {
       body = await req.json();
     } catch (_) {
       return jsonResponse({ error: "Corps de requête JSON invalide" }, 400);
     }
 
-    const { license_id, school_id } = body;
+    const { license_id, school_id, device_identifier } = body;
     if (!license_id || !school_id || typeof license_id !== "string" || typeof school_id !== "string") {
       return jsonResponse({ error: "license_id et school_id sont requis" }, 400);
+    }
+    if (
+      typeof device_identifier !== "string" ||
+      device_identifier.trim().length === 0 ||
+      device_identifier.trim().length > 512
+    ) {
+      return jsonResponse({ error: "device_identifier est requis" }, 400);
     }
 
     // 4. Contrôle d'autorisation strict : vérification fail-closed des RPCs
@@ -224,7 +237,7 @@ export async function handleIssueLicenseRequest(
     // 5. Vérifier la licence en base (via adminClient)
     const { data: lic, error: licErr } = await adminClient
       .from("licenses")
-      .select("id, school_id, license_key, status, starts_at, expires_at, is_current")
+      .select("id, school_id, license_key, status, starts_at, expires_at, is_current, max_devices")
       .eq("id", license_id)
       .maybeSingle();
 
@@ -254,6 +267,41 @@ export async function handleIssueLicenseRequest(
       return jsonResponse({ error: "Licence expirée" }, 403);
     }
 
+    const { data: deviceBinding, error: deviceErr } = await userClient.rpc(
+      "register_or_reactivate_device",
+      {
+        p_license_id: license_id,
+        p_device_identifier: device_identifier.trim(),
+        p_device_name: typeof body.device_name === "string" ? body.device_name : null,
+        p_platform: typeof body.platform === "string" ? body.platform : null,
+      },
+    );
+
+    if (deviceErr || !deviceBinding || typeof deviceBinding !== "object") {
+      return jsonResponse(
+        { error: deviceErr?.message || "Enregistrement de l'appareil refusé" },
+        403,
+      );
+    }
+
+    const binding = deviceBinding as Record<string, unknown>;
+    if (
+      typeof binding.device_id !== "string" ||
+      binding.device_id.trim().length === 0 ||
+      typeof binding.device_identifier !== "string" ||
+      binding.device_identifier.trim().length === 0 ||
+      binding.device_identifier !== device_identifier.trim() ||
+      binding.license_id !== lic.id ||
+      binding.school_id !== lic.school_id
+    ) {
+      return jsonResponse({ error: "Liaison appareil/licence incohérente" }, 403);
+    }
+
+    const maxDevices = Number(binding.max_devices ?? lic.max_devices);
+    if (!Number.isInteger(maxDevices) || maxDevices < 1) {
+      return jsonResponse({ error: "Quota d'appareils invalide" }, 403);
+    }
+
     // 9. Calcul de la durée de grâce du jeton (maximum 7 jours imposé par le serveur)
     const MAX_GRACE_SECONDS = 7 * 24 * 60 * 60;
     const iat = Math.floor(now.getTime() / 1000);
@@ -274,12 +322,17 @@ export async function handleIssueLicenseRequest(
       {
         iss: "orion-license",
         sub: lic.id,
+        license_id: lic.id,
         school_id: lic.school_id,
         license_key: lic.license_key,
         status: lic.status,
         starts_at: lic.starts_at ?? null,
         expires_at: lic.expires_at ?? null,
         is_current: true,
+        max_devices: maxDevices,
+        device_id: binding.device_id,
+        device_identifier: binding.device_identifier,
+        jti: crypto.randomUUID(),
         iat,
         exp,
       },

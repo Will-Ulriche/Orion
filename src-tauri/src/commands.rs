@@ -181,12 +181,13 @@ pub fn check_db_status(state: State<'_, DbState>) -> Result<String, String> {
     Ok(format!("Base de données active. {} rôles configurés.", count))
 }
 
-// ──────────────────────────────────────────────
-// COMMANDE : Informations sur l'appareil
-// ──────────────────────────────────────────────
+fn current_device_identifier() -> Result<String, String> {
+    machine_uid::get().map_err(|e| format!("Identifiant machine indisponible : {}", e))
+}
+
 #[tauri::command]
 pub fn get_device_info() -> Result<DeviceInfo, String> {
-    let uid = machine_uid::get().unwrap_or_else(|_| "unknown_device".to_string());
+    let uid = current_device_identifier()?;
     let host_name = System::host_name().unwrap_or_else(|| "Unknown PC".to_string());
     let os_name = System::name().unwrap_or_else(|| "Unknown OS".to_string());
 
@@ -197,42 +198,136 @@ pub fn get_device_info() -> Result<DeviceInfo, String> {
     })
 }
 
+fn ensure_local_device_quota(
+    tx: &rusqlite::Transaction<'_>,
+    school_id: &str,
+    max_devices: Option<i64>,
+    excluded_identifier: Option<&str>,
+) -> Result<(), String> {
+    let max = max_devices.unwrap_or(1);
+    if max < 1 {
+        return Err("Quota d'appareils local invalide".to_string());
+    }
+
+    let active: i64 = match excluded_identifier {
+        Some(identifier) => tx.query_row(
+            "SELECT COUNT(*) FROM devices
+             WHERE school_id = ?1
+               AND status = 'ACTIVE'
+               AND (deleted_at IS NULL OR deleted_at = 0)
+               AND device_identifier <> ?2",
+            rusqlite::params![school_id, identifier],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?,
+        None => tx.query_row(
+            "SELECT COUNT(*) FROM devices
+             WHERE school_id = ?1
+               AND status = 'ACTIVE'
+               AND (deleted_at IS NULL OR deleted_at = 0)",
+            rusqlite::params![school_id],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?,
+    };
+
+    if active >= max {
+        return Err("Limite d'appareils atteinte pour cette licence".to_string());
+    }
+    Ok(())
+}
+
 // ──────────────────────────────────────────────
 // COMMANDE : Enregistrement de l'appareil
 // ──────────────────────────────────────────────
-#[tauri::command]
-pub fn register_device(state: State<'_, DbState>, school_id: Option<String>) -> Result<String, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+fn register_device_conn(
+    conn: &mut Connection,
+    school_id: Option<String>,
+    uid: &str,
+    host_name: &str,
+    os_name: &str,
+) -> Result<String, String> {
+    let session = crate::auth_guard::require_authenticated(conn)?;
 
-    let uid = machine_uid::get().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
-    let host_name = System::host_name().unwrap_or_else(|| "Unknown PC".to_string());
-    let os_name = System::name().unwrap_or_else(|| "Unknown OS".to_string());
-    let device_id = uuid::Uuid::new_v4().to_string();
-
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM devices WHERE device_identifier = ?1",
-            rusqlite::params![uid],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0)
-        > 0;
-
-    if exists {
-        conn.execute(
-            "UPDATE devices SET last_seen_at = CURRENT_TIMESTAMP, status = 'ACTIVE' WHERE device_identifier = ?1",
-            rusqlite::params![uid],
-        ).map_err(|e| e.to_string())?;
-        return Ok("Appareil reconnu — session mise à jour.".to_string());
+    if let Some(requested) = school_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if requested != session.school_id {
+            return Err("Établissement demandé non autorisé pour cet appareil".to_string());
+        }
     }
 
-    conn.execute(
-        "INSERT INTO devices (id, school_id, device_identifier, device_name, platform, status, last_seen_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', CURRENT_TIMESTAMP)",
-        rusqlite::params![device_id, school_id, uid, host_name, os_name],
-    ).map_err(|e| e.to_string())?;
+    let school = session.school_id.clone();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
+    let license_id: Option<String> = tx
+        .query_row(
+            "SELECT id FROM licenses WHERE school_id = ?1 AND is_current = 1",
+            rusqlite::params![school],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let max_devices: Option<i64> = tx
+        .query_row(
+            "SELECT max_devices FROM licenses WHERE school_id = ?1 AND is_current = 1",
+            rusqlite::params![school],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let existing: Option<(String, String, String, Option<i64>)> = tx
+        .query_row(
+            "SELECT id, school_id, status, deleted_at FROM devices WHERE device_identifier = ?1",
+            rusqlite::params![uid],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    match existing {
+        Some((device_id, existing_school, status, deleted_at)) => {
+            if existing_school != school {
+                return Err("Appareil déjà enregistré pour un autre établissement".to_string());
+            }
+            let is_active = status == "ACTIVE" && deleted_at.unwrap_or(0) == 0;
+            if !is_active {
+                ensure_local_device_quota(&tx, &school, max_devices, Some(uid))?;
+            }
+            tx.execute(
+                "UPDATE devices
+                 SET license_id = ?2,
+                     device_name = ?3,
+                     platform = ?4,
+                     status = 'ACTIVE',
+                     deleted_at = NULL,
+                     last_seen_at = CURRENT_TIMESTAMP,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?1",
+                rusqlite::params![device_id, license_id, host_name, os_name],
+            ).map_err(|e| e.to_string())?;
+        }
+        None => {
+            ensure_local_device_quota(&tx, &school, max_devices, None)?;
+            let device_id = uuid::Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO devices
+                 (id, school_id, license_id, device_identifier, device_name, platform, status, last_seen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'ACTIVE', CURRENT_TIMESTAMP)",
+                rusqlite::params![device_id, school, license_id, uid, host_name, os_name],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(format!("Appareil enregistré : {} ({})", host_name, uid))
+}
+
+#[tauri::command]
+pub fn register_device(state: State<'_, DbState>, school_id: Option<String>) -> Result<String, String> {
+    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let uid = current_device_identifier()?;
+    let host_name = System::host_name().unwrap_or_else(|| "Unknown PC".to_string());
+    let os_name = System::name().unwrap_or_else(|| "Unknown OS".to_string());
+    register_device_conn(&mut conn, school_id, &uid, &host_name, &os_name)
 }
 
 // ──────────────────────────────────────────────
@@ -285,6 +380,31 @@ pub fn check_user_role(state: State<'_, DbState>, user_id: String, school_id: St
 #[tauri::command]
 pub fn get_current_user_roles(state: State<'_, DbState>, user_id: String, school_id: String) -> Result<Vec<String>, String> {
     let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    get_current_user_roles_conn(&conn, &user_id, &school_id)
+}
+
+/// Implémentation isolée et directement testable de la consultation des rôles.
+/// L'identité et l'établissement sont imposés par la session authentifiée :
+/// le `user_id` transmis par le frontend doit toujours être celui de la session,
+/// tandis que le `school_id` ne peut différer que pour un SUPER_ADMIN authentifié.
+pub fn get_current_user_roles_conn(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    school_id: &str,
+) -> Result<Vec<String>, String> {
+    let session = crate::auth_guard::get_authenticated_user(conn)
+        .map_err(|_| "Action refusée : session non authentifiée ou expirée.".to_string())?;
+
+    if user_id != session.user_id.as_str() {
+        return Err("Accès refusé : vous ne pouvez consulter que vos propres rôles.".to_string());
+    }
+
+    if !session.is_super_admin && school_id != session.school_id.as_str() {
+        return Err(format!(
+            "Accès refusé : vous n'avez pas autorité sur l'établissement '{}'.",
+            school_id
+        ));
+    }
 
     let mut stmt = conn.prepare(
         "SELECT r.name FROM user_roles ur
@@ -4667,12 +4787,71 @@ pub fn validate_license_record(
     Ok(())
 }
 
+fn normalized_license_date(value: Option<&str>) -> Option<String> {
+    value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn license_claims_match_record(
+    claims: &LicenseClaims,
+    license: &LicenseRec,
+    session_school_id: &str,
+) -> Result<(), String> {
+    if claims.sub != license.id || claims.license_id != license.id {
+        return Err("Le jeton ne correspond pas à cette licence".to_string());
+    }
+    if claims.school_id != session_school_id || license.school_id != session_school_id {
+        return Err("Licence non associée à l'établissement courant".to_string());
+    }
+    if claims.license_key != license.license_key {
+        return Err("Clé de licence différente de celle du jeton".to_string());
+    }
+    if claims.status != license.status {
+        return Err("Statut de licence différent de celui du jeton".to_string());
+    }
+    if claims.is_current != license.is_current {
+        return Err("Drapeau de licence différent de celui du jeton".to_string());
+    }
+    if license.max_devices.unwrap_or(claims.max_devices) != claims.max_devices {
+        return Err("Quota d'appareils différent de celui du jeton".to_string());
+    }
+    if normalized_license_date(claims.starts_at.as_deref())
+        != normalized_license_date(license.starts_at.as_deref())
+    {
+        return Err("Date de début différente de celle du jeton".to_string());
+    }
+    if normalized_license_date(claims.expires_at.as_deref())
+        != normalized_license_date(license.expires_at.as_deref())
+    {
+        return Err("Date d'expiration différente de celle du jeton".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub fn save_license(license: LicenseRec, state: State<'_, DbState>) -> Result<(), String> {
+pub fn save_license(
+    token: String,
+    license: LicenseRec,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    // Le JWT RS256 a déjà été validé par verify_license_token ; on applique
-    // néanmoins toutes les règles métier ici, côté Rust.
     let session = crate::auth_guard::require_authenticated(&conn)?;
+    let device_identifier = current_device_identifier()?;
+    let verified = verify_license_token_internal(
+        &token,
+        &session.school_id,
+        &device_identifier,
+        &license_public_key_pem(),
+    );
+    if !verified.valid {
+        return Err(format!(
+            "Jeton de licence invalide : {}",
+            verified.reason.unwrap_or_else(|| "raison inconnue".to_string())
+        ));
+    }
+    let claims = verified.claims.ok_or_else(|| "Claims de licence absents".to_string())?;
+    license_claims_match_record(&claims, &license, &session.school_id)?;
     validate_license_record(&license, &session.school_id, chrono::Utc::now())?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -4789,12 +4968,18 @@ const EMBEDDED_LICENSE_PUBLIC_KEY: &str = include_str!("../license_public_key.pe
 pub struct LicenseClaims {
     pub iss: String,
     pub sub: String,          // license_id
+    pub license_id: String,
     pub school_id: String,
     pub license_key: String,
     pub status: String,
     pub starts_at: Option<String>,
     pub expires_at: Option<String>,
     pub is_current: bool,
+    pub max_devices: i64,
+    pub device_id: String,
+    pub device_identifier: String,
+    #[serde(default)]
+    pub jti: Option<String>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -4833,7 +5018,20 @@ fn parse_license_date(raw: &str) -> Result<chrono::DateTime<chrono::Utc>, String
     Err(format!("Date mal formée : {}", raw))
 }
 
-pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pem: &str) -> VerifyTokenResult {
+fn license_public_key_pem() -> String {
+    let _ = dotenvy::dotenv();
+    std::env::var("ORION_LICENSE_PUBLIC_KEY_PEM")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| EMBEDDED_LICENSE_PUBLIC_KEY.to_string())
+}
+
+pub fn verify_license_token_internal(
+    token: &str,
+    school_id: &str,
+    expected_device_identifier: &str,
+    public_key_pem: &str,
+) -> VerifyTokenResult {
     use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 
     if public_key_pem.trim().is_empty()
@@ -4859,6 +5057,27 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
     };
 
     let claims = token_data.claims;
+
+    if claims.license_id.trim().is_empty() || claims.license_id != claims.sub {
+        return token_reject("Identifiant de licence incohérent dans le jeton");
+    }
+    if claims.max_devices < 1 {
+        return token_reject("Quota d'appareils invalide dans le jeton");
+    }
+    if claims.device_id.trim().is_empty() || uuid::Uuid::parse_str(&claims.device_id).is_err() {
+        return token_reject("Identifiant d'appareil signé invalide");
+    }
+    if claims.device_identifier.trim().is_empty() {
+        return token_reject("Jeton non lié à un appareil");
+    }
+    let expected = expected_device_identifier.trim();
+    if expected.is_empty() {
+        return token_reject("Identifiant machine local indisponible — vérification impossible");
+    }
+    if claims.device_identifier != expected {
+        return token_reject("Jeton lié à un autre appareil");
+    }
+
     let now = chrono::Utc::now();
     let now_ts = now.timestamp();
 
@@ -4945,36 +5164,48 @@ pub fn verify_license_token(
     school_id: String,
     state: State<'_, DbState>,
 ) -> VerifyTokenResult {
-    use dotenvy::dotenv;
-    use std::env;
-
-    let _ = dotenv();
-    let pub_key_pem = env::var("ORION_LICENSE_PUBLIC_KEY_PEM")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| EMBEDDED_LICENSE_PUBLIC_KEY.to_string());
-
-    let result = verify_license_token_internal(&token, &school_id, &pub_key_pem);
-    if !result.valid {
-        return result;
-    }
-
-    // Un jeton émis avant un renouvellement reste signé, mais la licence
-    // qu'il représente est désormais archivée : refuse toute réautorisation.
-    let claims = match result.claims.as_ref() {
-        Some(c) => c,
-        None => return result,
-    };
-
     let conn = match state.0.lock() {
         Ok(c) => c,
         Err(_) => return token_reject("Base locale verrouillée — vérification impossible"),
     };
 
+    let session = match crate::auth_guard::require_authenticated(&conn) {
+        Ok(s) => s,
+        Err(_) => return token_reject("Session non authentifiée — vérification impossible"),
+    };
+
+    if !school_id.trim().is_empty() && school_id.trim() != session.school_id {
+        return token_reject("Établissement demandé non autorisé pour ce jeton");
+    }
+
+    let device_identifier = match current_device_identifier() {
+        Ok(id) => id,
+        Err(e) => return token_reject(&e),
+    };
+
+    let result = verify_license_token_internal(
+        &token,
+        &session.school_id,
+        &device_identifier,
+        &license_public_key_pem(),
+    );
+    if !result.valid {
+        return result;
+    }
+
+    let claims = match result.claims.as_ref() {
+        Some(c) => c,
+        None => return result,
+    };
+
+    if claims.school_id != session.school_id {
+        return token_reject("Token émis pour un autre établissement");
+    }
+
     let local_current: Option<i64> = conn
         .query_row(
             "SELECT is_current FROM licenses WHERE id = ?1 AND school_id = ?2",
-            rusqlite::params![claims.sub, school_id],
+            rusqlite::params![claims.sub, session.school_id],
             |row| row.get(0),
         )
         .optional()
@@ -5006,14 +5237,19 @@ mod license_tests {
         LicenseClaims {
             iss: "orion-license".to_string(),
             sub: "lic-001".to_string(),
+            license_id: "lic-001".to_string(),
             school_id: "school-abc".to_string(),
             license_key: "ORION-TEST-1234".to_string(),
             status: "ACTIVE".to_string(),
             starts_at: Some((now_dt - chrono::Duration::days(1)).to_rfc3339()),
             expires_at: Some((now_dt + chrono::Duration::days(5)).to_rfc3339()),
             is_current: true,
+            max_devices: 1,
+            device_id: "d3000000-0000-4000-8000-000000000001".to_string(),
+            device_identifier: "device-test".to_string(),
+            jti: Some("test-jti".to_string()),
             iat: now,
-            exp: now + 5 * 86400, // 5 jours
+            exp: now + 5 * 86400,
         }
     }
 
@@ -5021,7 +5257,7 @@ mod license_tests {
     fn test_valid_token_accepted() {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(res.valid, "Le jeton valide doit être accepté: {:?}", res.reason);
         assert_eq!(res.claims.unwrap().school_id, "school-abc");
     }
@@ -5031,7 +5267,7 @@ mod license_tests {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
         // Vérification avec une autre clé publique (Clé B)
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_B);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_B);
         assert!(!res.valid, "Un jeton signé avec une autre clé doit être rejeté");
     }
 
@@ -5045,7 +5281,7 @@ mod license_tests {
         } else {
             format!("{}A", &token[..token.len() - 1])
         };
-        let res = verify_license_token_internal(&tampered, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&tampered, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Un jeton altéré doit être rejeté");
     }
 
@@ -5056,7 +5292,7 @@ mod license_tests {
         claims.iat = now - 7200;
         claims.exp = now - 3600; // expiré il y a 1 heure
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Un jeton expiré doit être rejeté");
     }
 
@@ -5064,9 +5300,51 @@ mod license_tests {
     fn test_different_school_id_rejected() {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-pirate", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-pirate", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Un jeton pour un autre établissement doit être rejeté");
         assert!(res.reason.unwrap().contains("autre établissement"));
+    }
+
+    #[test]
+    fn test_device_identifier_mismatch_rejected() {
+        let claims = sample_valid_claims();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-autre",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(!res.valid, "Un jeton lié à un autre appareil doit être rejeté");
+        assert!(res.reason.unwrap().contains("autre appareil"));
+    }
+
+    #[test]
+    fn test_missing_device_binding_rejected() {
+        let mut claims = sample_valid_claims();
+        claims.device_identifier = String::new();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(!res.valid, "Un jeton sans liaison appareil doit être rejeté");
+    }
+
+    #[test]
+    fn test_invalid_max_devices_rejected() {
+        let mut claims = sample_valid_claims();
+        claims.max_devices = 0;
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(!res.valid, "Un quota invalide dans le jeton doit être rejeté");
     }
 
     #[test]
@@ -5074,7 +5352,7 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.status = "SUSPENDED".to_string();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Une licence suspendue doit être rejetée");
     }
 
@@ -5083,7 +5361,7 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.starts_at = Some("2035-01-01T00:00:00Z".to_string());
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Une licence dont la date de début est future doit être rejetée");
     }
 
@@ -5092,7 +5370,7 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.expires_at = Some("2020-01-01T00:00:00Z".to_string());
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Une licence dont expires_at est dépassé doit être rejetée");
     }
 
@@ -5103,7 +5381,7 @@ mod license_tests {
         claims.iat = now + 3600;
         claims.exp = claims.iat + 5 * 86400;
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Un jeton émis dans le futur doit être rejeté");
         assert!(res.reason.unwrap().contains("iat futur"));
     }
@@ -5115,7 +5393,7 @@ mod license_tests {
         claims.iat = now;
         claims.exp = now + 8 * 86400; // 8 jours > 7 jours
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Un jeton de plus de 7 jours doit être rejeté");
         assert!(res.reason.unwrap().contains("supérieure à 7 jours"));
     }
@@ -5125,7 +5403,7 @@ mod license_tests {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
         const PLACEHOLDER_KEY: &str = "-----BEGIN PUBLIC KEY-----\n# Configurer ici la cle publique RSA correspondant au secret Supabase ORION_LICENSE_PRIVATE_KEY_PEM\n-----END PUBLIC KEY-----";
-        let res = verify_license_token_internal(&token, "school-abc", PLACEHOLDER_KEY);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", PLACEHOLDER_KEY);
         assert!(!res.valid, "Un placeholder de clé publique doit faire échouer la vérification");
         assert!(res.reason.unwrap().contains("non configurée"));
     }
@@ -5134,7 +5412,7 @@ mod license_tests {
     fn test_unconfigured_key_rejected() {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "");
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", "");
         assert!(!res.valid, "Une clé publique vide doit être rejetée");
     }
 
@@ -5152,7 +5430,7 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.is_current = false;
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Une licence archivée ne doit jamais réautoriser l'accès");
         assert!(res.reason.unwrap().contains("remplacée"));
     }
@@ -5162,7 +5440,7 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.status = "REVOKED".to_string();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Une licence révoquée doit être refusée");
     }
 
@@ -5172,13 +5450,13 @@ mod license_tests {
         let mut future = sample_valid_claims();
         future.starts_at = Some((now_dt + chrono::Duration::hours(1)).to_rfc3339());
         let token = create_test_token(&future, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Une licence à starts_at futur doit être refusée");
 
         let mut expired = sample_valid_claims();
         expired.expires_at = Some((now_dt - chrono::Duration::seconds(1)).to_rfc3339());
         let token = create_test_token(&expired, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
         assert!(!res.valid, "Une licence expirée doit être refusée");
     }
 
@@ -7561,5 +7839,203 @@ mod auth_tests {
             &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
         );
         assert!(res_students.is_ok(), "Un professeur doit pouvoir consulter les élèves");
+    }
+
+    #[test]
+    fn test_get_current_user_roles_without_session_is_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-roles-self', 'self@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-roles-self', 'u-roles-self', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        let res = get_current_user_roles_conn(&conn, "u-roles-self", "school-1");
+        assert!(res.is_err(), "Sans session valide, aucun rôle ne doit être retourné");
+        assert!(res.unwrap_err().contains("session non authentifiée"));
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_get_current_user_roles_other_user_is_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES
+             ('u-roles-caller', 'caller@school.com', 'ACTIVE'),
+             ('u-roles-victim', 'victim@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES
+             ('ur-roles-caller', 'u-roles-caller', 'school-1', ?1),
+             ('ur-roles-victim', 'u-roles-victim', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-roles-caller", "school-1").unwrap();
+
+        let res = get_current_user_roles_conn(&conn, "u-roles-victim", "school-1");
+        assert!(res.is_err(), "Un utilisateur ne doit pas pouvoir lire les rôles d'un autre compte");
+        assert!(res.unwrap_err().contains("vos propres rôles"));
+
+        let own = get_current_user_roles_conn(&conn, "u-roles-caller", "school-1");
+        assert!(own.is_ok(), "La consultation de ses propres rôles doit rester possible : {:?}", own);
+        assert!(own.unwrap().contains(&"DIRECTION".to_string()));
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_get_current_user_roles_self_and_own_school_allowed() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-roles-own', 'own@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-roles-own', 'u-roles-own', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-roles-own", "school-1").unwrap();
+
+        let own_school = get_current_user_roles_conn(&conn, "u-roles-own", "school-1");
+        assert!(own_school.is_ok(), "La consultation locale authentifiée doit conserver son comportement normal : {:?}", own_school);
+        assert!(own_school.unwrap().contains(&"DIRECTION".to_string()));
+
+        let other_school = get_current_user_roles_conn(&conn, "u-roles-own", "school-2");
+        assert!(other_school.is_err(), "Un utilisateur non SUPER_ADMIN ne doit pas consulter un autre établissement");
+        assert!(other_school.unwrap_err().contains("établissement"));
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_get_current_user_roles_super_admin_exception_is_limited() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let conn = setup_test_auth_db();
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES
+             ('u-roles-sa', 'sa@school.com', 'ACTIVE'),
+             ('u-roles-other-sa', 'other@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES
+             ('ur-roles-sa', 'u-roles-sa', 'school-1', ?1),
+             ('ur-roles-other-sa', 'u-roles-other-sa', 'school-2', ?2)",
+            rusqlite::params![sa_role_id, dir_role_id],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-roles-sa", "school-1").unwrap();
+        let session = crate::auth_guard::get_authenticated_user(&conn).unwrap();
+        assert!(session.is_super_admin, "Le privilège SUPER_ADMIN doit provenir de la session authentifiée");
+
+        let cross_school = get_current_user_roles_conn(&conn, "u-roles-sa", "school-2");
+        assert!(cross_school.is_ok(), "Le SUPER_ADMIN peut consulter ses propres rôles dans un autre établissement : {:?}", cross_school);
+        assert!(cross_school.unwrap().contains(&"SUPER_ADMIN".to_string()));
+
+        let other_user = get_current_user_roles_conn(&conn, "u-roles-other-sa", "school-2");
+        assert!(other_user.is_err(), "L'exception SUPER_ADMIN ne doit jamais autoriser la lecture des rôles d'un autre utilisateur");
+        assert!(other_user.unwrap_err().contains("vos propres rôles"));
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_register_device_requires_session_and_rejects_foreign_school() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-device-dir', 'device-dir@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-device-dir', 'u-device-dir', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+
+        let no_session = register_device_conn(&mut conn, Some("school-1".to_string()), "device-1", "PC", "Windows");
+        assert!(no_session.is_err(), "Sans session, aucun appareil ne doit être enregistré");
+
+        crate::auth_guard::establish_local_session(&conn, "u-device-dir", "school-1").unwrap();
+        let foreign = register_device_conn(&mut conn, Some("school-2".to_string()), "device-1", "PC", "Windows");
+        assert!(foreign.is_err(), "Le school_id du frontend ne doit pas pouvoir changer l'établissement");
+
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_register_device_enforces_local_max_devices_and_reuses_identity() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = setup_test_auth_db();
+
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES ('u-device-quota', 'quota@school.com', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-device-quota', 'u-device-quota', 'school-1', ?1)",
+            rusqlite::params![dir_role_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO licenses (id, school_id, license_key, status, max_devices, is_current)
+             VALUES ('lic-device-1', 'school-1', 'ORION-DEV1-QUOTA-001', 'ACTIVE', 1, 1)",
+            [],
+        ).unwrap();
+
+        crate::auth_guard::establish_local_session(&conn, "u-device-quota", "school-1").unwrap();
+
+        let first = register_device_conn(&mut conn, Some("school-1".to_string()), "device-1", "PC 1", "Windows");
+        assert!(first.is_ok(), "Le premier appareil doit être accepté : {:?}", first);
+
+        let second = register_device_conn(&mut conn, Some("school-1".to_string()), "device-2", "PC 2", "Windows");
+        assert!(second.is_err(), "Le deuxième appareil doit être refusé avec max_devices=1");
+        assert!(second.unwrap_err().contains("Limite d'appareils"));
+
+        let reused = register_device_conn(&mut conn, Some("school-1".to_string()), "device-1", "PC 1", "Windows");
+        assert!(reused.is_ok(), "La réutilisation du même appareil doit rester possible");
+        let active: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM devices WHERE school_id = 'school-1' AND status = 'ACTIVE'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(active, 1, "Aucun doublon ne doit être créé");
+
+        conn.execute(
+            "UPDATE devices SET status = 'REVOKED', deleted_at = 1 WHERE device_identifier = 'device-1'",
+            [],
+        ).unwrap();
+        let after_release = register_device_conn(&mut conn, Some("school-1".to_string()), "device-2", "PC 2", "Windows");
+        assert!(after_release.is_ok(), "Un nouvel appareil doit pouvoir prendre la place libérée : {:?}", after_release);
+
+        crate::auth_guard::clear_session();
     }
 }

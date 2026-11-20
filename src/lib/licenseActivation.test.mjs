@@ -223,6 +223,10 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
     };
 
     const mockInvoke = async (cmd) => {
+      if (cmd === 'get_device_info') {
+        return { identifier: 'device-test', name: 'PC test', platform: 'Windows' };
+      }
+      if (cmd === 'register_device') return 'ok';
       if (cmd === 'save_license') saveAttempted = true;
       return { valid: true };
     };
@@ -250,12 +254,17 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
     let rustVerified = false;
 
     const mockInvoke = async (cmd, args) => {
+      if (cmd === 'get_device_info') {
+        return { identifier: 'device-test', name: 'PC test', platform: 'Windows' };
+      }
+      if (cmd === 'register_device') return 'ok';
       if (cmd === 'verify_license_token') {
         rustVerified = true;
         return { valid: true, claims: { sub: validLic.id, school_id: schoolA } };
       }
       if (cmd === 'save_license') {
         sqliteSaved = true;
+        assert.equal(args.token, 'mock.valid.rs256.jwt.token');
         return null;
       }
       throw new Error(`Commande inconnue: ${cmd}`);
@@ -302,6 +311,10 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
     };
 
     const mockInvoke = async (cmd) => {
+      if (cmd === 'get_device_info') {
+        return { identifier: 'device-test', name: 'PC test', platform: 'Windows' };
+      }
+      if (cmd === 'register_device') return 'ok';
       if (cmd === 'verify_license_token') {
         return { valid: true, claims: { sub: validLic.id, school_id: schoolA } };
       }
@@ -362,6 +375,10 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
     let sqliteAttempted = false;
 
     const mockInvoke = async (cmd) => {
+      if (cmd === 'get_device_info') {
+        return { identifier: 'device-test', name: 'PC test', platform: 'Windows' };
+      }
+      if (cmd === 'register_device') return 'ok';
       if (cmd === 'verify_license_token') {
         return { valid: false, reason: 'Signature cryptographique RS256 invalide' };
       }
@@ -411,6 +428,12 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
 
   it('Erreur 403 sur la RPC bloque immédiatement sans déclencher le fallback RLS', async () => {
     let rlsFallbackTriggered = false;
+    const mockInvoke = async (cmd) => {
+      if (cmd === 'get_device_info') {
+        return { identifier: 'device-test', name: 'PC test', platform: 'Windows' };
+      }
+      return {};
+    };
 
     const mockSupabase = {
       rpc: async () => ({
@@ -432,7 +455,7 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
     try {
       await activateSchoolLicense(
         { licenseKey: 'ORION-ABCD-EFGH-1234', schoolId: schoolA },
-        { supabaseClient: mockSupabase }
+        { supabaseClient: mockSupabase, invokeFn: mockInvoke }
       );
     } catch (e) {
       caughtError = e;
@@ -445,5 +468,55 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
       false,
       'Le fallback RLS ne doit JAMAIS s’activer sur une erreur d’autorisation (403)'
     );
+  });
+
+  it('Lie l’appareil local à l’émission du jeton et enregistre avant sauvegarde SQLite', async () => {
+    const commands = [];
+    let issuedBody = null;
+
+    const mockInvoke = async (cmd, args) => {
+      commands.push(cmd);
+      if (cmd === 'get_device_info') {
+        return { identifier: 'device-machine-001', name: 'Poste A', platform: 'Linux' };
+      }
+      if (cmd === 'verify_license_token') return { valid: true };
+      if (cmd === 'register_device') {
+        assert.equal(args.schoolId, schoolA);
+        return 'ok';
+      }
+      if (cmd === 'save_license') {
+        assert.equal(args.token, 'token-lie-appareil');
+        return null;
+      }
+      throw new Error(`Commande inconnue: ${cmd}`);
+    };
+
+    const mockSupabase = {
+      rpc: async () => ({ error: { code: 'PGRST202', message: 'function not found' } }),
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({ data: validLic, error: null }),
+          }),
+        }),
+      }),
+      functions: {
+        invoke: async (_name, options) => {
+          issuedBody = options.body;
+          return { data: { token: 'token-lie-appareil' }, error: null };
+        },
+      },
+    };
+
+    await activateSchoolLicense(
+      { licenseKey: 'ORION-ABCD-EFGH-1234', schoolId: schoolA },
+      { invokeFn: mockInvoke, supabaseClient: mockSupabase, storage: null }
+    );
+
+    assert.equal(issuedBody.device_identifier, 'device-machine-001');
+    assert.equal(issuedBody.device_name, 'Poste A');
+    assert.equal(issuedBody.platform, 'Linux');
+    assert.ok(commands.indexOf('get_device_info') < commands.indexOf('verify_license_token'));
+    assert.ok(commands.indexOf('register_device') < commands.indexOf('save_license'));
   });
 });

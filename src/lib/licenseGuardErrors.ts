@@ -130,6 +130,10 @@ export interface OfflineLicenseClaims {
   starts_at?: unknown;
   expires_at?: unknown;
   is_current?: unknown;
+  max_devices?: unknown;
+  device_id?: unknown;
+  device_identifier?: unknown;
+  jti?: unknown;
   iat?: unknown;
   exp?: unknown;
 }
@@ -156,6 +160,19 @@ export function validateOfflineLicenseClaims(
   }
   if (claims.school_id !== schoolId) {
     return { valid: false, reason: "Le jeton n'appartient pas à cet établissement." };
+  }
+  if (typeof claims.device_id !== 'string' || claims.device_id.trim().length === 0) {
+    return { valid: false, reason: 'Identifiant d’appareil signé invalide.' };
+  }
+  if (typeof claims.device_identifier !== 'string' || claims.device_identifier.trim().length === 0) {
+    return { valid: false, reason: 'Jeton non lié à un appareil.' };
+  }
+  if (
+    typeof claims.max_devices !== 'number' ||
+    !Number.isInteger(claims.max_devices) ||
+    claims.max_devices < 1
+  ) {
+    return { valid: false, reason: 'Quota d’appareils invalide dans le jeton.' };
   }
   if (claims.is_current !== true) {
     return { valid: false, reason: 'Le jeton concerne une licence historique.' };

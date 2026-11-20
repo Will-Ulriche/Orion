@@ -26,6 +26,10 @@ function claims(overrides = {}) {
     starts_at: '2026-01-01T00:00:00Z',
     expires_at: '2026-12-01T00:00:00Z',
     is_current: true,
+    max_devices: 1,
+    device_id: 'device-uuid-001',
+    device_identifier: 'device-machine-001',
+    jti: 'jti-test',
     iat: NOW_SEC,
     exp: NOW_SEC + MAX_OFFLINE_TOKEN_SECONDS,
     ...overrides,
@@ -185,6 +189,22 @@ test('LIC-03 : date d expiration de la licence contrôlée', () => {
   assert.match(expired.reason, /expirée/);
   assert.equal(invalid.valid, false);
   assert.equal(future.valid, false);
+});
+
+test('LIC-03 : liaison appareil et quota exigés dans les claims hors ligne', () => {
+  const noDevice = validateOfflineLicenseClaims(
+    claims({ device_identifier: '' }),
+    'school-abc',
+    NOW
+  );
+  const noQuota = validateOfflineLicenseClaims(claims({ max_devices: 0 }), 'school-abc', NOW);
+  const valid = validateOfflineLicenseClaims(claims(), 'school-abc', NOW);
+
+  assert.equal(noDevice.valid, false);
+  assert.match(noDevice.reason, /appareil/);
+  assert.equal(noQuota.valid, false);
+  assert.match(noQuota.reason, /quota/i);
+  assert.equal(valid.valid, true);
 });
 
 test('LIC-03 : LicenseGuard n autorise la grâce que pour la catégorie réseau', () => {

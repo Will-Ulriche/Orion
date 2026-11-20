@@ -699,6 +699,11 @@ export async function listDevices(): Promise<Device[]> {
   return unwrap<Device[]>(res);
 }
 
+export async function releaseDevice(id: string): Promise<void> {
+  const { error } = await supabase.rpc('release_device', { p_device_id: id });
+  if (error) throw new Error(error.message);
+}
+
 // ─── Statistiques ───────────────────────────────────────────
 
 export interface SuperAdminStats {

@@ -211,6 +211,14 @@ export async function activateSchoolLicense(
     throw new Error("Module natif Orion non initialisé.");
   }
 
+  const deviceInfo = await invoke<{ identifier: string; name: string; platform: string }>(
+    'get_device_info'
+  );
+  if (!deviceInfo || typeof deviceInfo.identifier !== 'string' || deviceInfo.identifier.trim().length === 0) {
+    throw new Error("Identifiant machine indisponible : activation impossible.");
+  }
+  const deviceIdentifier = deviceInfo.identifier.trim();
+
   // 1. Essayer d'abord la RPC sécurisée 'activate_license' si elle est installée
   let licData: LicenseRecord | null = null;
   let rpcAttempted = false;
@@ -276,7 +284,13 @@ export async function activateSchoolLicense(
     const { data: tokenRes, error: tokenErr } = await supabase.functions.invoke(
       'issue-license-token',
       {
-        body: { license_id: licData.id, school_id: targetSchoolId },
+        body: {
+          license_id: licData.id,
+          school_id: targetSchoolId,
+          device_identifier: deviceIdentifier,
+          device_name: deviceInfo.name,
+          platform: deviceInfo.platform,
+        },
       }
     );
 
@@ -320,10 +334,12 @@ export async function activateSchoolLicense(
     );
   }
 
+  await invoke('register_device', { schoolId: targetSchoolId });
+
   // 5. Persistance locale atomique : sauvegarde SQLite obligatoire d'abord
   // Si SQLite échoue, l'activation échoue visiblement et aucun jeton n'est persisté.
   try {
-    await invoke('save_license', { license: { ...licData, is_current: true } });
+    await invoke('save_license', { token, license: { ...licData, is_current: true } });
   } catch (saveErr: any) {
     throw new Error(
       `Échec de l'enregistrement de la licence dans la base locale SQLite : ${
