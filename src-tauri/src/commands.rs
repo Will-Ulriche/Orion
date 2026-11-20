@@ -1596,6 +1596,62 @@ pub fn delete_academic_year(id: String, school_id: String, state: State<'_, DbSt
     Ok(())
 }
 
+fn write_transfer_audit(
+    conn: &Connection,
+    school_id: &str,
+    user_id: Option<&str>,
+    action: &str,
+    enrollment_id: &str,
+    old_class_id: Option<&str>,
+    new_class_id: Option<&str>,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let old_data = serde_json::json!({ "class_id": old_class_id });
+    let mut new_data = serde_json::json!({ "class_id": new_class_id });
+    if let Some(reason) = reason {
+        new_data["reason"] = serde_json::Value::String(reason.to_string());
+    }
+
+    conn.execute(
+        "INSERT INTO audit_logs (id, school_id, user_id, action, entity_type, entity_id, old_data, new_data)
+         VALUES (?1, ?2, ?3, ?4, 'enrollments', ?5, ?6, ?7)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            school_id,
+            user_id,
+            action,
+            enrollment_id,
+            old_data.to_string(),
+            new_data.to_string()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+fn deny_transfer(
+    conn: &Connection,
+    school_id: &str,
+    user_id: Option<&str>,
+    enrollment_id: &str,
+    old_class_id: Option<&str>,
+    new_class_id: Option<&str>,
+    reason: &str,
+) -> String {
+    let _ = write_transfer_audit(
+        conn,
+        school_id,
+        user_id,
+        "TRANSFER_CLASS_DENIED",
+        enrollment_id,
+        old_class_id,
+        new_class_id,
+        Some(reason),
+    );
+    reason.to_string()
+}
+
 // ──────────────────────────────────────────────
 // COMMANDE : Transfert de classe (même année scolaire)
 // Distincte de la promotion : on reste dans la même année,
@@ -1605,47 +1661,171 @@ pub fn delete_academic_year(id: String, school_id: String, state: State<'_, DbSt
 pub fn transfer_class_within_year(
     enrollment_id: String,
     new_class_id: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    transfer_class_within_year_conn(&mut conn, &enrollment_id, new_class_id.as_deref())
+}
 
-    // Récupérer school_id et academic_year_id pour vérifier le verrouillage
-    let (school_id, academic_year_id, old_class_id): (String, String, Option<String>) = conn.query_row(
-        "SELECT school_id, academic_year_id, class_id FROM enrollments WHERE id = ?1",
-        rusqlite::params![enrollment_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).map_err(|_| "Inscription introuvable.".to_string())?;
+fn transfer_class_within_year_conn(
+    conn: &mut Connection,
+    enrollment_id: &str,
+    new_class_id: Option<&str>,
+) -> Result<(), String> {
+    let (school_id, academic_year_id, old_class_id): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT school_id, academic_year_id, class_id FROM enrollments WHERE id = ?1",
+            rusqlite::params![enrollment_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|_| "Inscription introuvable.".to_string())?;
 
-    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+    let session = match crate::auth_guard::require_authenticated(conn) {
+        Ok(session) => session,
+        Err(err) => {
+            return Err(deny_transfer(
+                conn,
+                &school_id,
+                None,
+                enrollment_id,
+                old_class_id.as_deref(),
+                new_class_id,
+                &err,
+            ));
+        }
+    };
 
-    // Vérifier que la classe cible appartient bien à la même année
-    if let Some(ref cid) = new_class_id {
-        let class_year: String = conn.query_row(
+    if session.school_id != school_id {
+        let err = format!(
+            "Accès refusé : vous n'avez pas autorité sur l'établissement '{}'.",
+            school_id
+        );
+        return Err(deny_transfer(
+            conn,
+            &school_id,
+            Some(&session.user_id),
+            enrollment_id,
+            old_class_id.as_deref(),
+            new_class_id,
+            &err,
+        ));
+    }
+
+    let has_pedagogical_role: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM user_roles ur
+            JOIN roles r ON ur.role_id = r.id
+            JOIN profiles p ON p.user_id = ur.user_id AND p.school_id = ur.school_id AND p.deleted_at IS NULL
+            WHERE ur.user_id = ?1
+              AND ur.school_id = ?2
+              AND r.name IN ('DIRECTION', 'SECRETAIRE')
+         )",
+        rusqlite::params![session.user_id, school_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())?;
+
+    if !has_pedagogical_role {
+        let err = "Action refusée : rôle(s) requis — DIRECTION, SECRETAIRE.".to_string();
+        return Err(deny_transfer(
+            conn,
+            &school_id,
+            Some(&session.user_id),
+            enrollment_id,
+            old_class_id.as_deref(),
+            new_class_id,
+            &err,
+        ));
+    }
+
+    if let Err(err) = ensure_year_is_open(conn, &school_id, &academic_year_id) {
+        return Err(deny_transfer(
+            conn,
+            &school_id,
+            Some(&session.user_id),
+            enrollment_id,
+            old_class_id.as_deref(),
+            new_class_id,
+            &err,
+        ));
+    }
+
+    if let Some(cid) = new_class_id {
+        let class_year: String = match conn.query_row(
             "SELECT academic_year_id FROM classes WHERE id = ?1 AND school_id = ?2",
             rusqlite::params![cid, school_id],
             |row| row.get(0),
-        ).map_err(|_| "Classe introuvable ou n'appartient pas à cet établissement.".to_string())?;
+        ) {
+            Ok(year) => year,
+            Err(_) => {
+                let err = "Classe introuvable ou n'appartient pas à cet établissement.".to_string();
+                return Err(deny_transfer(
+                    conn,
+                    &school_id,
+                    Some(&session.user_id),
+                    enrollment_id,
+                    old_class_id.as_deref(),
+                    new_class_id,
+                    &err,
+                ));
+            }
+        };
 
         if class_year != academic_year_id {
-            return Err("La classe cible n'appartient pas à la même année scolaire. Utilisez la promotion pour changer d'année.".to_string());
+            let err = "La classe cible n'appartient pas à la même année scolaire. Utilisez la promotion pour changer d'année.".to_string();
+            return Err(deny_transfer(
+                conn,
+                &school_id,
+                Some(&session.user_id),
+                enrollment_id,
+                old_class_id.as_deref(),
+                new_class_id,
+                &err,
+            ));
         }
     }
 
-    // Mise à jour de la classe + tracé dans l'historique
-    conn.execute(
-        "UPDATE enrollments SET class_id = ?1, enrollment_type = 'TRANSFER_CLASS' WHERE id = ?2",
-        rusqlite::params![new_class_id, enrollment_id],
-    ).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "UPDATE enrollments SET class_id = ?1, enrollment_type = 'TRANSFER_CLASS', previous_class_id = ?2 WHERE id = ?3",
+        rusqlite::params![new_class_id, old_class_id, enrollment_id],
+    )
+    .map_err(|e| e.to_string())?;
 
     let history_id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO enrollment_history (id, enrollment_id, student_id, academic_year_id, reason)
-         SELECT ?1, ?2, student_id, ?3, ?4 FROM enrollments WHERE id = ?2",
+    tx.execute(
+        "INSERT INTO enrollment_history (id, enrollment_id, student_id, academic_year_id, from_class_id, to_class_id, reason, changed_by)
+         SELECT ?1, ?2, student_id, ?3, ?4, ?5, ?6, ?7 FROM enrollments WHERE id = ?2",
         rusqlite::params![
-            history_id, enrollment_id, academic_year_id,
-            format!("TRANSFER_CLASS: {:?} → {:?}", old_class_id, new_class_id)
+            history_id,
+            enrollment_id,
+            academic_year_id,
+            old_class_id,
+            new_class_id,
+            format!("TRANSFER_CLASS: {:?} → {:?}", old_class_id, new_class_id),
+            session.user_id
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
+
+    write_transfer_audit(
+        &tx,
+        &school_id,
+        Some(&session.user_id),
+        "TRANSFER_CLASS",
+        enrollment_id,
+        old_class_id.as_deref(),
+        new_class_id,
+        None,
+    )?;
+
+    enqueue_entity(&tx, "enrollments", &school_id, enrollment_id);
+    tx.commit().map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -6845,6 +7025,284 @@ mod purge_tests {
         crate::auth_guard::establish_local_session(&conn, "u-sa", "school-1").unwrap();
         let res_sa = crate::auth_guard::require_super_admin(&conn);
         assert!(res_sa.is_ok(), "Le Super Administrateur doit être autorisé");
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_transfer_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO schools (id, name) VALUES
+                ('school-1', 'École Alpha'),
+                ('school-2', 'École Bêta');
+             INSERT INTO academic_years (id, school_id, name, status) VALUES
+                ('ay-1', 'school-1', '2025-2026', 'OPEN'),
+                ('ay-other', 'school-1', '2026-2027', 'OPEN'),
+                ('ay-closed', 'school-1', '2024-2025', 'CLOSED'),
+                ('ay-2', 'school-2', '2025-2026', 'OPEN');
+             INSERT INTO classes (id, school_id, academic_year_id, name) VALUES
+                ('class-old', 'school-1', 'ay-1', '6ème A'),
+                ('class-new', 'school-1', 'ay-1', '6ème B'),
+                ('class-other-year', 'school-1', 'ay-other', '5ème A'),
+                ('class-closed-year', 'school-1', 'ay-closed', '4ème A'),
+                ('class-other-school', 'school-2', 'ay-2', '6ème B');
+             INSERT INTO students (id, school_id, first_name, last_name) VALUES
+                ('student-1', 'school-1', 'Alice', 'Martin'),
+                ('student-2', 'school-2', 'Bob', 'Durand');
+             INSERT INTO enrollments (id, school_id, academic_year_id, student_id, class_id, enrollment_type) VALUES
+                ('enr-1', 'school-1', 'ay-1', 'student-1', 'class-old', 'INITIAL'),
+                ('enr-closed', 'school-1', 'ay-closed', 'student-1', 'class-closed-year', 'INITIAL'),
+                ('enr-2', 'school-2', 'ay-2', 'student-2', 'class-other-school', 'INITIAL');"
+        )
+        .unwrap();
+        conn
+    }
+
+    fn add_user(conn: &Connection, id: &str, school_id: &str, roles: &[&str]) {
+        conn.execute(
+            "INSERT INTO users (id, email, status) VALUES (?1, ?2, 'ACTIVE')",
+            rusqlite::params![id, format!("{id}@orion.test")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO profiles (id, user_id, school_id, first_name, last_name)
+             VALUES (?1, ?2, ?3, 'Test', 'Utilisateur')",
+            rusqlite::params![format!("profile-{id}"), id, school_id],
+        )
+        .unwrap();
+        for role in roles {
+            let role_id: String = conn
+                .query_row(
+                    "SELECT id FROM roles WHERE name = ?1",
+                    rusqlite::params![role],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), id, school_id, role_id],
+            )
+            .unwrap();
+        }
+    }
+
+    fn start_session(conn: &Connection, user_id: &str, school_id: &str) {
+        crate::auth_guard::clear_session();
+        crate::auth_guard::establish_local_session(conn, user_id, school_id).unwrap();
+    }
+
+    fn audit_count(conn: &Connection, action: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM audit_logs WHERE action = ?1",
+            rusqlite::params![action],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn enrollment_class(conn: &Connection, enrollment_id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT class_id FROM enrollments WHERE id = ?1",
+            rusqlite::params![enrollment_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_direction_can_transfer_and_transfer_is_audited_and_enqueued() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        add_user(&conn, "dir", "school-1", &["DIRECTION"]);
+        start_session(&conn, "dir", "school-1");
+
+        transfer_class_within_year_conn(&mut conn, "enr-1", Some("class-new")).unwrap();
+
+        let (class_id, enrollment_type, previous_class_id): (Option<String>, String, Option<String>) = conn
+            .query_row(
+                "SELECT class_id, enrollment_type, previous_class_id FROM enrollments WHERE id = 'enr-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(class_id.as_deref(), Some("class-new"));
+        assert_eq!(enrollment_type, "TRANSFER_CLASS");
+        assert_eq!(previous_class_id.as_deref(), Some("class-old"));
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS"), 1);
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS_DENIED"), 0);
+
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_mutations
+                 WHERE entity_type = 'enrollments' AND entity_id = 'enr-1' AND operation = 'UPSERT'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1);
+
+        let history: (Option<String>, Option<String>, String) = conn
+            .query_row(
+                "SELECT from_class_id, to_class_id, changed_by FROM enrollment_history
+                 WHERE enrollment_id = 'enr-1' AND reason LIKE 'TRANSFER_CLASS:%'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(history.0.as_deref(), Some("class-old"));
+        assert_eq!(history.1.as_deref(), Some("class-new"));
+        assert_eq!(history.2, "dir");
+    }
+
+    #[test]
+    fn test_secretary_can_transfer() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        add_user(&conn, "sec", "school-1", &["SECRETAIRE"]);
+        start_session(&conn, "sec", "school-1");
+
+        transfer_class_within_year_conn(&mut conn, "enr-1", Some("class-new")).unwrap();
+
+        assert_eq!(
+            enrollment_class(&conn, "enr-1").as_deref(),
+            Some("class-new")
+        );
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS"), 1);
+    }
+
+    #[test]
+    fn test_professor_transfer_rejected_and_audited() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        add_user(&conn, "prof", "school-1", &["PROFESSEUR"]);
+        start_session(&conn, "prof", "school-1");
+
+        let err =
+            transfer_class_within_year_conn(&mut conn, "enr-1", Some("class-new")).unwrap_err();
+
+        assert!(err.contains("DIRECTION"), "erreur inattendue: {err}");
+        assert_eq!(
+            enrollment_class(&conn, "enr-1").as_deref(),
+            Some("class-old")
+        );
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS_DENIED"), 1);
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS"), 0);
+    }
+
+    #[test]
+    fn test_anonymous_transfer_rejected_and_audited() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        crate::auth_guard::clear_session();
+
+        let err =
+            transfer_class_within_year_conn(&mut conn, "enr-1", Some("class-new")).unwrap_err();
+
+        assert!(err.contains("Non authentifié"), "erreur inattendue: {err}");
+        assert_eq!(
+            enrollment_class(&conn, "enr-1").as_deref(),
+            Some("class-old")
+        );
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS_DENIED"), 1);
+    }
+
+    #[test]
+    fn test_cross_school_enrollment_transfer_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        add_user(&conn, "dir", "school-1", &["DIRECTION"]);
+        start_session(&conn, "dir", "school-1");
+
+        let err =
+            transfer_class_within_year_conn(&mut conn, "enr-2", Some("class-new")).unwrap_err();
+
+        assert!(err.contains("établissement"), "erreur inattendue: {err}");
+        assert_eq!(
+            enrollment_class(&conn, "enr-2").as_deref(),
+            Some("class-other-school")
+        );
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS_DENIED"), 1);
+    }
+
+    #[test]
+    fn test_target_class_from_another_school_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        add_user(&conn, "dir", "school-1", &["DIRECTION"]);
+        start_session(&conn, "dir", "school-1");
+
+        let err = transfer_class_within_year_conn(&mut conn, "enr-1", Some("class-other-school"))
+            .unwrap_err();
+
+        assert!(
+            err.contains("Classe introuvable"),
+            "erreur inattendue: {err}"
+        );
+        assert_eq!(
+            enrollment_class(&conn, "enr-1").as_deref(),
+            Some("class-old")
+        );
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS_DENIED"), 1);
+    }
+
+    #[test]
+    fn test_target_class_from_another_year_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        add_user(&conn, "dir", "school-1", &["DIRECTION"]);
+        start_session(&conn, "dir", "school-1");
+
+        let err = transfer_class_within_year_conn(&mut conn, "enr-1", Some("class-other-year"))
+            .unwrap_err();
+
+        assert!(err.contains("même année"), "erreur inattendue: {err}");
+        assert_eq!(
+            enrollment_class(&conn, "enr-1").as_deref(),
+            Some("class-old")
+        );
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS_DENIED"), 1);
+    }
+
+    #[test]
+    fn test_closed_year_transfer_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        add_user(&conn, "dir", "school-1", &["DIRECTION"]);
+        start_session(&conn, "dir", "school-1");
+
+        let err = transfer_class_within_year_conn(&mut conn, "enr-closed", Some("class-new"))
+            .unwrap_err();
+
+        assert!(err.contains("clôturée"), "erreur inattendue: {err}");
+        assert_eq!(
+            enrollment_class(&conn, "enr-closed").as_deref(),
+            Some("class-closed-year")
+        );
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS_DENIED"), 1);
+    }
+
+    #[test]
+    fn test_super_admin_without_pedagogical_role_transfer_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_transfer_db();
+        add_user(&conn, "sa", "school-1", &["SUPER_ADMIN"]);
+        start_session(&conn, "sa", "school-1");
+
+        let err =
+            transfer_class_within_year_conn(&mut conn, "enr-1", Some("class-new")).unwrap_err();
+
+        assert!(err.contains("DIRECTION"), "erreur inattendue: {err}");
+        assert_eq!(
+            enrollment_class(&conn, "enr-1").as_deref(),
+            Some("class-old")
+        );
+        assert_eq!(audit_count(&conn, "TRANSFER_CLASS_DENIED"), 1);
     }
 }
 
