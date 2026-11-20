@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { AuthProvider, useAuth, AuthErrorScreen } from './contexts/AuthContext';
+import { resolveLoginMode } from './lib/licenseFlow';
 import { YearProvider } from './contexts/YearContext';
 import Layout from './components/Layout';
 import Login from './pages/LoginPage';
@@ -49,8 +50,8 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
 // Route avec vérification de rôle
 const RoleProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles: string[] }) => {
-  const { session, roles, rolesLoaded, loading } = useAuth();
-  
+  const { session, roles, rolesLoaded, authError, loading } = useAuth();
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#1a1921]">
@@ -60,7 +61,9 @@ const RoleProtectedRoute = ({ children, allowedRoles }: { children: React.ReactN
   }
 
   if (!session) return <Navigate to="/login" replace />;
-  
+
+  if (authError) return <AuthErrorScreen message={authError} />;
+
   // Attendre que les rôles soient chargés avant de bloquer l'accès
   if (!rolesLoaded) {
     return (
@@ -126,14 +129,16 @@ const HomeRoute = () => {
 // ensuite l'application utilise la connexion locale par défaut, avec possibilité
 // de basculer sur la connexion en ligne Supabase à tout moment.
 const LoginEntry = () => {
-  const { activated } = useAuth();
+  const { licenseActivated, onlineConfigured } = useAuth();
   const [showOnline, setShowOnline] = useState(false);
 
-  if (!activated || showOnline) {
+  // Tant que la licence n'est pas activée, la connexion Supabase en ligne est
+  // obligatoire : seule elle peut appeler l'Edge Function d'activation.
+  if (resolveLoginMode({ licenseActivated, wantsOnline: showOnline }) === 'online') {
     return (
       <LoginOnline
-        isActivation={!activated}
-        onSwitchToLocal={activated ? () => setShowOnline(false) : undefined}
+        isActivation={!licenseActivated || !onlineConfigured}
+        onSwitchToLocal={licenseActivated ? () => setShowOnline(false) : undefined}
       />
     );
   }

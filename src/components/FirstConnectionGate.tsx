@@ -3,21 +3,22 @@ import {
   KeyRound, ShieldCheck, AlertTriangle, Key, Loader2,
   CheckCircle2, RefreshCw, Globe, LogIn,
 } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth, shouldBypassLicenseGate, AuthErrorScreen } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabaseClient';
 import { activateSchoolLicense, normalizeLicenseKey } from '../lib/licenseActivation';
-
-const LS_ONBOARDED = 'orion_lic_onboarded';
 
 type GateState = 'checking' | 'ready' | 'need-key' | 'offline-error';
 
 /** Valide (online) la clé saisie à la première connexion puis verrouille l'école. */
 export default function FirstConnectionGate({ children }: { children: React.ReactNode }) {
-  const { roles, rolesLoaded, user, schoolId, signOut } = useAuth();
+  const {
+    roles, rolesLoaded, authError, user, schoolId, signOut,
+    licenseActivated, markLicenseActivated,
+  } = useAuth();
 
-  const [onboarded, setOnboarded] = useState(
-    () => localStorage.getItem(LS_ONBOARDED) === '1'
-  );
+  // Un SUPER_ADMIN vérifié ne passe jamais par un contrôle de licence.
+  const isSuperAdmin = shouldBypassLicenseGate(rolesLoaded, roles);
+
   const [state, setState] = useState<GateState>('checking');
   const [helperText, setHelperText] = useState('');
   const [retryTick, setRetryTick] = useState(0);
@@ -26,12 +27,6 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
   const [activating, setActivating] = useState(false);
   const [activationError, setActivationError] = useState('');
   const [activationSuccess, setActivationSuccess] = useState('');
-
-  const markOnboarded = () => {
-    localStorage.setItem(LS_ONBOARDED, '1');
-    setOnboarded(true);
-    setState('ready');
-  };
 
   const resolveSchoolId = useCallback(async (fallback: string): Promise<string> => {
     if (fallback && fallback !== 'school-1') return fallback;
@@ -65,14 +60,11 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
 
   // ── Déclenchement du garde ─────────────────────────────────────
   useEffect(() => {
-    if (!rolesLoaded) return;
-    setState('checking');
+    // SUPER_ADMIN : aucun appel réseau lié à la licence, aucune page affichée.
+    // Erreur de chargement des rôles : privilèges bloqués, aucun appel non plus.
+    if (!rolesLoaded || isSuperAdmin || authError || licenseActivated) return;
 
-    // Le SUPER_ADMIN et les traitements déjà effectués passent directement.
-    if (roles.includes('SUPER_ADMIN') || onboarded) {
-      setState('ready');
-      return;
-    }
+    setState('checking');
 
     let cancelled = false;
     (async () => {
@@ -96,11 +88,12 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rolesLoaded, roles, schoolId, onboarded, retryTick]);
+  }, [rolesLoaded, isSuperAdmin, authError, licenseActivated, schoolId, retryTick]);
 
   // ── Activation de la clé ───────────────────────────────────────
   const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSuperAdmin || authError) return;
     const cleanKey = normalizeLicenseKey(activationKey);
     if (!cleanKey) return;
     setActivating(true);
@@ -130,14 +123,19 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
       // - Obtient le jeton signé RS256 via l'Edge Function
       // - Valide cryptographiquement le jeton avec Rust
       // - Persiste la licence localement (SQLite + orion_lic_token)
-      await activateSchoolLicense({
+      const activation = await activateSchoolLicense({
         licenseKey: cleanKey,
         schoolId: targetId,
       });
 
+      // activateSchoolLicense ne rend success:true qu'après persistance SQLite.
+      if (!markLicenseActivated(activation)) {
+        throw new Error("La licence n'a pas pu être enregistrée comme activée. Réessayez.");
+      }
+
       setActivationSuccess('Licence vérifiée et activée avec succès ! Ouverture de votre espace…');
       setActivationKey('');
-      setTimeout(markOnboarded, 900);
+      setState('ready');
     } catch (err: any) {
       setActivationError(err.message || 'Échec de vérification de la licence.');
     } finally {
@@ -153,7 +151,8 @@ export default function FirstConnectionGate({ children }: { children: React.Reac
       </div>
     );
   }
-  if (roles.includes('SUPER_ADMIN') || onboarded || state === 'ready') return <>{children}</>;
+  if (authError) return <AuthErrorScreen message={authError} />;
+  if (isSuperAdmin || licenseActivated || state === 'ready') return <>{children}</>;
 
   const isBlocked = state === 'need-key' || state === 'offline-error';
 

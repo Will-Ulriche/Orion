@@ -3,6 +3,13 @@ import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
 import { verifyCloudAccount, verifyCloudSchool } from '../lib/accountValidation';
+import {
+  LS_ONLINE_CONFIGURED,
+  applyLicenseActivation,
+  canRestoreOfflineSession,
+  clearLicenseActivation as clearStoredLicenseActivation,
+  readLicenseFlowState,
+} from '../lib/licenseFlow';
 
 interface AuthContextType {
   session: Session | null;
@@ -10,6 +17,7 @@ interface AuthContextType {
   loading: boolean;
   roles: string[];
   rolesLoaded: boolean;
+  authError: string | null;
   schoolId: string;
   /** Id de l'�tablissement ouvert en mode "direction" depuis l'espace SUPER_ADMIN. */
   forcedSchoolId: string | null;
@@ -21,7 +29,14 @@ interface AuthContextType {
   enterSchoolMode: (schoolId: string, schoolName?: string | null) => void;
   /** Quitte l'espace direction et revient � l'�tablissement d'origine. */
   exitSchoolMode: () => void;
-  activated: boolean;
+  /** Compte Supabase en ligne configuré (indépendant de la licence). */
+  onlineConfigured: boolean;
+  /** Licence validée à distance ET persistée dans SQLite. */
+  licenseActivated: boolean;
+  /** Ne marque l'installation activée qu'après une activation effective réussie. */
+  markLicenseActivated: (result: unknown) => boolean;
+  /** Révoque l'activation effective (licence absente/expirée/suspendue/révoquée). */
+  clearLicenseActivated: () => void;
   signOut: () => Promise<void>;
   setOfflineSession: (userId: string, email: string, sessionToken: string, schoolId: string) => void;
 }
@@ -45,8 +60,122 @@ const LS_SCHOOL_ID = 'current_school_id';
 const LS_FORCED_ID = 'orion_forced_school_id';
 const LS_FORCED_NAME = 'orion_forced_school_name';
 const LS_PREV_ID = 'orion_prev_school_id';
+const OFFLINE_BLOCKED_MSG =
+  'Licence non activée : utilisez la connexion Supabase en ligne pour activer Orion.';
 /** �v�nement �mis quand l'�tablissement courant change. */
 export const SCHOOL_CHANGED_EVENT = 'orion:school-changed';
+
+/**
+ * Résout de façon fiable les rôles d'un utilisateur connecté en ligne via Supabase.
+ * Ne se fie JAMAIS à user_metadata.role.
+ * En cas d'erreur de chargement ou réseau, bloque les privilèges et retourne une erreur explicite sans attribuer de rôle.
+ */
+export async function resolveUserRolesOnline(
+  supabaseClient: any,
+  userId: string
+): Promise<{ roles: string[]; error: string | null }> {
+  try {
+    const { data, error } = await supabaseClient
+      .from('user_roles')
+      .select('roles(name)')
+      .eq('user_id', userId);
+
+    if (error) {
+      return {
+        roles: [],
+        error: `Erreur serveur lors de la vérification des permissions : ${error.message || String(error)}`,
+      };
+    }
+
+    const candidates: unknown[] = [];
+    for (const r of (data ?? []) as any[]) {
+      const embedded = r?.roles;
+      if (Array.isArray(embedded)) {
+        candidates.push(...embedded.map((role: any) => role?.name));
+      } else {
+        candidates.push(embedded?.name);
+      }
+    }
+    const roleNames = Array.from(new Set(
+      candidates
+        .filter((n: unknown): n is string => typeof n === 'string' && n.trim().length > 0)
+        .map((n: string) => n.trim())
+    ));
+
+    if (roleNames.length === 0) {
+      return {
+        roles: [],
+        error: "Aucun rôle valide n'a pu être vérifié pour ce compte. Privilèges bloqués.",
+      };
+    }
+
+    return { roles: roleNames, error: null };
+  } catch (err: any) {
+    return {
+      roles: [],
+      error: `Erreur réseau ou connexion impossible : ${err?.message || String(err)}`,
+    };
+  }
+}
+
+/**
+ * Résout de façon fiable les rôles en mode hors-ligne depuis la base SQLite locale.
+ * Ne se fie JAMAIS à des valeurs par défaut (aucun fallback DIRECTION automatique).
+ */
+export async function resolveUserRolesOffline(
+  invokeFn: <T = any>(cmd: string, args?: any) => Promise<T>,
+  userId: string,
+  schoolId: string
+): Promise<{ roles: string[]; error: string | null }> {
+  try {
+    const userRoles = await invokeFn<string[]>('get_current_user_roles', { userId, schoolId });
+    if (Array.isArray(userRoles) && userRoles.length > 0) {
+      return { roles: userRoles, error: null };
+    }
+    return {
+      roles: [],
+      error: "Aucun rôle enregistré localement pour cet utilisateur. Privilèges bloqués.",
+    };
+  } catch (err: any) {
+    return {
+      roles: [],
+      error: `Erreur lors de la lecture des permissions locales : ${err?.message || String(err)}`,
+    };
+  }
+}
+
+/**
+ * Détermine si un utilisateur doit contourner intégralement les contrôles de licence.
+ * Le rôle SUPER_ADMIN contourne intégralement FirstConnectionGate et LicenseGuard,
+ * sans aucune page ou requête de vérification de licence.
+ */
+export function shouldBypassLicenseGate(rolesLoaded: boolean, roles: string[]): boolean {
+  return rolesLoaded && Array.isArray(roles) && roles.includes('SUPER_ADMIN');
+}
+
+/**
+ * Écran de blocage affiché lorsque la vérification des rôles a échoué.
+ * Aucun rôle n'est attribué dans ce cas : les privilèges restent bloqués.
+ */
+export function AuthErrorScreen({ message }: { message: string }) {
+  const { signOut } = useAuth();
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+      <div className="w-full max-w-md rounded-2xl border border-red-200 bg-white p-8 shadow-sm">
+        <h1 className="text-lg font-bold text-red-700">Impossible de vérifier vos permissions</h1>
+        <p role="alert" className="mt-3 text-sm leading-relaxed text-slate-600">{message}</p>
+        <p className="mt-3 text-xs text-slate-500">Aucun rôle n'a été attribué. L'accès reste bloqué.</p>
+        <button
+          type="button"
+          onClick={() => { void signOut(); }}
+          className="mt-6 w-full rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-900"
+        >
+          Se connecter avec un autre compte
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -54,6 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [roles, setRoles] = useState<string[]>([]);
   const [rolesLoaded, setRolesLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
   // �tablissement courant � r�actif : mis � jour par enterSchoolMode/exitSchoolMode
   // et par l'�v�nement global SCHOOL_CHANGED_EVENT.
   const [schoolId, setSchoolId] = useState<string>(() => getCurrentSchoolId());
@@ -63,18 +193,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [forcedSchoolName, setForcedSchoolName] = useState<string | null>(
     () => localStorage.getItem(LS_FORCED_NAME)
   );
-  // [LIC-01] `activated` est un FLAG UX UNIQUEMENT � il indique si l'installation
-  // a d�j� �t� activ�e pour basculer la page de login de `connexion en ligne`
-  // vers `connexion locale par PIN` (App.tsx / LoginEntry).
-  // Ce flag NE constitue PAS une preuve de licence valide.
-  // La validation r�elle de la licence est effectu�e dans LicenseGuard via Supabase.
-  const [activated, setActivated] = useState(
-    () => localStorage.getItem('orion_activated') === '1'
+  // Deux états strictement distincts :
+  // - onlineConfigured : un compte Supabase a été utilisé (simple configuration).
+  // - licenseActivated : licence validée puis persistée dans SQLite (preuve d'activation).
+  // Aucun succès d'authentification ne doit positionner licenseActivated.
+  const [onlineConfigured, setOnlineConfigured] = useState(
+    () => readLicenseFlowState(localStorage).onlineConfigured
+  );
+  const [licenseActivated, setLicenseActivated] = useState(
+    () => readLicenseFlowState(localStorage).licenseActivated
   );
 
-  const activate = () => {
-    localStorage.setItem('orion_activated', '1');
-    setActivated(true);
+  const markOnlineConfigured = () => {
+    localStorage.setItem(LS_ONLINE_CONFIGURED, '1');
+    setOnlineConfigured(true);
+  };
+
+  const markLicenseActivated = (result: unknown) => {
+    const persisted = applyLicenseActivation(localStorage, result);
+    if (persisted) {
+      setLicenseActivated(true);
+      setOnlineConfigured(true);
+    }
+    return persisted;
+  };
+
+  const clearLicenseActivated = () => {
+    clearStoredLicenseActivation(localStorage);
+    setLicenseActivated(false);
   };
 
   // Relit le localStorage et propage le nouvel �tablissement dans le contexte
@@ -137,35 +283,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.dispatchEvent(new Event(SCHOOL_CHANGED_EVENT));
   };
 
-  const fetchUserRoles = async (userId: string, schoolId: string, fallbackRole?: string) => {
-    try {
-      const userRoles = await invoke<string[]>('get_current_user_roles', { userId, schoolId });
-      const finalRoles = userRoles.length > 0 ? userRoles : (fallbackRole ? [fallbackRole] : ['DIRECTION']);
-      setRoles(finalRoles);
-      setRolesLoaded(true);
-    } catch (err) {
-      console.error("Erreur lors de la r�cup�ration des r�les:", err);
-      setRoles(fallbackRole ? [fallbackRole] : ['DIRECTION']);
-      setRolesLoaded(true);
-    }
+  const fetchUserRoles = async (userId: string, schoolId: string) => {
+    const res = await resolveUserRolesOffline(invoke, userId, schoolId);
+    setRoles(res.roles);
+    setRolesLoaded(true);
+    setAuthError(res.error);
+    return res;
   };
 
   const syncUserToLocalDb = async (userSession: Session | null) => {
     if (userSession?.user) {
       const userMeta = (userSession.user.user_metadata as any) || {};
       let schoolId = userMeta.school_id || localStorage.getItem('current_school_id') || '';
-      let schoolName = '�tablissement';
-      let firstName: string = userMeta.first_name || 'Direction';
+      let schoolName = 'Établissement';
+      let firstName: string = userMeta.first_name || '';
       let lastName: string = userMeta.last_name || '';
       let staffId: string | null = null;
-      const metaRole: string = userMeta.role || 'DIRECTION';
-      // Fiche compl�te de l'�tablissement (renseign�e par le super-administrateur
-      // dans le cloud). Elle est rapatri�e localement pour que la direction
-      // retrouve les informations sans les ressaisir.
       let school: any = null;
 
       try {
-        // Si connect� en ligne, tenter de r�cup�rer l'�tablissement et profil cloud.
+        // Déterminer les rôles effectifs de façon fiable (jamais de user_metadata.role ni de fallback DIRECTION)
+        let effectiveRoles: string[] = [];
+        if (userSession.access_token !== 'offline') {
+          const roleRes = await resolveUserRolesOnline(supabase, userSession.user.id);
+          if (roleRes.error || roleRes.roles.length === 0) {
+            setRoles([]);
+            setRolesLoaded(true);
+            setAuthError(roleRes.error || "Aucun rôle valide attribué à ce compte. Privilèges bloqués.");
+            return;
+          }
+          effectiveRoles = roleRes.roles;
+        } else {
+          const offlineRes = await resolveUserRolesOffline(invoke, userSession.user.id, schoolId || 'school-main');
+          if (offlineRes.error || offlineRes.roles.length === 0) {
+            setRoles([]);
+            setRolesLoaded(true);
+            setAuthError(offlineRes.error || "Aucun rôle enregistré localement. Privilèges bloqués.");
+            return;
+          }
+          effectiveRoles = offlineRes.roles;
+        }
+
+        // Si connecté en ligne, tenter de récupérer l'établissement et profil cloud.
         if (userSession.access_token !== 'offline') {
           try {
             const { data: prof } = await supabase
@@ -181,12 +340,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if ((prof as any)?.staff_id) staffId = (prof as any).staff_id;
             }
           } catch (profileErr) {
-            console.warn('Erreur profil cloud (utilisation m�tadonn�es):', profileErr);
+            console.warn('Erreur profil cloud:', profileErr);
           }
 
-          // Lecture de l'�tablissement via la cl� de service : seule la
-          // super-administration dispose d'une politique RLS de lecture sur
-          // `schools`, la direction ne peut donc pas le lire avec le client anon.
           if (schoolId) {
             try {
               const { data: sch } = await supabase
@@ -199,7 +355,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 if ((sch as any).name) schoolName = (sch as any).name;
               }
             } catch (schoolErr) {
-              console.warn('Erreur lecture �tablissement cloud:', schoolErr);
+              console.warn('Erreur lecture établissement cloud:', schoolErr);
             }
           }
         }
@@ -218,7 +374,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           firstName,
           lastName,
           staffId,
-          roleName: metaRole,
+          roleName: effectiveRoles[0] ?? null,
           shortName: school?.short_name ?? null,
           address: school?.address ?? null,
           city: school?.city ?? null,
@@ -232,32 +388,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           logoUrl: school?.logo_url ?? null,
         });
 
-        // D�terminer les r�les effectifs
-        let effectiveRoles: string[] = [];
-        if (userSession.access_token !== 'offline') {
-          try {
-            const { data } = await supabase
-              .from('user_roles')
-              .select('roles(name)')
-              .eq('user_id', userSession.user.id);
-            const roleNames = (data ?? [])
-              .map((r: any) => r.roles?.name)
-              .filter((n: unknown): n is string => typeof n === 'string');
-            if (roleNames.length > 0) {
-              effectiveRoles = roleNames;
-            }
-          } catch (roleErr) {
-            console.warn('Erreur lecture user_roles cloud:', roleErr);
-          }
-        }
-
-        if (effectiveRoles.length === 0 && metaRole) {
-          effectiveRoles = [metaRole];
-        }
-        if (effectiveRoles.length === 0) {
-          effectiveRoles = ['DIRECTION'];
-        }
-
         // Établir la session locale authentifiée côté backend Rust via Supabase Auth & RLS
         // SEC-VERIFY3-05 : un échec est bloquant — déconnexion forcée, l'UI ne progresse pas.
         if (userSession.access_token && userSession.access_token !== 'offline') {
@@ -268,13 +398,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             });
           } catch (tokErr) {
             console.error('Erreur establish_online_session — déconnexion forcée:', tokErr);
-            await supabase.auth.signOut().catch(() => {});
+            await supabase.auth.signOut().catch(() => { });
             setSession(null);
             setUser(null);
             setRoles([]);
             setRolesLoaded(true);
             setLoading(false);
-            return; // Interrompre syncUserToLocalDb — pas d'appel à activate()
+            setAuthError("Échec de vérification de session avec le module de sécurité.");
+            return;
           }
         }
 
@@ -287,12 +418,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               schoolId: schoolId || 'school-main',
             });
           } catch (bErr) {
-            // Rejet normal si le premier super admin a déjà été amorcé
             console.debug('Amorçage initial SUPER_ADMIN:', bErr);
           }
         }
 
-        // Rapatrier les r�les vers SQLite local
+        // Rapatrier les rôles vers SQLite local
         for (const roleName of effectiveRoles) {
           try {
             await invoke('set_local_user_role', {
@@ -305,15 +435,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
-        activate();
+        // Succès Supabase Auth = compte en ligne configuré, PAS licence activée.
+        markOnlineConfigured();
         setRoles(effectiveRoles);
         setRolesLoaded(true);
-        await fetchUserRoles(userSession.user.id, schoolId || 'school-main', metaRole);
-      } catch (err) {
+        setAuthError(null);
+      } catch (err: any) {
         console.error("Erreur de synchronisation locale de l'utilisateur:", err);
-        // Toujours garantir que l'utilisateur a son r�le charg� pour ne pas le bloquer
-        setRoles([metaRole || 'DIRECTION']);
+        setRoles([]);
         setRolesLoaded(true);
+        setAuthError(err?.message || "Erreur de chargement des privilèges.");
       }
     }
   };
@@ -359,15 +490,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   if (accountState === 'missing' || schoolState === 'missing') {
                     console.warn('[Auth] Session hors-ligne rejet�e : compte ou �tablissement supprim�.');
                     void revokeStoredOfflineToken();
-                    try { await invoke('clear_local_session'); } catch (_) {}
+                    try { await invoke('clear_local_session'); } catch (_) { }
                     localStorage.removeItem('current_school_id');
-                    try { invoke('delete_local_user', { userId: profile.user_id }); } catch (_) {}
+                    try { invoke('delete_local_user', { userId: profile.user_id }); } catch (_) { }
                     if (schoolState === 'missing') {
-                      try { invoke('purge_local_school', { schoolId: profile.school_id }); } catch (_) {}
+                      try { invoke('purge_local_school', { schoolId: profile.school_id }); } catch (_) { }
                     }
                     setSession(null);
                     setUser(null);
                     setRoles([]);
+                    setRolesLoaded(true);
+                    setAuthError('Ce compte ou cet établissement n\'est plus autorisé. Privilèges bloqués.');
                   }
                 });
               } else {
@@ -384,6 +517,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               setSession(null);
               setUser(null);
               setRoles([]);
+              setRolesLoaded(true);
+              setAuthError('Session hors-ligne invalide ou expirée. Privilèges bloqués.');
             })
             .finally(() => setLoading(false));
           return; // setLoading(false) g�r� dans .finally()
@@ -408,6 +543,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setSession(null);
           setUser(null);
           setRoles([]);
+          setRolesLoaded(false);
+          setAuthError(null);
         }
       }
     });
@@ -421,6 +558,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     sessionToken: string,
     schoolId: string
   ) => {
+    // Sans licence activée, une session locale empêcherait l'appel à l'Edge
+    // Function d'activation : on refuse donc toute restauration locale.
+    if (!canRestoreOfflineSession({
+      licenseActivated: readLicenseFlowState(localStorage).licenseActivated,
+    })) {
+      localStorage.removeItem('orion_offline_session');
+      setSession(null);
+      setUser(null);
+      setRoles([]);
+      setRolesLoaded(true);
+      setAuthError(OFFLINE_BLOCKED_MSG);
+      throw new Error(OFFLINE_BLOCKED_MSG);
+    }
     const restored = await invoke<RestoredLoginProfile>('restore_local_session', {
       token: sessionToken,
     });
@@ -434,7 +584,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const fakeSession = { access_token: 'offline', user: fakeUser } as Session;
     setSession(fakeSession);
     setUser(fakeUser);
-    fetchUserRoles(restored.user_id || userId, validatedSchoolId);
+    await fetchUserRoles(restored.user_id || userId, validatedSchoolId);
     return { ...restored, school_id: validatedSchoolId };
   }
 
@@ -444,12 +594,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     sessionToken: string,
     schoolId: string
   ) => {
+    if (!canRestoreOfflineSession({
+      licenseActivated: readLicenseFlowState(localStorage).licenseActivated,
+    })) {
+      setAuthError(OFFLINE_BLOCKED_MSG);
+      return;
+    }
     void setOfflineSessionState(userId, email, sessionToken, schoolId).catch((err) => {
       console.error('[Auth] Restauration de session locale impossible:', err);
       localStorage.removeItem('orion_offline_session');
       setSession(null);
       setUser(null);
       setRoles([]);
+      setRolesLoaded(true);
+      setAuthError(`Restauration de la session locale impossible : ${err?.message || String(err)}`);
     });
     localStorage.setItem(
       'orion_offline_session',
@@ -460,17 +618,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = async () => {
     await revokeStoredOfflineToken();
     // (ORI-SEC-003) : Invalider la session active cote Rust
-    try { await invoke('clear_local_session'); } catch (_) {}
+    try { await invoke('clear_local_session'); } catch (_) { }
     if (session?.access_token === 'offline') {
       setSession(null);
       setUser(null);
-      setRoles([]);
     } else {
       await supabase.auth.signOut();
       setSession(null);
       setUser(null);
-      setRoles([]);
     }
+    // Réinitialiser les privilèges : un changement de compte ne doit jamais
+    // conserver le rôle SUPER_ADMIN du compte précédent.
+    setRoles([]);
+    setRolesLoaded(false);
+    setAuthError(null);
   };
 
   if (loading) {
@@ -483,14 +644,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      session, user, loading, roles, rolesLoaded,
+      session, user, loading, roles, rolesLoaded, authError,
       schoolId,
       forcedSchoolId,
       forcedSchoolName,
       inSchoolMode: !!forcedSchoolId,
       enterSchoolMode,
       exitSchoolMode,
-      activated, signOut, setOfflineSession,
+      onlineConfigured, licenseActivated, markLicenseActivated, clearLicenseActivated,
+      signOut, setOfflineSession,
     }}>
       {children}
     </AuthContext.Provider>

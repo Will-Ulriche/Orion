@@ -4597,6 +4597,8 @@ pub struct LicenseRec {
     pub starts_at: Option<String>,
     pub expires_at: Option<String>,
     pub max_devices: Option<i64>,
+    #[serde(default)]
+    pub is_current: bool,
 }
 
 #[tauri::command]
@@ -4604,8 +4606,8 @@ pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let mut stmt = conn.prepare(
-        "SELECT id, school_id, license_key, status, starts_at, expires_at, max_devices 
-         FROM licenses WHERE school_id = ?1"
+        "SELECT id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current
+         FROM licenses WHERE school_id = ?1 ORDER BY created_at DESC"
     ).map_err(|e| e.to_string())?;
     
     let rows = stmt.query_map(rusqlite::params![school_id], |row| {
@@ -4617,6 +4619,7 @@ pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<
             starts_at: row.get(4)?,
             expires_at: row.get(5)?,
             max_devices: row.get(6)?,
+            is_current: row.get::<_, i64>(7)? != 0,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -4629,26 +4632,112 @@ pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<
     Ok(licenses)
 }
 
+/// Validation pure d'un enregistrement avant persistance locale (UTC strict).
+pub fn validate_license_record(
+    license: &LicenseRec,
+    session_school_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    if license.school_id.trim().is_empty() || license.school_id != session_school_id {
+        return Err("Licence non associée à l'établissement courant".to_string());
+    }
+    if !license.is_current {
+        return Err("Une licence historique ne peut pas réautoriser l'accès".to_string());
+    }
+    if license.status != "ACTIVE" {
+        return Err(format!("Statut de licence non autorisé : {}", license.status));
+    }
+
+    if let Some(ref starts) = license.starts_at {
+        if !starts.trim().is_empty() {
+            let start = parse_license_date(starts)?;
+            if start > now {
+                return Err("Licence pas encore active (date de début future)".to_string());
+            }
+        }
+    }
+    if let Some(ref expires) = license.expires_at {
+        if !expires.trim().is_empty() {
+            let expiry = parse_license_date(expires)?;
+            if expiry <= now {
+                return Err("Licence expirée".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn save_license(license: LicenseRec, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    // Tout utilisateur authentifié peut sauvegarder la licence de son établissement
-    // (nécessaire pour l'activation initiale par la DIRECTION via FirstConnectionGate).
-    // La sécurité est garantie en amont : le JWT RS256 a déjà été validé par verify_license_token.
-    crate::auth_guard::require_authenticated(&conn)?;
-    conn.execute(
-        "INSERT OR REPLACE INTO licenses (id, school_id, license_key, status, starts_at, expires_at, max_devices, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)",
-        rusqlite::params![
-            license.id,
-            license.school_id,
-            license.license_key,
-            license.status,
-            license.starts_at,
-            license.expires_at,
-            license.max_devices,
-        ],
-    ).map_err(|e| e.to_string())?;
+    let mut conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    // Le JWT RS256 a déjà été validé par verify_license_token ; on applique
+    // néanmoins toutes les règles métier ici, côté Rust.
+    let session = crate::auth_guard::require_authenticated(&conn)?;
+    validate_license_record(&license, &session.school_id, chrono::Utc::now())?;
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let existing_current: Option<i64> = tx
+        .query_row(
+            "SELECT is_current FROM licenses WHERE id = ?1",
+            rusqlite::params![license.id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    match existing_current {
+        Some(1) => {
+            // Idempotence : la licence déjà courante est rafraîchie sans créer d'entrée.
+            tx.execute(
+                "UPDATE licenses
+                 SET school_id = ?2, license_key = ?3, status = ?4, starts_at = ?5,
+                     expires_at = ?6, max_devices = ?7, is_current = 1,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?1",
+                rusqlite::params![
+                    license.id,
+                    license.school_id,
+                    license.license_key,
+                    license.status,
+                    license.starts_at,
+                    license.expires_at,
+                    license.max_devices,
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        Some(_) => {
+            return Err("Cette licence historique ne peut plus être activée.".to_string());
+        }
+        None => {
+            // Archivage + promotion dans la même transaction : aucune fenêtre
+            // où deux licences seraient courantes.
+            tx.execute(
+                "UPDATE licenses
+                 SET is_current = 0,
+                     status = CASE WHEN status = 'ACTIVE' THEN 'SUPERSEDED' ELSE status END,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE school_id = ?1 AND is_current = 1",
+                rusqlite::params![license.school_id],
+            ).map_err(|e| e.to_string())?;
+
+            tx.execute(
+                "INSERT INTO licenses
+                 (id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, CURRENT_TIMESTAMP)",
+                rusqlite::params![
+                    license.id,
+                    license.school_id,
+                    license.license_key,
+                    license.status,
+                    license.starts_at,
+                    license.expires_at,
+                    license.max_devices,
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4656,8 +4745,15 @@ pub fn save_license(license: LicenseRec, state: State<'_, DbState>) -> Result<()
 pub fn delete_local_license(id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::require_super_admin(&conn)?;
-    conn.execute("DELETE FROM licenses WHERE id = ?1", rusqlite::params![id])
-        .map_err(|e| e.to_string())?;
+    // Archivage logique : l'historique n'est jamais supprimé.
+    conn.execute(
+        "UPDATE licenses
+         SET is_current = 0,
+             status = CASE WHEN status IN ('ACTIVE', 'SUPERSEDED') THEN 'REVOKED' ELSE status END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4665,8 +4761,15 @@ pub fn delete_local_license(id: String, state: State<'_, DbState>) -> Result<(),
 pub fn purge_local_licenses(school_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::require_super_admin(&conn)?;
-    conn.execute("DELETE FROM licenses WHERE school_id = ?1", rusqlite::params![school_id])
-        .map_err(|e| e.to_string())?;
+    // Anciennement destructif : désormais purement un archivage de l'historique.
+    conn.execute(
+        "UPDATE licenses
+         SET is_current = 0,
+             status = CASE WHEN status = 'ACTIVE' THEN 'SUPERSEDED' ELSE status END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE school_id = ?1",
+        rusqlite::params![school_id],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4691,6 +4794,7 @@ pub struct LicenseClaims {
     pub status: String,
     pub starts_at: Option<String>,
     pub expires_at: Option<String>,
+    pub is_current: bool,
     pub iat: i64,
     pub exp: i64,
 }
@@ -4814,6 +4918,16 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
         };
     }
 
+    // Une licence archivée ne réautorise jamais l'accès, même avec un jeton
+    // encore valide cryptographiquement.
+    if !claims.is_current {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some("Licence remplacée : le jeton n'est plus autorisé".to_string()),
+            claims: None,
+        };
+    }
+
     // Vérifier le statut
     if claims.status != "ACTIVE" {
         return VerifyTokenResult {
@@ -4881,7 +4995,11 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
 }
 
 #[tauri::command]
-pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResult {
+pub fn verify_license_token(
+    token: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> VerifyTokenResult {
     use dotenvy::dotenv;
     use std::env;
 
@@ -4891,7 +5009,47 @@ pub fn verify_license_token(token: String, school_id: String) -> VerifyTokenResu
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| EMBEDDED_LICENSE_PUBLIC_KEY.to_string());
 
-    verify_license_token_internal(&token, &school_id, &pub_key_pem)
+    let result = verify_license_token_internal(&token, &school_id, &pub_key_pem);
+    if !result.valid {
+        return result;
+    }
+
+    // Un jeton émis avant un renouvellement reste signé, mais la licence
+    // qu'il représente est désormais archivée : refuse toute réautorisation.
+    let claims = match result.claims.as_ref() {
+        Some(c) => c,
+        None => return result,
+    };
+
+    let conn = match state.0.lock() {
+        Ok(c) => c,
+        Err(_) => {
+            return VerifyTokenResult {
+                valid: false,
+                reason: Some("Base locale verrouillée — vérification impossible".to_string()),
+                claims: None,
+            }
+        }
+    };
+
+    let local_current: Option<i64> = conn
+        .query_row(
+            "SELECT is_current FROM licenses WHERE id = ?1 AND school_id = ?2",
+            rusqlite::params![claims.sub, school_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+
+    if local_current == Some(0) {
+        return VerifyTokenResult {
+            valid: false,
+            reason: Some("Licence remplacée : le jeton n'est plus autorisé".to_string()),
+            claims: None,
+        };
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -4908,15 +5066,17 @@ mod license_tests {
     }
 
     fn sample_valid_claims() -> LicenseClaims {
-        let now = chrono::Utc::now().timestamp();
+        let now_dt = chrono::Utc::now();
+        let now = now_dt.timestamp();
         LicenseClaims {
             iss: "orion-license".to_string(),
             sub: "lic-001".to_string(),
             school_id: "school-abc".to_string(),
             license_key: "ORION-TEST-1234".to_string(),
             status: "ACTIVE".to_string(),
-            starts_at: Some("2026-01-01T00:00:00Z".to_string()),
-            expires_at: Some("2026-12-31T23:59:59Z".to_string()),
+            starts_at: Some((now_dt - chrono::Duration::days(1)).to_rfc3339()),
+            expires_at: Some((now_dt + chrono::Duration::days(5)).to_rfc3339()),
+            is_current: true,
             iat: now,
             exp: now + 5 * 86400, // 5 jours
         }
@@ -5050,6 +5210,87 @@ mod license_tests {
         assert!(parse_license_date("2026-11-01T20:00:00Z").is_ok());
         assert!(parse_license_date("2026-11-01 20:00:00").is_ok());
         assert!(parse_license_date("2026-11-01").is_ok());
+    }
+
+    #[test]
+    fn test_historical_license_token_rejected() {
+        let mut claims = sample_valid_claims();
+        claims.is_current = false;
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Une licence archivée ne doit jamais réautoriser l'accès");
+        assert!(res.reason.unwrap().contains("remplacée"));
+    }
+
+    #[test]
+    fn test_revoked_license_token_rejected() {
+        let mut claims = sample_valid_claims();
+        claims.status = "REVOKED".to_string();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Une licence révoquée doit être refusée");
+    }
+
+    #[test]
+    fn test_utc_boundaries_rejected() {
+        let now_dt = chrono::Utc::now();
+        let mut future = sample_valid_claims();
+        future.starts_at = Some((now_dt + chrono::Duration::hours(1)).to_rfc3339());
+        let token = create_test_token(&future, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Une licence à starts_at futur doit être refusée");
+
+        let mut expired = sample_valid_claims();
+        expired.expires_at = Some((now_dt - chrono::Duration::seconds(1)).to_rfc3339());
+        let token = create_test_token(&expired, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(&token, "school-abc", TEST_RSA_PUBLIC_KEY_A);
+        assert!(!res.valid, "Une licence expirée doit être refusée");
+    }
+
+    fn sample_license_record() -> LicenseRec {
+        let now_dt = chrono::Utc::now();
+        LicenseRec {
+            id: "lic-local".to_string(),
+            school_id: "school-abc".to_string(),
+            license_key: "ORION-ABCD-EFGH-1234".to_string(),
+            status: "ACTIVE".to_string(),
+            starts_at: Some((now_dt - chrono::Duration::hours(1)).to_rfc3339()),
+            expires_at: Some((now_dt + chrono::Duration::days(5)).to_rfc3339()),
+            max_devices: Some(1),
+            is_current: true,
+        }
+    }
+
+    #[test]
+    fn test_validate_license_record_accepts_current_active() {
+        let lic = sample_license_record();
+        assert!(validate_license_record(&lic, "school-abc", chrono::Utc::now()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_license_record_rejects_history_wrong_school_and_bad_dates() {
+        let mut lic = sample_license_record();
+        lic.is_current = false;
+        assert!(validate_license_record(&lic, "school-abc", chrono::Utc::now()).is_err());
+
+        let lic = sample_license_record();
+        assert!(validate_license_record(&lic, "school-autre", chrono::Utc::now()).is_err());
+
+        let mut lic = sample_license_record();
+        lic.status = "SUPERSEDED".to_string();
+        assert!(validate_license_record(&lic, "school-abc", chrono::Utc::now()).is_err());
+
+        let mut lic = sample_license_record();
+        lic.starts_at = Some((chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339());
+        assert!(validate_license_record(&lic, "school-abc", chrono::Utc::now()).is_err());
+
+        let mut lic = sample_license_record();
+        lic.expires_at = Some((chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
+        assert!(validate_license_record(&lic, "school-abc", chrono::Utc::now()).is_err());
+
+        let mut lic = sample_license_record();
+        lic.expires_at = Some("date-invalide".to_string());
+        assert!(validate_license_record(&lic, "school-abc", chrono::Utc::now()).is_err());
     }
 }
 

@@ -6,6 +6,7 @@ import Licences from './Licences';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
+import { classifyLicense, findCurrentRecord } from '../lib/licenseLifecycle';
 
 export default function Security() {
   const { schoolId, user } = useAuth();
@@ -32,8 +33,11 @@ export default function Security() {
           } catch (_) {}
         }
 
-        const isValidActive = (l: any) =>
-          l?.status === 'ACTIVE' && (!l?.expires_at || new Date(l.expires_at) > new Date());
+        // Seule la licence courante peut autoriser l'affichage du décompte.
+        const currentValid = (rows: any[]) => {
+          const current = findCurrentRecord(rows, targetId);
+          return classifyLicense(current, targetId) === 'valid' ? current : null;
+        };
 
         // 1. Le cloud est la source de vérité
         let cloudReachable = false;
@@ -41,42 +45,33 @@ export default function Security() {
         try {
           const { data: lics, error } = await supabase
             .from('licenses')
-            .select('status, expires_at, school_id, created_at')
+            .select('id, status, expires_at, starts_at, school_id, created_at, is_current')
             .eq('school_id', targetId)
             .order('created_at', { ascending: false });
           if (error) throw error;
           cloudReachable = true;
 
-          let rows: any[] = lics ?? [];
-          if (rows.length === 0 && targetId && targetId !== 'school-1') {
-            const { data: fb } = await supabase
-              .from('licenses')
-              .select('status, expires_at, school_id, created_at')
-              .eq('school_id', 'school-1')
-              .order('created_at', { ascending: false });
-            rows = fb ?? [];
-          }
-          const active = rows.find(isValidActive);
+          const active = currentValid(lics ?? []);
           if (active) found = { expires_at: active.expires_at ?? null, status: active.status };
         } catch (_) {
           cloudReachable = false;
         }
 
         if (cloudReachable) {
-          // Aucune licence active côté cloud : on efface le décompte ET le cache périmé
+          // Aucune licence courante valide : on efface le décompte et le cache périmé.
+          // L'historique reste intact.
           setActiveLic(found);
           if (!found) {
             localStorage.removeItem('orion_lic_cache');
             localStorage.removeItem('orion_lic_ok_at');
-            try { await invoke('purge_local_licenses', { schoolId: targetId }); } catch (_) {}
           }
           return;
         }
 
-        // 2. Cloud injoignable → repli SQLite local
+        // 2. Cloud injoignable → repli SQLite local (licence courante uniquement)
         if (targetId) {
           const lics = await invoke<any[]>('get_licenses', { schoolId: targetId });
-          const active = lics?.find(isValidActive);
+          const active = currentValid(lics ?? []);
           if (active) {
             setActiveLic({ expires_at: active.expires_at ?? null, status: active.status });
             return;
@@ -87,8 +82,9 @@ export default function Security() {
         const cached = localStorage.getItem('orion_lic_cache');
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (isValidActive(parsed)) {
-            setActiveLic({ expires_at: parsed.expires_at ?? null, status: parsed.status });
+          const current = currentValid([parsed]);
+          if (current) {
+            setActiveLic({ expires_at: current.expires_at ?? null, status: current.status });
             return;
           }
         }

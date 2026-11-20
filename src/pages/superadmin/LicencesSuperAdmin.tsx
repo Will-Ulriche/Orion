@@ -13,6 +13,7 @@ const STATUS_META: Record<string, { label: string; tone: Tone }> = {
   SUSPENDED: { label: 'Suspendue', tone: 'amber'   },
   EXPIRED:   { label: 'Expirée',   tone: 'slate'   },
   REVOKED:   { label: 'Révoquée',  tone: 'red'     },
+  SUPERSEDED:{ label: 'Remplacée', tone: 'slate'   },
 };
 
 function fmtDate(iso: string | null): string {
@@ -137,6 +138,7 @@ export default function LicencesSuperAdmin() {
         starts_at: form.starts_at ? new Date(form.starts_at).toISOString() : null,
         expires_at: computeExpiresAt(),
         max_devices: Number(form.max_devices) || 1,
+        license_key: previewKey,
       } as LicenseInput);
       setFormOpen(false); await load();
     } catch (e: any) { setError(e.message ?? String(e)); }
@@ -229,10 +231,10 @@ export default function LicencesSuperAdmin() {
     setDeleting(true); setError('');
     try {
       await deleteLicense(deleteTarget.id);
-      setLicenses((prev) => prev.filter((x) => x.id !== deleteTarget.id));
-      // Purger le cache local immédiatement
+      // La licence est archivée, pas supprimée : on recharge l'historique.
       purgeLocalLicenseCache(deleteTarget.id, deleteTarget.school_id);
       setDeleteTarget(null);
+      await load();
     } catch (e: any) { setError(e.message ?? String(e)); }
     finally { setDeleting(false); }
   };
@@ -292,6 +294,7 @@ export default function LicencesSuperAdmin() {
                     <Td>
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono text-[12.5px] font-semibold text-slate-700 select-all">{l.license_key}</span>
+                        {l.is_current && <Badge tone="emerald">Courante</Badge>}
                         <button onClick={() => copyLicenseKey(l.license_key)} className="p-1 text-slate-400 hover:text-slate-600 rounded" title="Copier la clé">
                           {copiedKey === l.license_key ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
                         </button>
@@ -325,7 +328,7 @@ export default function LicencesSuperAdmin() {
                         <Btn variant="ghost" onClick={() => openEdit(l)} title="Modifier la licence" className="!h-8 !px-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100">
                           <Pencil size={14} />
                         </Btn>
-                        <Btn variant="ghost" onClick={() => setDeleteTarget(l)} title="Supprimer cette licence" className="!h-8 !px-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50">
+                          <Btn variant="ghost" onClick={() => setDeleteTarget(l)} title="Archiver cette licence (historique conservé)" className="!h-8 !px-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50">
                           <Trash2 size={14} />
                         </Btn>
                       </div>
@@ -472,14 +475,14 @@ export default function LicencesSuperAdmin() {
 
       {/* ─── MODAL SUPPRESSION ───────────────────────────────────── */}
       {deleteTarget && (
-        <Modal title="Supprimer cette licence ?"
-          description={`Êtes-vous sûr de vouloir supprimer la clé ${deleteTarget.license_key} (${deleteTarget.schools?.name ?? 'Établissement inconnu'}) ?`}
+        <Modal title="Archiver cette licence ?"
+          description={`Êtes-vous sûr de vouloir révoquer la clé ${deleteTarget.license_key} (${deleteTarget.schools?.name ?? 'Établissement inconnu'}) ?`}
           onClose={() => setDeleteTarget(null)}
-          footer={<><Btn onClick={() => setDeleteTarget(null)}>Annuler</Btn><Btn variant="danger" onClick={handleDelete} disabled={deleting}>{deleting ? 'Suppression…' : 'Supprimer définitivement'}</Btn></>}
+          footer={<><Btn onClick={() => setDeleteTarget(null)}>Annuler</Btn><Btn variant="danger" onClick={handleDelete} disabled={deleting}>{deleting ? 'Archivage…' : 'Archiver la licence'}</Btn></>}
         >
           <div className="p-3 bg-red-50 rounded-xl border border-red-200 text-xs text-red-700 leading-relaxed">
-            ⚠️ <strong>Attention :</strong> Cette clé sera définitivement effacée de la base cloud.
-            Les appareils connectés ne pourront plus synchroniser leurs données.
+            ⚠️ <strong>Attention :</strong> La licence sera révoquée et retirée du statut courant, mais son historique reste conservé.
+            Elle ne pourra plus autoriser l'accès.
           </div>
         </Modal>
       )}

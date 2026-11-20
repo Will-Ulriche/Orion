@@ -231,16 +231,17 @@ export default function StatsSuperAdmin() {
     const suspendedSchools = schools.filter(s => s.status === 'SUSPENDED').length;
     const closedSchools    = schools.filter(s => s.status === 'CLOSED').length;
 
-    const activeLic    = licenses.filter(l => l.status === 'ACTIVE').length;
-    const suspendedLic = licenses.filter(l => l.status === 'SUSPENDED').length;
-    const expiredLic   = licenses.filter(l => l.status === 'EXPIRED').length;
-    const revokedLic   = licenses.filter(l => l.status === 'REVOKED').length;
+    const current = licenses.filter(l => l.is_current === true);
+    const activeLic    = current.filter(l => l.status === 'ACTIVE').length;
+    const suspendedLic = current.filter(l => l.status === 'SUSPENDED').length;
+    const expiredLic   = current.filter(l => l.status === 'EXPIRED').length;
+    const revokedLic   = current.filter(l => l.status === 'REVOKED').length;
 
-    const expiring7  = licenses.filter(l => l.status === 'ACTIVE' && l.expires_at && new Date(l.expires_at).getTime() <= in7).length;
-    const expiring30 = licenses.filter(l => l.status === 'ACTIVE' && l.expires_at && new Date(l.expires_at).getTime() <= in30).length;
+    const expiring7  = current.filter(l => l.status === 'ACTIVE' && l.expires_at && new Date(l.expires_at).getTime() <= in7).length;
+    const expiring30 = current.filter(l => l.status === 'ACTIVE' && l.expires_at && new Date(l.expires_at).getTime() <= in30).length;
 
-    // Licences ACTIVE triées par expiration la plus proche
-    const alertLicenses = licenses
+    // Licences ACTIVE courantes triées par expiration la plus proche
+    const alertLicenses = current
       .filter(l => l.status === 'ACTIVE' && l.expires_at && new Date(l.expires_at).getTime() <= in30)
       .sort((a, b) => new Date(a.expires_at!).getTime() - new Date(b.expires_at!).getTime());
 
@@ -256,7 +257,7 @@ export default function StatsSuperAdmin() {
     devicesBySchool.sort((a, b) => b.count - a.count);
 
     // Écoles sans licence active
-    const schoolsWithActiveLic = new Set(licenses.filter(l => l.status === 'ACTIVE').map(l => l.school_id));
+    const schoolsWithActiveLic = new Set(current.filter(l => l.status === 'ACTIVE').map(l => l.school_id));
     const schoolsNoLic = schools.filter(s => !schoolsWithActiveLic.has(s.id));
 
     // Historique mensuel

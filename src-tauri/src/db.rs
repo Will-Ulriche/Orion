@@ -31,6 +31,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/24_library_module.sql"),
     include_str!("../migrations/25_link_profiles_staff.sql"),
     include_str!("../migrations/26_local_session_tokens.sql"),
+    include_str!("../migrations/27_license_lifecycle.sql"),
 ];
 
 pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {

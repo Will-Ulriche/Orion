@@ -25,6 +25,7 @@ describe('LIC-01 : Validation des contraintes métier de licence (pures)', () =>
       school_id: schoolA,
       license_key: 'ORION-ABCD-EFGH-1234',
       status: 'ACTIVE',
+      is_current: true,
       starts_at: '2026-01-01T00:00:00Z',
       expires_at: '2027-01-01T00:00:00Z',
     };
@@ -33,12 +34,28 @@ describe('LIC-01 : Validation des contraintes métier de licence (pures)', () =>
     assert.equal(res.error, undefined);
   });
 
+  it('Une ancienne licence ACTIVE non courante ne peut pas être réactivée', () => {
+    const lic = {
+      id: 'lic-old',
+      school_id: schoolA,
+      license_key: 'ORION-ABCD-EFGH-1234',
+      status: 'ACTIVE',
+      is_current: false,
+      starts_at: '2026-01-01T00:00:00Z',
+      expires_at: '2027-01-01T00:00:00Z',
+    };
+    const res = validateLicenseConstraints(lic, schoolA, now);
+    assert.equal(res.valid, false);
+    assert.match(res.error, /remplacée/i);
+  });
+
   it('Une direction ne peut PAS activer une licence d’un autre établissement', () => {
     const lic = {
       id: 'lic-other',
       school_id: schoolB,
       license_key: 'ORION-OTHER-SCHL-0001',
       status: 'ACTIVE',
+      is_current: true,
       starts_at: '2026-01-01T00:00:00Z',
       expires_at: '2027-01-01T00:00:00Z',
     };
@@ -53,6 +70,7 @@ describe('LIC-01 : Validation des contraintes métier de licence (pures)', () =>
       school_id: 'unassigned',
       license_key: 'ORION-FREE-KEY0-0001',
       status: 'ACTIVE',
+      is_current: true,
       starts_at: '2026-01-01T00:00:00Z',
       expires_at: '2027-01-01T00:00:00Z',
     };
@@ -67,6 +85,7 @@ describe('LIC-01 : Validation des contraintes métier de licence (pures)', () =>
       school_id: schoolA,
       license_key: 'ORION-ABCD-EFGH-1234',
       status: 'SUSPENDED',
+      is_current: true,
       starts_at: '2026-01-01T00:00:00Z',
       expires_at: '2027-01-01T00:00:00Z',
     };
@@ -81,6 +100,7 @@ describe('LIC-01 : Validation des contraintes métier de licence (pures)', () =>
       school_id: schoolA,
       license_key: 'ORION-ABCD-EFGH-1234',
       status: 'REVOKED',
+      is_current: true,
       starts_at: '2026-01-01T00:00:00Z',
       expires_at: '2027-01-01T00:00:00Z',
     };
@@ -95,6 +115,7 @@ describe('LIC-01 : Validation des contraintes métier de licence (pures)', () =>
       school_id: schoolA,
       license_key: 'ORION-ABCD-EFGH-1234',
       status: 'ACTIVE',
+      is_current: true,
       starts_at: '2025-01-01T00:00:00Z',
       expires_at: '2026-10-01T00:00:00Z',
     };
@@ -109,6 +130,7 @@ describe('LIC-01 : Validation des contraintes métier de licence (pures)', () =>
       school_id: schoolA,
       license_key: 'ORION-ABCD-EFGH-1234',
       status: 'ACTIVE',
+      is_current: true,
       starts_at: '2026-12-01T00:00:00Z',
       expires_at: '2027-12-01T00:00:00Z',
     };
@@ -172,10 +194,49 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
     school_id: schoolA,
     license_key: 'ORION-ABCD-EFGH-1234',
     status: 'ACTIVE',
+    is_current: true,
     starts_at: '2026-01-01T00:00:00Z',
     expires_at: '2027-01-01T00:00:00Z',
     max_devices: 5,
   };
+
+  it('Historique ACTIVE : aucun jeton ni persistance si la licence n’est pas courante', async () => {
+    const oldLic = { ...validLic, id: 'lic-old', is_current: false };
+    let tokenRequested = false;
+    let saveAttempted = false;
+
+    const mockSupabase = {
+      rpc: async () => ({ error: { code: 'PGRST202', message: 'function not found' } }),
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({ data: oldLic, error: null }),
+          }),
+        }),
+      }),
+      functions: {
+        invoke: async () => {
+          tokenRequested = true;
+          return { data: { token: 'should-not-happen' }, error: null };
+        },
+      },
+    };
+
+    const mockInvoke = async (cmd) => {
+      if (cmd === 'save_license') saveAttempted = true;
+      return { valid: true };
+    };
+
+    await assert.rejects(
+      activateSchoolLicense(
+        { licenseKey: 'ORION-ABCD-EFGH-1234', schoolId: schoolA },
+        { invokeFn: mockInvoke, supabaseClient: mockSupabase, storage: null }
+      ),
+      /remplacée/i
+    );
+    assert.equal(tokenRequested, false);
+    assert.equal(saveAttempted, false);
+  });
 
   it('SQLite réussit : activation complète et token persisté dans localStorage', async () => {
     const storageMap = new Map();

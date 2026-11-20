@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { KeyRound, RefreshCw, ShieldOff, Clock, Ban, AlertTriangle, Key, CheckCircle, LogIn } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth, shouldBypassLicenseGate, AuthErrorScreen } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabaseClient';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -9,38 +9,89 @@ import {
   normalizeLicenseKey,
   LS_LIC_TOKEN,
 } from '../lib/licenseActivation';
+import {
+  classifyLicense,
+  findCurrentRecord,
+  type LifecycleLicense,
+} from '../lib/licenseLifecycle';
+import {
+  canUseOfflineGrace,
+  classifyLicenseGuardError,
+  validateOfflineLicenseClaims,
+  type OfflineLicenseClaims,
+} from '../lib/licenseGuardErrors';
 
 // ─── Types ────────────────────────────────────────────────────
-type CheckStatus = 'checking' | 'valid' | 'expired' | 'suspended' | 'revoked' | 'missing' | 'offline_grace';
+type CheckStatus = 'checking' | 'valid' | 'future' | 'expired' | 'suspended' | 'revoked' | 'missing' | 'offline_grace';
 
-interface LicenseInfo {
-  id: string;
+interface LicenseInfo extends LifecycleLicense {
   license_key: string;
-  status: string;
-  expires_at: string | null;
-  starts_at: string | null;
   max_devices: number | null;
 }
 
 // ─── Constantes ───────────────────────────────────────────────
 const RECHECK_MS = 5 * 60 * 1000; // revérification toutes les 5 minutes
 
+async function verifyOfflineLicenseToken(targetId: string): Promise<LicenseInfo | null> {
+  const token = localStorage.getItem(LS_LIC_TOKEN);
+  if (!token) return null;
+
+  try {
+    const res = await invoke<{
+      valid: boolean;
+      reason?: string;
+      claims?: OfflineLicenseClaims;
+    }>('verify_license_token', { token, schoolId: targetId });
+
+    const claims = res?.claims;
+    if (!res?.valid || !claims) return null;
+    if (!validateOfflineLicenseClaims(claims, targetId).valid) return null;
+    if (
+      typeof claims.sub !== 'string' ||
+      typeof claims.license_key !== 'string' ||
+      typeof claims.status !== 'string' ||
+      typeof claims.school_id !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      id: claims.sub,
+      school_id: claims.school_id,
+      license_key: claims.license_key,
+      status: claims.status,
+      expires_at: typeof claims.expires_at === 'string' ? claims.expires_at : null,
+      starts_at: typeof claims.starts_at === 'string' ? claims.starts_at : null,
+      is_current: claims.is_current === true,
+      max_devices: null,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 // ─── Helpers UI ───────────────────────────────────────────────
 const STATUS_CFG: Record<CheckStatus, { icon: typeof ShieldOff; title: string; desc: string; color: string; bg: string; border: string }> = {
-  checking:      { icon: RefreshCw,    title: 'Vérification…',        desc: 'Contrôle de votre licence en cours.',                              color: 'text-slate-500',   bg: 'bg-slate-50',   border: 'border-slate-200' },
-  valid:         { icon: CheckCircle,  title: 'Licence valide',        desc: 'Votre licence est active.',                                        color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200' },
-  expired:       { icon: Clock,        title: 'Licence expirée',       desc: 'Votre licence a expiré. Contactez votre administrateur.',           color: 'text-amber-600',   bg: 'bg-amber-50',   border: 'border-amber-200' },
-  suspended:     { icon: AlertTriangle,'title': 'Licence suspendue',   desc: 'Votre licence est suspendue. Contactez votre administrateur.',       color: 'text-orange-600',  bg: 'bg-orange-50',  border: 'border-orange-200' },
-  revoked:       { icon: Ban,          title: 'Licence révoquée',      desc: 'Votre licence a été révoquée. Contactez votre administrateur.',      color: 'text-red-600',     bg: 'bg-red-50',     border: 'border-red-200' },
-  missing:       { icon: ShieldOff,    title: 'Aucune licence',        desc: "Aucune licence trouvée pour cet établissement. Activez votre clé.", color: 'text-rose-600',    bg: 'bg-rose-50',    border: 'border-rose-200' },
-  offline_grace: { icon: RefreshCw,     title: 'Mode hors-ligne',       desc: 'Licence non vérifiable (réseau indisponible). Accès temporaire accordé.', color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
+  checking: { icon: RefreshCw, title: 'Vérification…', desc: 'Contrôle de votre licence en cours.', color: 'text-slate-500', bg: 'bg-slate-50', border: 'border-slate-200' },
+  valid: { icon: CheckCircle, title: 'Licence valide', desc: 'Votre licence est active.', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200' },
+  future: { icon: Clock, title: 'Licence non encore active', desc: 'La date de début de votre licence n’est pas encore atteinte.', color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-200' },
+  expired: { icon: Clock, title: 'Licence expirée', desc: 'Votre licence a expiré. Contactez votre administrateur.', color: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-200' },
+  suspended: { icon: AlertTriangle, 'title': 'Licence suspendue', desc: 'Votre licence est suspendue. Contactez votre administrateur.', color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200' },
+  revoked: { icon: Ban, title: 'Licence révoquée', desc: 'Votre licence a été révoquée. Contactez votre administrateur.', color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
+  missing: { icon: ShieldOff, title: 'Aucune licence', desc: "Aucune licence trouvée pour cet établissement. Activez votre clé.", color: 'text-rose-600', bg: 'bg-rose-50', border: 'border-rose-200' },
+  offline_grace: { icon: RefreshCw, title: 'Mode hors-ligne', desc: 'Licence non vérifiable (réseau indisponible). Accès temporaire accordé.', color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
 };
 
 // ─── Composant ────────────────────────────────────────────────
 export default function LicenseGuard({ children }: { children: React.ReactNode }) {
-  const { roles, rolesLoaded, user, schoolId, signOut } = useAuth();
+  const {
+    roles, rolesLoaded, authError, user, schoolId, signOut,
+    markLicenseActivated, clearLicenseActivated,
+  } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+
+  const isSuperAdmin = shouldBypassLicenseGate(rolesLoaded, roles);
 
   // Page de renouvellement de licence (onglet « Licence » de la page Sécurité)
   const onLicensePage = location.pathname === '/security';
@@ -55,7 +106,9 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
 
   // ── Vérification ────────────────────────────────────────────
   const checkLicense = useCallback(async () => {
-    if (!user) return;
+    // Le SUPER_ADMIN ne fait jamais de vérification de licence.
+    // En cas d'erreur de chargement des rôles, aucun appel n'est effectué non plus.
+    if (!user || isSuperAdmin || authError) return;
 
     setCheckStatus('checking');
 
@@ -74,169 +127,177 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
           .eq('user_id', user.id)
           .maybeSingle();
         if (prof?.school_id) targetId = prof.school_id;
-      } catch (_) {}
+      } catch (_) { }
 
-      // Interroger Supabase via le client anon (RLS appliqué)
+      // Interroger Supabase via le client anon (RLS appliqué).
+      // L'historique est chargé pour affichage, mais la décision ne porte
+      // QUE sur la licence courante (is_current = true).
       const { data: lics, error } = await supabase
         .from('licenses')
-        .select('id, school_id, license_key, status, starts_at, expires_at, max_devices')
+        .select('id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current')
         .eq('school_id', targetId)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
 
       const now = new Date();
-      let cloudLics: LicenseInfo[] = (lics ?? []) as LicenseInfo[];
+      const cloudLics: LicenseInfo[] = (lics ?? []) as LicenseInfo[];
+      const currentRecord = findCurrentRecord(cloudLics, targetId);
+      const verdict = classifyLicense(currentRecord, targetId, now);
 
-      // Aucun fallback vers school-1 : si aucune licence n'est trouvée,
-      // on laisse cloudLics vide et on laisse le gestionnaire d'erreur
-      // prendre le relais (message « Aucune licence trouvée »).
-      if (cloudLics.length === 0) {
-      }
-
-      // Chercher une licence valide parmi les résultats cloud
-      const validCloud = cloudLics.find(l =>
-        l.status === 'ACTIVE' &&
-        (!l.starts_at || new Date(l.starts_at) <= now) &&
-        (!l.expires_at || new Date(l.expires_at) > now)
-      );
-
-      if (validCloud) {
+      if (verdict === 'valid' && currentRecord) {
+        const validCloud = currentRecord;
         // [LIC-01C] Obtenir un jeton signé RS256 et le valider impérativement via Rust
         let tokenVerified = false;
+        let tokenFailureAllowedOffline = false;
         try {
           const { data: tokenRes, error: tokenErr } = await supabase.functions.invoke('issue-license-token', {
             body: { license_id: validCloud.id, school_id: targetId },
           });
-          if (!tokenErr && tokenRes?.token) {
-            const verifyRes = await invoke<{ valid: boolean; reason?: string; claims?: any }>(
-              'verify_license_token',
-              { token: tokenRes.token, schoolId: targetId }
-            );
-            if (verifyRes.valid) {
+          if (tokenErr) {
+            const classified = classifyLicenseGuardError(tokenErr, 'edge');
+            tokenFailureAllowedOffline = classified.offlineAllowed;
+            console.warn('[LicenseGuard] Émission du jeton refusée:', classified.category);
+          } else if (tokenRes?.token) {
+            const verifyRes = await invoke<{
+              valid: boolean;
+              reason?: string;
+              claims?: OfflineLicenseClaims;
+            }>('verify_license_token', {
+              token: tokenRes.token,
+              schoolId: targetId,
+            });
+            if (
+              verifyRes.valid &&
+              verifyRes.claims &&
+              validateOfflineLicenseClaims(verifyRes.claims, targetId).valid
+            ) {
               localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
               tokenVerified = true;
             } else {
-              console.warn('[LicenseGuard] Jeton émis rejeté par Rust:', verifyRes.reason);
+              console.warn('[LicenseGuard] Jeton émis rejeté:', verifyRes.reason);
             }
           }
-        } catch (e) {
-          console.warn('[LicenseGuard] Erreur appel issue-license-token:', e);
+        } catch (tokenEx) {
+          const classified = classifyLicenseGuardError(tokenEx, 'native');
+          tokenFailureAllowedOffline = classified.offlineAllowed;
+          console.warn('[LicenseGuard] Échec de vérification du jeton émis:', classified.category);
         }
 
-        // Si l'émission a échoué, vérifier si un jeton antérieur est encore valide
-        if (!tokenVerified) {
-          const existingToken = localStorage.getItem(LS_LIC_TOKEN);
-          if (existingToken) {
-            try {
-              const verifyRes = await invoke<{ valid: boolean; reason?: string; claims?: any }>(
-                'verify_license_token',
-                { token: existingToken, schoolId: targetId }
-              );
-              if (verifyRes.valid) {
-                tokenVerified = true;
-              }
-            } catch (_) {}
+        // Seule une indisponibilité réseau peut être compensée par un jeton hors ligne.
+        if (!tokenVerified && tokenFailureAllowedOffline) {
+          const offlineLicense = await verifyOfflineLicenseToken(targetId);
+          if (offlineLicense) {
+            setLicenseInfo(offlineLicense);
+            setCheckStatus('offline_grace');
+            return;
           }
         }
 
-        // Règle stricte LIC-01C : ne jamais accorder l'accès si l'émission échoue
-        // sans qu'un jeton antérieur et encore valide soit vérifié
         if (!tokenVerified) {
+          localStorage.removeItem(LS_LIC_TOKEN);
           setCheckStatus('missing');
           return;
         }
 
         try {
-          await invoke('save_license', { license: validCloud });
-        } catch (_) {}
+          await invoke('save_license', { license: { ...validCloud, is_current: true } });
+        } catch (_) { }
         setLicenseInfo(validCloud);
         setCheckStatus('valid');
         return;
       }
 
-      if (cloudLics.length > 0) {
-        const latest = cloudLics[0];
-        setLicenseInfo(latest);
-        // Réponse cloud sans licence valide : purger le token hors ligne
+      if (currentRecord) {
+        setLicenseInfo(currentRecord);
+        // Réponse cloud sans licence courante valide : purger le token hors ligne.
         localStorage.removeItem(LS_LIC_TOKEN);
-        if (latest.status === 'SUSPENDED') { setCheckStatus('suspended'); return; }
-        if (latest.status === 'REVOKED')   { setCheckStatus('revoked');   return; }
-        if (latest.expires_at && new Date(latest.expires_at) <= now) { setCheckStatus('expired'); return; }
+        if (verdict === 'suspended') { setCheckStatus('suspended'); return; }
+        if (verdict === 'revoked') { setCheckStatus('revoked'); return; }
+        if (verdict === 'expired') { setCheckStatus('expired'); return; }
+        if (verdict === 'future') { setCheckStatus('future'); return; }
         setCheckStatus('missing');
         return;
       }
 
-      // Le cloud (joignable) ne renvoie aucune licence : purger le token hors ligne
+      // Aucune licence courante : l'historique (même ACTIVE) ne sert jamais de repli.
       localStorage.removeItem(LS_LIC_TOKEN);
       setCheckStatus('missing');
 
-    } catch (_networkErr) {
-      // [LIC-01B] Réseau inaccessible → validation obligatoire par token signé vérifié côté Rust.
-      // Une modification de localStorage ou du cache SQLite ne suffit plus : seul un JWT
-      // intègre et non expiré (RS256 via Rust) accorde l'accès hors ligne.
-      const licToken = localStorage.getItem(LS_LIC_TOKEN);
-      if (licToken) {
-        try {
-          const res = await invoke<{
-            valid: boolean;
-            reason?: string;
-            claims?: {
-              sub: string;
-              school_id: string;
-              license_key: string;
-              status: string;
-              starts_at: string | null;
-              expires_at: string | null;
-            };
-          }>('verify_license_token', { token: licToken, schoolId: targetId });
+    } catch (err) {
+      const classified = classifyLicenseGuardError(err, 'database');
+      console.warn('[LicenseGuard] Vérification licence refusée:', classified.category, classified.message);
 
-          if (res.valid && res.claims) {
-            setLicenseInfo({
-              id: res.claims.sub,
-              license_key: res.claims.license_key,
-              status: res.claims.status,
-              expires_at: res.claims.expires_at,
-              starts_at: res.claims.starts_at,
-              max_devices: null,
-            });
-            setCheckStatus('offline_grace');
-            return;
-          }
-        } catch (_) {}
+      // Seule une véritable indisponibilité réseau peut ouvrir la grâce hors ligne.
+      if (!canUseOfflineGrace(classified.category)) {
+        localStorage.removeItem(LS_LIC_TOKEN);
+        setCheckStatus('missing');
+        return;
+      }
+
+      // [LIC-01B] Réseau inaccessible → validation obligatoire par token RS256 vérifié côté Rust.
+      const offlineLicense = await verifyOfflineLicenseToken(targetId);
+      if (offlineLicense) {
+        setLicenseInfo(offlineLicense);
+        setCheckStatus('offline_grace');
+        return;
       }
       setCheckStatus('missing');
     }
-  }, [user, schoolId]);
+  }, [user, schoolId, isSuperAdmin, authError]);
 
   useEffect(() => {
-    // Le SUPER_ADMIN passe toujours
-    if (!rolesLoaded) return;
-    if (roles.includes('SUPER_ADMIN')) return;
-    // La licence est toujours re-validée ici.
+    // Le SUPER_ADMIN contourne intégralement
+    if (!rolesLoaded || isSuperAdmin || authError) return;
     checkLicense();
     const timer = setInterval(checkLicense, RECHECK_MS);
     return () => clearInterval(timer);
-  }, [rolesLoaded, roles, checkLicense]);
+  }, [rolesLoaded, isSuperAdmin, authError, checkLicense]);
 
   // Re-vérifier dès qu'une licence est activée/renouvelée depuis la page Licence
   useEffect(() => {
+    if (!rolesLoaded || isSuperAdmin || authError) return;
     const handler = () => checkLicense();
     window.addEventListener('orion:license-updated', handler);
     return () => window.removeEventListener('orion:license-updated', handler);
-  }, [checkLicense]);
+  }, [rolesLoaded, isSuperAdmin, authError, checkLicense]);
 
   // Licence expirée ou absente → diriger l'utilisateur vers la page de licence
   useEffect(() => {
-    if (!rolesLoaded) return;
-    if (roles.includes('SUPER_ADMIN')) return;
-    if (checkStatus !== 'expired' && checkStatus !== 'missing') return;
+    if (!rolesLoaded || isSuperAdmin || authError) return;
+    if (!['expired', 'missing', 'future', 'suspended', 'revoked'].includes(checkStatus)) return;
     if (onLicensePage) return;
     navigate('/security?tab=licence', { replace: true });
-  }, [rolesLoaded, roles, checkStatus, onLicensePage, navigate]);
+  }, [rolesLoaded, isSuperAdmin, authError, checkStatus, onLicensePage, navigate]);
 
-  // ── Bypass Super Admin ───────────────────────────────────────
-  if (!rolesLoaded || roles.includes('SUPER_ADMIN')) {
+  // La validation indépendante de LicenseGuard révoque l'état d'activation
+  // persistant dès que la licence n'est plus valide.
+  useEffect(() => {
+    if (!rolesLoaded || isSuperAdmin || authError) return;
+    if (['expired', 'suspended', 'revoked', 'missing', 'future'].includes(checkStatus)) {
+      clearLicenseActivated();
+    }
+    // `clearLicenseActivated` est intentionnellement omis : son identité change
+    // à chaque rendu et pourrait révoquer l'activation fraîchement réussie.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rolesLoaded, isSuperAdmin, authError, checkStatus]);
+
+  // ── Attendre le chargement des rôles ────────────────────────────
+  if (!rolesLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <RefreshCw size={26} className="animate-spin text-indigo-500" />
+      </div>
+    );
+  }
+
+  // ── Erreur de vérification des permissions : tout est bloqué ───
+  if (authError) {
+    return <AuthErrorScreen message={authError} />;
+  }
+
+  // ── Bypass total Super Admin : aucune requête ni page de licence ──
+  if (isSuperAdmin) {
     return <>{children}</>;
   }
 
@@ -277,6 +338,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
   // ── Activation manuelle ──────────────────────────────────────
   const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSuperAdmin || authError) return;
     const cleanKey = normalizeLicenseKey(activationKey);
     if (!cleanKey) return;
     setActivating(true);
@@ -297,7 +359,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
           .eq('user_id', user?.id)
           .maybeSingle();
         if (prof?.school_id) effectiveId = prof.school_id;
-      } catch (_) {}
+      } catch (_) { }
 
       if (!effectiveId || effectiveId === 'school-1') {
         throw new Error("Impossible d'identifier l'établissement rattaché à ce compte. Veuillez contacter l'administrateur.");
@@ -312,6 +374,9 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         licenseKey: cleanKey,
         schoolId: effectiveId,
       });
+      if (!markLicenseActivated(res)) {
+        throw new Error("La licence n'a pas pu être enregistrée comme activée. Réessayez.");
+      }
 
       setLicenseInfo(res.license as LicenseInfo);
       setActivationSuccess('Licence vérifiée et activée avec succès !');

@@ -35,6 +35,10 @@ export default function Login({
       // Si l'utilisateur saisit un nom d'utilisateur local (ex: « Admin ») plutôt qu'un email complet,
       // on délègue directement à l'authentification locale individuelle.
       if (email.trim().toLowerCase() === 'admin') {
+        if (isActivation) {
+          setError("La connexion Supabase en ligne est obligatoire tant que la licence n'est pas activée.");
+          return;
+        }
         const res = await invoke<{
           user_id: string;
           email: string;
@@ -52,8 +56,10 @@ export default function Login({
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
       if (error) {
-        // Bascule hors-ligne si erreur réseau
-        if (
+        // Pendant l'activation, aucun repli local : l'Edge Function est inaccessible.
+        if (isActivation) {
+          setError("Connexion internet requise pour activer la licence. Réessayez en ligne.");
+        } else if (
           error.message.toLowerCase().includes('fetch') ||
           error.message.toLowerCase().includes('network') ||
           !navigator.onLine
@@ -74,12 +80,17 @@ export default function Login({
         }
       } else if (data.user) {
         // Vérifier si l'utilisateur est SUPER_ADMIN (qui n'est rattaché à aucun établissement)
-        const { data: roleData } = await supabase
+        const { data: roleData, error: roleErr } = await supabase
           .from('user_roles')
           .select('roles(name)')
           .eq('user_id', data.user.id);
-        const isSuperAdmin = (roleData ?? []).some((r: any) => r.roles?.name === 'SUPER_ADMIN')
-          || (data.user.user_metadata as any)?.role === 'SUPER_ADMIN';
+        if (roleErr) {
+          await supabase.auth.signOut().catch(() => { });
+          setError("Impossible de vérifier les permissions du compte. Connexion refusée.");
+          return;
+        }
+        // SUPER_ADMIN uniquement depuis la vérification fiable des rôles.
+        const isSuperAdmin = (roleData ?? []).some((r: any) => r.roles?.name === 'SUPER_ADMIN');
 
         if (!isSuperAdmin) {
           // L'établissement (ou le compte) a-t-il été supprimé/suspendu par

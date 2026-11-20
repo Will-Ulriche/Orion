@@ -14,6 +14,8 @@
  *    finale dans localStorage. En cas d'échec SQLite, l'activation échoue visiblement.
  */
 
+import { classifyLicense } from './licenseLifecycle.ts';
+
 export interface LicenseRecord {
   id: string;
   school_id: string;
@@ -21,6 +23,7 @@ export interface LicenseRecord {
   status: string;
   starts_at: string | null;
   expires_at: string | null;
+  is_current: boolean;
   max_devices?: number | null;
   issued_at?: string | null;
 }
@@ -145,34 +148,21 @@ export function validateLicenseConstraints(
   targetSchoolId: string,
   now: Date = new Date()
 ): { valid: boolean; error?: string } {
-  if (!lic.school_id || lic.school_id === 'unassigned' || lic.school_id !== targetSchoolId) {
-    return {
-      valid: false,
-      error: "Cette clé de licence n'est pas attribuée à votre établissement.",
-    };
-  }
+  const errorByVerdict: Record<string, string> = {
+    wrong_school: "Cette clé de licence n'est pas attribuée à votre établissement.",
+    revoked: 'Cette clé de licence a été révoquée.',
+    suspended: 'Cette clé de licence est suspendue.',
+    expired: 'Cette clé de licence est expirée.',
+    future: "Cette clé de licence n'est pas encore active.",
+    superseded: "Cette licence a été remplacée et ne peut plus être activée.",
+    invalid_dates: 'Les dates de validité de cette licence sont invalides.',
+    missing: 'Clé de licence introuvable.',
+  };
 
-  if (lic.status === 'REVOKED') {
-    return { valid: false, error: 'Cette clé de licence a été révoquée.' };
-  }
-
-  if (lic.status === 'SUSPENDED') {
-    return { valid: false, error: 'Cette clé de licence est suspendue.' };
-  }
-
-  if (lic.status !== 'ACTIVE') {
-    return { valid: false, error: "Cette clé de licence n'est pas active." };
-  }
-
-  if (lic.starts_at && new Date(lic.starts_at) > now) {
-    return { valid: false, error: "Cette clé de licence n'est pas encore active." };
-  }
-
-  if (lic.expires_at && new Date(lic.expires_at) <= now) {
-    return { valid: false, error: 'Cette clé de licence est expirée.' };
-  }
-
-  return { valid: true };
+  const verdict = classifyLicense(lic, targetSchoolId, now);
+  return verdict === 'valid'
+    ? { valid: true }
+    : { valid: false, error: errorByVerdict[verdict] ?? 'Licence invalide.' };
 }
 
 /**
@@ -255,7 +245,7 @@ export async function activateSchoolLicense(
   if (!rpcAttempted || !licData) {
     const { data: lic, error } = await supabase
       .from('licenses')
-      .select('id, school_id, license_key, status, starts_at, expires_at, max_devices')
+      .select('id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current')
       .eq('license_key', cleanKey)
       .maybeSingle();
 
@@ -272,6 +262,12 @@ export async function activateSchoolLicense(
     }
 
     licData = lic as LicenseRecord;
+  }
+
+  // Dernière barrière : une licence historique (même ACTIVE en base) est refusée.
+  const finalValidation = validateLicenseConstraints(licData, targetSchoolId);
+  if (!finalValidation.valid) {
+    throw new Error(finalValidation.error);
   }
 
   // 3. Demander l'émission du jeton JWT RS256 à l'Edge Function Supabase
@@ -327,7 +323,7 @@ export async function activateSchoolLicense(
   // 5. Persistance locale atomique : sauvegarde SQLite obligatoire d'abord
   // Si SQLite échoue, l'activation échoue visiblement et aucun jeton n'est persisté.
   try {
-    await invoke('save_license', { license: licData });
+    await invoke('save_license', { license: { ...licData, is_current: true } });
   } catch (saveErr: any) {
     throw new Error(
       `Échec de l'enregistrement de la licence dans la base locale SQLite : ${
@@ -339,7 +335,7 @@ export async function activateSchoolLicense(
   // 6. Si SQLite a réussi, validation finale et persistance du jeton dans localStorage
   if (storage) {
     storage.setItem(LS_LIC_TOKEN, token);
-    storage.setItem(LS_CACHED_LIC, JSON.stringify(licData));
+    storage.setItem(LS_CACHED_LIC, JSON.stringify({ ...licData, is_current: true }));
     storage.setItem(LS_LAST_OK_LIC, Date.now().toString());
   }
 

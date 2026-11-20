@@ -97,6 +97,7 @@ export interface License {
   starts_at: string | null;
   expires_at: string | null;
   max_devices: number | null;
+  is_current: boolean;
   created_at: string;
   updated_at: string;
   schools: { name: string; short_name: string | null } | null;
@@ -108,6 +109,7 @@ export interface LicenseInput {
   starts_at: string | null;
   expires_at: string | null;
   max_devices: number;
+  license_key?: string;
 }
 
 export interface Device {
@@ -122,7 +124,7 @@ export interface Device {
   schools: { name: string; short_name: string | null } | null;
 }
 
-export const LICENSE_STATUSES = ['ACTIVE', 'SUSPENDED', 'EXPIRED', 'REVOKED'] as const;
+export const LICENSE_STATUSES = ['ACTIVE', 'SUSPENDED', 'EXPIRED', 'REVOKED', 'SUPERSEDED'] as const;
 export const SCHOOL_STATUSES = ['ACTIVE', 'SUSPENDED', 'CLOSED'] as const;
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -656,21 +658,18 @@ export async function listLicenses(): Promise<License[]> {
 }
 
 export async function createLicense(input: LicenseInput): Promise<License> {
-  const res = await supabase
-    .from('licenses')
-    .insert({
-      id: crypto.randomUUID(),
-      school_id: input.school_id,
-      license_key: generateLicenseKey(),
-      status: input.status,
-      starts_at: input.starts_at,
-      expires_at: input.expires_at,
-      max_devices: input.max_devices,
-      issued_at: new Date().toISOString(),
-    })
-    .select('*, schools(name, short_name)')
-    .single();
-  return unwrap<License>(res);
+  // Création / renouvellement atomique côté base : l'ancienne licence courante
+  // est archivée dans la même transaction que l'insertion de la nouvelle.
+  const { data, error } = await supabase.rpc('renew_license', {
+    p_school_id: input.school_id,
+    p_license_key: input.license_key ?? generateLicenseKey(),
+    p_starts_at: input.starts_at,
+    p_expires_at: input.expires_at,
+    p_max_devices: input.max_devices,
+    p_status: input.status,
+  });
+  if (error) throw new Error(error.message);
+  return data as License;
 }
 
 
@@ -685,8 +684,9 @@ export async function updateLicense(id: string, patch: Partial<LicenseInput>): P
 }
 
 export async function deleteLicense(id: string): Promise<void> {
-  const res = await supabase.from('licenses').delete().eq('id', id);
-  if (res.error) throw new Error(res.error.message);
+  // Archivage logique : l'historique des licences n'est jamais détruit.
+  const { error } = await supabase.rpc('archive_license', { p_license_id: id });
+  if (error) throw new Error(error.message);
 }
 
 // ─── Appareils ──────────────────────────────────────────────

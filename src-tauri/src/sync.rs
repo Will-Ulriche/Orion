@@ -4508,7 +4508,7 @@ mod tests {
         );
         assert!(res_no_ctx
             .unwrap_err()
-            .contains("manque le contexte d'établissement"));
+            .contains("Contexte d'établissement manquant ou invalide"));
 
         // 3. Vérifier que l'entité n'a pas été supprimée
         let count: i64 = conn

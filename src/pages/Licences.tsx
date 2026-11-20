@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabaseClient';
 import { activateSchoolLicense } from '../lib/licenseActivation';
+import { findCurrentRecord, isLicenseCurrentlyValid } from '../lib/licenseLifecycle';
 
 function normalizeLicenseKey(input: string): string {
   let cleaned = input.trim().toUpperCase().replace(/[\s_]+/g, '-');
@@ -23,6 +24,7 @@ const statusConfig: Record<string, { label: string; color: string; icon: typeof 
   EXPIRED:   { label: 'Expirée',   color: 'bg-slate-100 text-slate-500 border border-slate-200',       icon: Clock },
   SUSPENDED: { label: 'Suspendue', color: 'bg-amber-50 text-amber-700 border border-amber-200',       icon: XCircle },
   REVOKED:   { label: 'Révoquée',  color: 'bg-rose-50 text-rose-700 border border-rose-200',           icon: Ban },
+  SUPERSEDED:{ label: 'Remplacée', color: 'bg-slate-100 text-slate-500 border border-slate-200',       icon: XCircle },
 };
 
 interface LicenseRec {
@@ -33,6 +35,7 @@ interface LicenseRec {
   starts_at: string | null;
   expires_at: string | null;
   max_devices: number | null;
+  is_current?: boolean;
   issued_at?: string | null;
 }
 
@@ -374,11 +377,11 @@ export default function Licences() {
 
       if (!error && cloudLics && cloudLics.length > 0) {
         loaded = cloudLics as LicenseRec[];
-        // Sauvegarder la première licence active dans SQLite
-        const active = loaded.find(l => l.status === 'ACTIVE');
-        if (active) {
+        // Seule la licence courante valide peut être persistée localement.
+        const current = findCurrentRecord(loaded, targetId);
+        if (current && isLicenseCurrentlyValid(current, targetId)) {
           try {
-            await invoke('save_license', { license: active });
+            await invoke('save_license', { license: { ...current, is_current: true } });
           } catch (_) {}
         }
       } else {
@@ -469,7 +472,8 @@ export default function Licences() {
     }
   };
 
-  const primaryLicense = licenses.find(l => l.status === 'ACTIVE') || licenses[0];
+  const currentLicense = findCurrentRecord(licenses, effectiveSchoolId);
+  const primaryLicense = currentLicense ?? licenses[0];
 
   return (
     <div className="pt-2">
