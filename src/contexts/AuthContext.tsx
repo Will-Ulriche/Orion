@@ -291,6 +291,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return res;
   };
 
+  /**
+   * Assure la mise à jour du JWT utilisateur dans le moteur Rust
+   * et déclenche la synchronisation en arrière-plan (sans bloquer l'UI).
+   */
+  const triggerInitialOrReconnectedSync = async (token?: string | null) => {
+    try {
+      if (token && token !== 'offline') {
+        try {
+          await invoke('set_sync_access_token', { token });
+        } catch (tokErr) {
+          console.debug('[Sync] set_sync_access_token reporté:', tokErr);
+        }
+      }
+      await invoke('trigger_sync');
+      console.log('[Sync] Synchronisation déclenchée avec succès.');
+    } catch (err) {
+      console.debug('[Sync] Déclenchement de synchronisation non immédiat (en attente ou hors ligne):', err);
+    }
+  };
+
   const syncUserToLocalDb = async (userSession: Session | null) => {
     if (userSession?.user) {
       const userMeta = (userSession.user.user_metadata as any) || {};
@@ -440,6 +460,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setRoles(effectiveRoles);
         setRolesLoaded(true);
         setAuthError(null);
+
+        // Déclencher une synchronisation initiale après authentification en ligne réussie
+        if (userSession.access_token && userSession.access_token !== 'offline') {
+          void triggerInitialOrReconnectedSync(userSession.access_token);
+        }
       } catch (err: any) {
         console.error("Erreur de synchronisation locale de l'utilisateur:", err);
         setRoles([]);
@@ -530,15 +555,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     // �couter les changements d'�tat (connexion, d�connexion)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (session) {
         setSession(session);
         setUser(session.user ?? null);
         syncUserToLocalDb(session);
         void revokeStoredOfflineToken();
+
+        // Renouvellement ou mise à jour du JWT dans le moteur Rust
+        if (session.access_token && session.access_token !== 'offline') {
+          if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') {
+            void triggerInitialOrReconnectedSync(session.access_token);
+          }
+        }
       } else {
-        // En cas de d�connexion, v�rifier si on n'est pas en train de passer en mode offline
-        // (g�r� par signOut)
+        // En cas de déconnexion, vider le token de sync dans Rust
+        try {
+          invoke('set_sync_access_token', { token: null }).catch(() => {});
+        } catch (_) {}
+
         if (!localStorage.getItem('orion_offline_session')) {
           setSession(null);
           setUser(null);
@@ -549,7 +584,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    return () => subscription.unsubscribe();
+    // Déclencher automatiquement une synchronisation après reconnexion réseau
+    const handleOnlineReconnect = async () => {
+      console.log('[Network] Reconnexion réseau détectée — déclenchement de la synchronisation.');
+      try {
+        const { data: { session: curSession } } = await supabase.auth.getSession();
+        if (curSession?.access_token && curSession.access_token !== 'offline') {
+          void triggerInitialOrReconnectedSync(curSession.access_token);
+        }
+      } catch (err) {
+        console.debug('[Network] Synchronisation à la reconnexion différée:', err);
+      }
+    };
+
+    window.addEventListener('online', handleOnlineReconnect);
+
+    return () => {
+      subscription.unsubscribe();
+      window.removeEventListener('online', handleOnlineReconnect);
+    };
   }, []);
 
   const setOfflineSessionState = async (

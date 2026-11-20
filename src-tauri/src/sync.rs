@@ -28,6 +28,11 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::Mutex as TokioMutex;
+
+/// Verrou garantissant l'exclusion mutuelle des cycles de synchronisation.
+/// Empêche strictement deux cycles simultanés (ex: auto vs manuel vs reconnexion).
+static SYNC_RUN_MUTEX: TokioMutex<()> = TokioMutex::const_new(());
 
 /// JWT utilisateur courant pour les appels REST (jamais persisté, jamais service_role).
 static SYNC_ACCESS_TOKEN: Mutex<Option<String>> = Mutex::new(None);
@@ -235,6 +240,26 @@ pub async fn run_sync_cycle(
     // JWT de l'utilisateur connecté. Utilisé dans Authorization pour que RLS
     // s'applique avec l'identité réelle de l'utilisateur (pas le rôle anon).
     // Si absent (hors-ligne ou session expirée), le cycle est annulé.
+    access_token: Option<&str>,
+) {
+    // Empêcher strictement deux cycles simultanés (ex: auto vs manuel vs reconnexion)
+    let _guard = match SYNC_RUN_MUTEX.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            println!("[Sync] Un cycle de synchronisation est déjà en cours d'exécution. Appel simultané ignoré.");
+            return;
+        }
+    };
+
+    execute_sync_cycle_locked(db_path, client, supabase_url, supabase_anon_key, access_token).await;
+}
+
+/// Corps effectif du cycle de synchronisation exécuté sous le verrou `SYNC_RUN_MUTEX`.
+pub(crate) async fn execute_sync_cycle_locked(
+    db_path: &PathBuf,
+    client: &Client,
+    supabase_url: &str,
+    supabase_anon_key: &str,
     access_token: Option<&str>,
 ) {
     ensure_sync_state(db_path);
@@ -493,7 +518,18 @@ async fn process_outbox(
         } else if res.status().is_client_error() {
             let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            if status == 408 || status == 429 {
+            if status == 401 {
+                // IMPORTANT : Si le JWT a expiré ou n'est plus autorisé (401),
+                // ce n'est PAS un échec définitif de la mutation.
+                // On annule l'incrémentation d'attempt_count, la mutation reste
+                // en PENDING avec son payload et identifiant stables intacts,
+                // et on interrompt immédiatement le cycle pour attendre le renouvellement du JWT.
+                decrement_attempt(db_path, &id);
+                let error = "Session expirée ou non autorisée (401). En attente du renouvellement du jeton utilisateur.".to_string();
+                eprintln!("[Outbox] ✗ Mutation {} : {}", id, error);
+                mark_mutation_error(db_path, &id, &error);
+                return Err(error);
+            } else if status == 408 || status == 429 {
                 // Erreur temporaire côté client : on réessaie au cycle suivant.
                 let error = format!("Erreur temporaire {} — Nouvelle tentative prévue.", status);
                 eprintln!("[Outbox] ✗ Mutation {} : {}", id, error);
@@ -639,6 +675,10 @@ pub(crate) async fn process_inbox(
                 Ok(response) if response.status().as_u16() == 404 => {
                     // Table non encore dans Supabase → on ignore silencieusement
                     break;
+                }
+                Ok(response) if response.status().as_u16() == 401 => {
+                    eprintln!("[Inbox] Session expirée ou non autorisée (401) sur table {}.", table);
+                    return Err("Session expirée ou non autorisée (401) lors de la réception entrante.".to_string());
                 }
                 // Incompatibilité de schéma (table ou colonne absente) : on signale
                 // mais on ne bloque pas les autres tables.
@@ -2071,6 +2111,15 @@ fn increment_attempt(db_path: &PathBuf, id: &str) {
     }
 }
 
+fn decrement_attempt(db_path: &PathBuf, id: &str) {
+    if let Ok(db) = Connection::open(db_path) {
+        let _ = db.execute(
+            "UPDATE pending_mutations SET attempt_count = MAX(0, COALESCE(attempt_count, 1) - 1) WHERE id = ?1",
+            rusqlite::params![id],
+        );
+    }
+}
+
 /// Enregistre un lot d'enregistrements entrants dans sync_inbox au sein d'une transaction unique.
 /// Idempotent : ignore les enregistrements déjà en attente de traitement (status = 'PENDING').
 fn store_inbox_items(db_path: &PathBuf, entity_type: &str, rows: &[Value]) -> bool {
@@ -2465,6 +2514,16 @@ pub async fn run_manual_sync(db_path: PathBuf) -> Result<SyncStatus, String> {
         return Err("Configuration Supabase absente. Vérifiez le fichier .env.".to_string());
     }
 
+    // Empêcher strictement deux cycles simultanés (ex: auto vs manuel vs reconnexion).
+    // Si un cycle est déjà en cours, on ne lance pas un second cycle concurrent et on renvoie le statut courant.
+    let _guard = match SYNC_RUN_MUTEX.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            println!("[Sync] Un cycle de synchronisation est déjà en cours d'exécution. Déclenchement manuel ignoré, statut courant retourné.");
+            return get_sync_status_internal(&db_path);
+        }
+    };
+
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -2477,7 +2536,7 @@ pub async fn run_manual_sync(db_path: PathBuf) -> Result<SyncStatus, String> {
 
     // Utiliser le JWT utilisateur courant pour que RLS s'applique correctement.
     let access_token = current_sync_access_token();
-    run_sync_cycle(
+    execute_sync_cycle_locked(
         &db_path,
         &client,
         &supabase_url,
@@ -4548,5 +4607,114 @@ mod tests {
             vec!["sections".to_string()],
             "Ecole A doit être bloquée par sa propre mutation sections"
         );
+    }
+
+    #[test]
+    fn test_prevent_simultaneous_sync_cycles() {
+        let (_guard, db_path) = setup_test_db();
+        ensure_sync_state(&db_path);
+
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            // Verrouiller manuellement le mutex pour simuler un cycle déjà en cours
+            let lock_guard = SYNC_RUN_MUTEX.try_lock();
+            assert!(lock_guard.is_ok(), "Le verrou initial doit être disponible");
+
+            // Tenter un second cycle simultané : doit retourner immédiatement sans bloquer ni crash
+            let status = run_manual_sync(db_path.clone()).await;
+            assert!(status.is_ok(), "Le déclenchement concurrent doit retourner l'état sans erreur");
+            
+            // Relâcher le verrou
+            drop(lock_guard);
+            assert!(SYNC_RUN_MUTEX.try_lock().is_ok(), "Le verrou doit être à nouveau disponible");
+        });
+    }
+
+    #[test]
+    fn test_jwt_expiration_preserves_mutations_and_payloads() {
+        let (_guard, db_path) = setup_test_db();
+        ensure_sync_state(&db_path);
+        let conn = Connection::open(&db_path).unwrap();
+
+        let original_payload = json!({
+            "id": "student-stable-1",
+            "school_id": "school-sync-1",
+            "first_name": "Kouamé",
+            "last_name": "Aya"
+        });
+
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status, attempt_count)
+             VALUES ('mut-stable-jwt-1', 'school-sync-1', 'students', 'student-stable-1', 'INSERT', ?1, 'PENDING', 0)",
+            rusqlite::params![original_payload.to_string()],
+        ).unwrap();
+
+        // Serveur mock simulant un retour 401 Unauthorized (JWT expiré)
+        let (mock_url, _stop, _handle) = spawn_mock_server(|_line| {
+            (401, "{\"message\":\"JWT expired\",\"code\":\"PGRST301\"}".to_string())
+        });
+
+        let rt = Runtime::new().unwrap();
+        let client = Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
+
+        let out_res = rt.block_on(process_outbox(
+            &db_path,
+            &client,
+            &mock_url,
+            "anon-test-key",
+            "expired-jwt-token",
+        ));
+
+        // Le cycle outbox doit s'arrêter en erreur
+        assert!(out_res.is_err(), "process_outbox doit échouer sur 401");
+        let err_msg = out_res.unwrap_err();
+        assert!(err_msg.contains("401") || err_msg.contains("expirée"), "Message d'erreur attendu : {}", err_msg);
+
+        // Vérifier la conservation stricte des mutations PENDING et de leur payload
+        let (status, attempt_count, payload_after, id_after): (String, i64, String, String) = conn.query_row(
+            "SELECT status, attempt_count, payload, id FROM pending_mutations WHERE id = 'mut-stable-jwt-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+
+        assert_eq!(status, "PENDING", "La mutation doit RESTER PENDING et non FAILED");
+        assert_eq!(attempt_count, 0, "attempt_count ne doit PAS être incrémenté lors d'un 401");
+        assert_eq!(id_after, "mut-stable-jwt-1", "L'identifiant stable doit être préservé");
+        assert_eq!(payload_after, original_payload.to_string(), "Le payload original doit être strictement intact");
+    }
+
+    #[test]
+    fn test_conflict_resolution_and_idempotence() {
+        let (_guard, db_path) = setup_test_db();
+        ensure_sync_state(&db_path);
+        let conn = Connection::open(&db_path).unwrap();
+
+        // 1. Mutation locale récente (LocalWins)
+        conn.execute(
+            "INSERT INTO pending_mutations (id, school_id, entity_type, entity_id, operation, payload, status, created_at)
+             VALUES ('mut-local-newer', 'school-sync-1', 'sections', 'sec-conf-1', 'UPDATE', '{}', 'PENDING', '2026-11-20T12:00:00Z')",
+            [],
+        ).unwrap();
+
+        let remote_older = json!({
+            "id": "sec-conf-1",
+            "school_id": "school-sync-1",
+            "name": "Ancien nom",
+            "updated_at": "2026-11-20T11:00:00Z"
+        });
+
+        let resolution = check_and_resolve_conflict(&conn, "sections", "sec-conf-1", &remote_older);
+        assert!(matches!(resolution, ConflictResolution::LocalWins), "Le local plus récent doit l'emporter");
+
+        // 2. Mutation locale plus ancienne (RemoteWins)
+        let remote_newer = json!({
+            "id": "sec-conf-1",
+            "school_id": "school-sync-1",
+            "name": "Nouveau nom distant",
+            "updated_at": "2026-11-20T13:00:00Z"
+        });
+
+        let resolution2 = check_and_resolve_conflict(&conn, "sections", "sec-conf-1", &remote_newer);
+        assert!(matches!(resolution2, ConflictResolution::RemoteWins), "Le distant plus récent doit l'emporter");
     }
 }

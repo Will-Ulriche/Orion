@@ -4806,6 +4806,17 @@ pub struct VerifyTokenResult {
     pub claims: Option<LicenseClaims>,
 }
 
+/// Construit un résultat de vérification de jeton invalide.
+/// Factorise les retours d'erreur répétés dans `verify_license_token_internal`.
+#[inline]
+fn token_reject(reason: &str) -> VerifyTokenResult {
+    VerifyTokenResult {
+        valid: false,
+        reason: Some(reason.to_string()),
+        claims: None,
+    }
+}
+
 fn parse_license_date(raw: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
     let s = raw.trim();
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
@@ -4830,22 +4841,12 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
         || public_key_pem.contains("Configurer ici")
         || public_key_pem.contains("YOUR_PUBLIC_KEY")
         || public_key_pem.contains("PLACEHOLDER") {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some("Clé publique RSA Orion non configurée — vérification hors ligne impossible".to_string()),
-            claims: None,
-        };
+        return token_reject("Clé publique RSA Orion non configurée — vérification hors ligne impossible");
     }
 
     let key = match DecodingKey::from_rsa_pem(public_key_pem.as_bytes()) {
         Ok(k) => k,
-        Err(e) => {
-            return VerifyTokenResult {
-                valid: false,
-                reason: Some(format!("Clé publique RSA invalide : {}", e)),
-                claims: None,
-            };
-        }
+        Err(e) => return token_reject(&format!("Clé publique RSA invalide : {}", e)),
     };
 
     let mut validation = Validation::new(Algorithm::RS256);
@@ -4854,13 +4855,7 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
 
     let token_data = match decode::<LicenseClaims>(token, &key, &validation) {
         Ok(d) => d,
-        Err(e) => {
-            return VerifyTokenResult {
-                valid: false,
-                reason: Some(format!("Token invalide ou expiré : {}", e)),
-                claims: None,
-            };
-        }
+        Err(e) => return token_reject(&format!("Token invalide ou expiré : {}", e)),
     };
 
     let claims = token_data.claims;
@@ -4875,66 +4870,38 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
 
     // 1. Vérification d'un iat futur (au-delà de la tolérance de 60s pour dérive d'horloge)
     if claims.iat > now_ts + CLOCK_SKEW_TOLERANCE_SECS {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some("Jeton émis dans le futur (iat futur non autorisé)".to_string()),
-            claims: None,
-        };
+        return token_reject("Jeton émis dans le futur (iat futur non autorisé)");
     }
 
     // 2. Cohérence des claims exp et iat
     if claims.exp <= claims.iat {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some("Incohérence des claims du jeton (exp <= iat)".to_string()),
-            claims: None,
-        };
+        return token_reject("Incohérence des claims du jeton (exp <= iat)");
     }
 
     // 3. Durée maximale autorisée : 7 jours (+ 60s tolérance dérive d'horloge)
     if claims.exp - claims.iat > MAX_TOKEN_DURATION_SECS + CLOCK_SKEW_TOLERANCE_SECS {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some("Durée de validité du jeton supérieure à 7 jours".to_string()),
-            claims: None,
-        };
+        return token_reject("Durée de validité du jeton supérieure à 7 jours");
     }
 
     // Vérifier l'émetteur
     if claims.iss != "orion-license" {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some("Émetteur de jeton inattendu".to_string()),
-            claims: None,
-        };
+        return token_reject("Émetteur de jeton inattendu");
     }
 
     // Vérifier que le school_id du token correspond bien à l'école demandée
     if claims.school_id != school_id {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some("Token émis pour un autre établissement".to_string()),
-            claims: None,
-        };
+        return token_reject("Token émis pour un autre établissement");
     }
 
     // Une licence archivée ne réautorise jamais l'accès, même avec un jeton
     // encore valide cryptographiquement.
     if !claims.is_current {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some("Licence remplacée : le jeton n'est plus autorisé".to_string()),
-            claims: None,
-        };
+        return token_reject("Licence remplacée : le jeton n'est plus autorisé");
     }
 
     // Vérifier le statut
     if claims.status != "ACTIVE" {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some(format!("Statut de licence non actif dans le jeton : {}", claims.status)),
-            claims: None,
-        };
+        return token_reject(&format!("Statut de licence non actif dans le jeton : {}", claims.status));
     }
 
     let now = chrono::Utc::now();
@@ -4943,22 +4910,11 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
     if let Some(ref starts) = claims.starts_at {
         if !starts.trim().is_empty() {
             match parse_license_date(starts) {
-                Ok(start_dt) => {
-                    if start_dt > now {
-                        return VerifyTokenResult {
-                            valid: false,
-                            reason: Some("Licence pas encore active (date de début dans le futur)".to_string()),
-                            claims: None,
-                        };
-                    }
+                Ok(start_dt) if start_dt > now => {
+                    return token_reject("Licence pas encore active (date de début dans le futur)");
                 }
-                Err(e) => {
-                    return VerifyTokenResult {
-                        valid: false,
-                        reason: Some(e),
-                        claims: None,
-                    };
-                }
+                Err(e) => return token_reject(&e),
+                _ => {}
             }
         }
     }
@@ -4967,22 +4923,11 @@ pub fn verify_license_token_internal(token: &str, school_id: &str, public_key_pe
     if let Some(ref expires) = claims.expires_at {
         if !expires.trim().is_empty() {
             match parse_license_date(expires) {
-                Ok(exp_dt) => {
-                    if exp_dt <= now {
-                        return VerifyTokenResult {
-                            valid: false,
-                            reason: Some("Licence expirée".to_string()),
-                            claims: None,
-                        };
-                    }
+                Ok(exp_dt) if exp_dt <= now => {
+                    return token_reject("Licence expirée");
                 }
-                Err(e) => {
-                    return VerifyTokenResult {
-                        valid: false,
-                        reason: Some(e),
-                        claims: None,
-                    };
-                }
+                Err(e) => return token_reject(&e),
+                _ => {}
             }
         }
     }
@@ -5023,13 +4968,7 @@ pub fn verify_license_token(
 
     let conn = match state.0.lock() {
         Ok(c) => c,
-        Err(_) => {
-            return VerifyTokenResult {
-                valid: false,
-                reason: Some("Base locale verrouillée — vérification impossible".to_string()),
-                claims: None,
-            }
-        }
+        Err(_) => return token_reject("Base locale verrouillée — vérification impossible"),
     };
 
     let local_current: Option<i64> = conn
@@ -5042,11 +4981,7 @@ pub fn verify_license_token(
         .unwrap_or(None);
 
     if local_current == Some(0) {
-        return VerifyTokenResult {
-            valid: false,
-            reason: Some("Licence remplacée : le jeton n'est plus autorisé".to_string()),
-            claims: None,
-        };
+        return token_reject("Licence remplacée : le jeton n'est plus autorisé");
     }
 
     result
