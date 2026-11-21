@@ -24,13 +24,13 @@ export interface BulletinSubjectRow {
   name: string;
   coefficient: number;
   /**
-   * Moyennes /20 du trimestre. Règle du bulletin : une note absente vaut 0
-   * (le PDF affiche « 0.00 » et la moyenne matière = (interro+devoir+compo)/3).
+   * Moyennes /20 du trimestre. Règle du bulletin : une absence vaut 0
+   * et compte comme une évaluation dans la moyenne de la matière.
    */
   interro: number | null;
   devoir: number | null;
   compo: number | null;
-  /** Moyenne de la matière (backend, informatif — le PDF recalcule (i+d+c)/3). */
+  /** Moyenne de la matière calculée par l'application (absences = 0). */
   average: number | null;
   rank: number | null;
   appreciation: string;
@@ -457,7 +457,7 @@ const drawTable = (doc: jsPDF, bulletin: BulletinData): void => {
     doc.text(text, (x0 + x1) / 2, tb, { align: 'center' });
   };
   const coeffSum = subjects.reduce((sum, s) => sum + s.coefficient, 0);
-  // Total général = Σ (moyenne matière × coef) — toujours chiffré (notes absentes = 0).
+  // Total général = Σ (moyenne matière × coef) — les absences comptent déjà 0 dans chaque moyenne.
   const { totalGeneral } = computeTotals(subjects);
   totalCell(fmtCoeff(coeffSum), 1);
   totalCell('—', 2);
@@ -540,7 +540,7 @@ const drawBottomBoxes = (doc: jsPDF, bulletin: BulletinData): void => {
   doc.text('DISCIPLINE & ASSIDUITÉ', DISCIPLINE.x0 + 9, DISCIPLINE.titleBaseline);
 
   const discRows: [string, string][] = [
-    ['Absences Non Justifiées :', '—'],
+    ['Absences :', '—'],
     ['Nombre de Retards :', '—'],
     ['Avertissement Discipline :', 'Aucun'],
     ['Tenue & Conduite :', '—'],

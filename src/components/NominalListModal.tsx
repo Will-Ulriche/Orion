@@ -222,10 +222,11 @@ export default function NominalListModal({
             if (!item) continue;
             const { periodNum, grades } = item;
             for (const g of grades) {
+              if (!g.is_absent && !(g.max_score > 0)) continue;
               if (!gradesMap[g.student_id]) gradesMap[g.student_id] = {};
               if (!gradesMap[g.student_id][periodNum]) gradesMap[g.student_id][periodNum] = { i: [], d: [], c: [], mg: null };
               const gName = (g.grade_type_name || '').toLowerCase();
-              const scoreOn20 = (g.score / g.max_score) * 20;
+              const scoreOn20 = g.is_absent ? 0 : (g.score / g.max_score) * 20;
               if (gName.includes('interro')) { gradesMap[g.student_id][periodNum].i.push(scoreOn20); }
               else if (gName.includes('devoir') || gName.includes('d')) { gradesMap[g.student_id][periodNum].d.push(scoreOn20); }
               else if (gName.includes('compo') || gName.includes('c')) { gradesMap[g.student_id][periodNum].c.push(scoreOn20); }

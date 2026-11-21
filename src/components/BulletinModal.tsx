@@ -214,7 +214,8 @@ export default function BulletinModal({
         const { classSubjects, rankings, gradesPerSubject, homeroom } = bundle;
 
         // ── Règle de calcul :
-        //  • moyenne d'une matière = somme de toutes les évaluations faites ÷ nombre d'évaluations faites ;
+        //  • une absence compte comme une évaluation notée 0 ;
+        //  • moyenne d'une matière = somme des évaluations retenues ÷ nombre d'évaluations retenues ;
         //  • moyenne générale = Σ (moyenne matière × coef) ÷ Σ coefs des matières évaluées.
         const subjectsRows: BulletinSubjectRow[] = [];
         // Cumul par élève de la classe pour la moyenne générale / le classement.
@@ -227,10 +228,10 @@ export default function BulletinModal({
           const grades = gradesPerSubject[idx];
           const byStudent = new Map<string, TypeAverages>();
           for (const g of grades) {
-            if (g.is_absent) continue; // Absent = non évalué
+            if (!g.is_absent && !(g.max_score > 0)) continue;
             let entry = byStudent.get(g.student_id);
             if (!entry) { entry = { all: [], i: [], d: [], c: [] }; byStudent.set(g.student_id, entry); }
-            const scoreOn20 = g.max_score > 0 ? (g.score / g.max_score) * 20 : 0;
+            const scoreOn20 = g.is_absent ? 0 : (g.score / g.max_score) * 20;
             entry.all.push(scoreOn20);
             const gName = (g.grade_type_name || '').toLowerCase();
             if (gName.includes('devoir') || gName.includes('d')) entry.d.push(scoreOn20);
@@ -238,7 +239,7 @@ export default function BulletinModal({
             else entry.i.push(scoreOn20);
           }
 
-          // Moyenne de la matière : somme de toutes les évaluations faites ÷ nombre d'évaluations faites
+          // Moyenne de la matière : moyenne des évaluations retenues (absences = 0)
           const meanOf = (t: TypeAverages | undefined): number | null =>
             t && t.all.length > 0 ? t.all.reduce((a, b) => a + b, 0) / t.all.length : null;
 
@@ -304,14 +305,12 @@ export default function BulletinModal({
           yearName,
           subjects: subjectsRows,
           generalAverage: ownGeneralAvg,
-          rank: ownGeneralAvg !== null && ownRankIdx >= 0 ? ownRankIdx + 1 : null,
+          rank: ownRanking?.rank ?? (ownGeneralAvg !== null && ownRankIdx >= 0 ? ownRankIdx + 1 : null),
           classSize: classRows.length,
           classAverage,
           bestAverage,
           worstAverage,
-          // Appréciation globale : texte du conseil s'il existe, sinon le barème.
-          globalAppreciation: (ownRanking?.appreciation ?? '').trim()
-            || appreciationFor(ownGeneralAvg),
+          globalAppreciation: appreciationFor(ownGeneralAvg),
           homeroomTeacher: homeroom,
         };
         cacheRef.current.set(cacheKey, data);

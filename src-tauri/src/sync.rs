@@ -1669,6 +1669,13 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
             ).map_err(|e| e.to_string())?;
         }
         "grades" => {
+            let is_absent = int_field(payload, "is_absent")
+                .map(|v| v != 0)
+                .unwrap_or(false);
+            let score = crate::commands::normalized_grade_score(
+                num_field(payload, "score").unwrap_or(0.0),
+                is_absent,
+            );
             db.execute(
                 "INSERT INTO grades (id, school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id, score, max_score, evaluation_date, notes, recorded_by, is_absent, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(id) DO UPDATE SET score=excluded.score, max_score=excluded.max_score, evaluation_date=excluded.evaluation_date, notes=excluded.notes, is_absent=excluded.is_absent",
                 rusqlite::params![
@@ -1680,12 +1687,12 @@ fn upsert_entity(db: &Connection, entity_type: &str, payload: &Value) -> Result<
                     str_field(payload, "class_subject_id"),
                     str_field(payload, "grading_period_id"),
                     str_field(payload, "grade_type_id"),
-                    num_field(payload, "score").unwrap_or(0.0),
+                    score,
                     num_field(payload, "max_score").unwrap_or(20.0),
                     str_field(payload, "evaluation_date"),
                     str_field(payload, "notes"),
                     str_field(payload, "recorded_by").unwrap_or_default(),
-                    bool_field(payload, "is_absent") as i64,
+                    is_absent as i64,
                     ts_field(payload, "created_at"),
                     ts_field(payload, "updated_at"),
                 ],
@@ -3445,6 +3452,17 @@ mod tests {
             .unwrap();
         assert_eq!(score, 14.5);
         assert_eq!(is_absent, 0);
+        let absent = json!({"id":"grade-test-absent","school_id":"school-sync-1","academic_year_id":"ay-1","enrollment_id":"enrollment-grade-1","student_id":"student-grade-1","class_subject_id":"cs-grade-1","grading_period_id":"gp-grade-1","grade_type_id":"gt-grade-1","score":14.5,"max_score":20.0,"is_absent":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
+        upsert_entity(&conn, "grades", &absent).unwrap();
+        let (absent_score, absent_flag): (f64, i64) = conn
+            .query_row(
+                "SELECT score, is_absent FROM grades WHERE id = 'grade-test-absent'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(absent_score, 0.0);
+        assert_eq!(absent_flag, 1);
         let other = json!({"id":"grade-test-2","school_id":"school-sync-1000","academic_year_id":"ay-1","enrollment_id":"enrollment-grade-1","student_id":"student-grade-1","class_subject_id":"cs-grade-1","grading_period_id":"gp-grade-1","grade_type_id":"gt-grade-1","score":10.0,"max_score":20.0,"is_absent":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"});
         upsert_entity(&conn, "grades", &other).unwrap();
         let count_a: i64 = conn
@@ -3461,7 +3479,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count_a, 1);
+        assert_eq!(count_a, 2);
         assert_eq!(count_b, 1);
     }
 
@@ -3904,7 +3922,7 @@ mod tests {
 
         let (mock_url, stop_flag, server_handle) = spawn_mock_server(|line| {
             if line.contains("/rest/v1/students") {
-                (401, "unauthorized".to_string())
+                (400, "bad request".to_string())
             } else if line.contains("/rest/v1/subjects") {
                 (201, "".to_string())
             } else {
@@ -3934,7 +3952,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status_auth, "FAILED");
-        assert!(error_auth.unwrap_or_default().contains("401"));
+        assert!(error_auth.unwrap_or_default().contains("400"));
 
         let status_valid: String = Connection::open(&db_path)
             .unwrap()

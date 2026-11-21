@@ -33,6 +33,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/26_local_session_tokens.sql"),
     include_str!("../migrations/27_license_lifecycle.sql"),
     include_str!("../migrations/28_device_license_binding.sql"),
+    include_str!("../migrations/29_normalize_absent_scores.sql"),
 ];
 
 pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {
@@ -220,7 +221,7 @@ mod migration_tests {
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 28);
+        assert_eq!(user_version(&conn), 29);
         assert!(object_exists(&conn, "table", "enrollments_legacy_v1"));
         assert!(object_exists(
             &conn,
@@ -398,7 +399,7 @@ mod migration_tests {
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 28);
+        assert_eq!(user_version(&conn), 29);
         assert!(object_exists(&conn, "table", "enrollments_legacy_v1"));
         assert!(object_exists(
             &conn,
@@ -449,5 +450,34 @@ mod migration_tests {
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM enrollments"), 7);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM enrollment_history"), 6);
         assert!(column_exists(&conn, "enrollments", "user_id"));
+    }
+
+    #[test]
+    fn migration_29_normalizes_absent_scores() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        run_migrations(&conn).unwrap();
+        conn.pragma_update(None, "user_version", 28).unwrap();
+
+        for (id, score, is_absent) in [("abs-bad", 14.0, 1), ("present-ok", 14.5, 0)] {
+            conn.execute(
+                "INSERT INTO grades (id, school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id, score, max_score, recorded_by, is_absent, created_at, updated_at)
+                 VALUES (?1, 's', 'y', 'e', 'st', 'cs', 'gp', 'gt', ?2, 20.0, 'u', ?3, '2026-01-01', '2026-01-01')",
+                rusqlite::params![id, score, is_absent],
+            )
+            .unwrap();
+        }
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), 29);
+        let absent_score: f64 = conn
+            .query_row("SELECT score FROM grades WHERE id = 'abs-bad'", [], |r| r.get(0))
+            .unwrap();
+        let present_score: f64 = conn
+            .query_row("SELECT score FROM grades WHERE id = 'present-ok'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(absent_score, 0.0);
+        assert_eq!(present_score, 14.5);
     }
 }

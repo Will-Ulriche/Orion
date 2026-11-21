@@ -50,7 +50,7 @@ const bulletin: BulletinData = {
   periodOrder: 1,
   yearName: '2025-2026',
   subjects,
-  // Règle : note absente = 0 ; moyenne matière = (i+d+c)/3 ; moyenne = Σ(moy×coef)/Σcoefs.
+  // Règle : absence = 0 comptée dans la moyenne matière ; moyenne = Σ(moy×coef)/Σcoefs.
   generalAverage: subjects.reduce((sum, s) => sum + ((s.interro ?? 0) + (s.devoir ?? 0) + (s.compo ?? 0)) / 3 * s.coefficient, 0)
     / subjects.reduce((sum, s) => sum + s.coefficient, 0),
   rank: 10,

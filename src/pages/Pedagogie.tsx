@@ -1003,7 +1003,7 @@ function TabSaisie({ schoolId, yearId, restricted = false, teacherId = null }: {
   const [selPeriod,     setSelPeriod]     = useState('');
   const [selGradeType,  setSelGradeType]  = useState('');
 
-  const [scoreMap, setScoreMap] = useState<Record<string, { score: string; is_absent: boolean }>>({});
+  const [scoreMap, setScoreMap] = useState<Record<string, { score: string; is_absent: boolean; previous_score?: string }>>({});
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
@@ -1060,12 +1060,12 @@ function TabSaisie({ schoolId, yearId, restricted = false, teacherId = null }: {
     }).then((gs) => {
       setSavedGrades(gs);
       setStudents((currentStudents) => {
-        const map: Record<string, { score: string; is_absent: boolean }> = {};
+        const map: Record<string, { score: string; is_absent: boolean; previous_score?: string }> = {};
         gs.filter((g) => !selGradeType || g.grade_type_id === selGradeType).forEach((g) => {
-          map[g.student_id] = { score: String(g.score), is_absent: g.is_absent };
+          map[g.student_id] = { score: String(g.score), is_absent: g.is_absent, previous_score: '' };
         });
         currentStudents.forEach((s) => {
-          if (!map[s.student_id]) map[s.student_id] = { score: '', is_absent: false };
+          if (!map[s.student_id]) map[s.student_id] = { score: '', is_absent: false, previous_score: '' };
         });
         setScoreMap(map);
         return currentStudents;
@@ -1081,22 +1081,22 @@ function TabSaisie({ schoolId, yearId, restricted = false, teacherId = null }: {
   const ready = Boolean(selClass && selSubject && selPeriod && selGradeType);
 
   const entries = useMemo(
-    () => students.map((s) => scoreMap[s.student_id] ?? { score: '', is_absent: false }),
+    () => students.map((s) => scoreMap[s.student_id] ?? { score: '', is_absent: false, previous_score: '' }),
     [students, scoreMap]
   );
   const filledCount = entries.filter((e) => e.score !== '' || e.is_absent).length;
   const absentCount = entries.filter((e) => e.is_absent).length;
   const classAverage = (() => {
     const scores = entries
-      .filter((e) => !e.is_absent && e.score !== '')
-      .map((e) => (parseFloat(e.score) / maxScore) * 20);
+      .filter((e) => e.is_absent || e.score !== '')
+      .map((e) => e.is_absent ? 0 : maxScore > 0 ? (parseFloat(e.score) / maxScore) * 20 : 0);
     return scores.length ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2) : '—';
   })();
 
-  const setEntry = (studentId: string, patch: Partial<{ score: string; is_absent: boolean }>) =>
+  const setEntry = (studentId: string, patch: Partial<{ score: string; is_absent: boolean; previous_score?: string }>) =>
     setScoreMap((m) => ({
       ...m,
-      [studentId]: { ...(m[studentId] ?? { score: '', is_absent: false }), ...patch },
+      [studentId]: { ...(m[studentId] ?? { score: '', is_absent: false, previous_score: '' }), ...patch },
     }));
 
   const saveAll = async () => {
@@ -1258,7 +1258,7 @@ function TabSaisie({ schoolId, yearId, restricted = false, teacherId = null }: {
                   </thead>
                   <tbody>
                     {students.map((s, i) => {
-                      const entry = scoreMap[s.student_id] ?? { score: '', is_absent: false };
+                      const entry = scoreMap[s.student_id] ?? { score: '', is_absent: false, previous_score: '' };
                       const numeric = entry.score === '' ? null : parseFloat(entry.score);
                       const invalid =
                         numeric !== null && (Number.isNaN(numeric) || numeric < 0 || numeric > maxScore);
@@ -1334,7 +1334,17 @@ function TabSaisie({ schoolId, yearId, restricted = false, teacherId = null }: {
                           <Td className="text-center">
                             <button
                               onClick={() =>
-                                setEntry(s.student_id, { is_absent: !entry.is_absent, score: '' })
+                                entry.is_absent
+                                  ? setEntry(s.student_id, {
+                                      is_absent: false,
+                                      score: entry.previous_score ?? '',
+                                      previous_score: '',
+                                    })
+                                  : setEntry(s.student_id, {
+                                      is_absent: true,
+                                      score: '',
+                                      previous_score: entry.score,
+                                    })
                               }
                               aria-pressed={entry.is_absent}
                               className={cx(
@@ -1415,6 +1425,8 @@ export function TabResultats({ schoolId, yearId }: { schoolId: string; yearId: s
   const averages = rankings
     .map((r) => r.general_average)
     .filter((a): a is number => a !== null);
+  const successfulStudents = rankings.filter((r) => (r.general_average ?? 0) >= 10).length;
+  const classSuccessRate = rankings.length > 0 ? (successfulStudents / rankings.length) * 100 : 0;
 
   const filtered = rankings.filter((r) =>
     search.trim() === '' ||
@@ -1524,9 +1536,9 @@ export function TabResultats({ schoolId, yearId }: { schoolId: string; yearId: s
               <Kpi
                 icon={CheckCircle2}
                 label="Taux de réussite"
-                value={`${Math.round((rankings.filter((r) => (r.general_average ?? 0) >= 10).length / rankings.length) * 100)}%`}
+                value={`${Math.round(classSuccessRate)}%`}
                 tone="amber"
-                progress={(rankings.filter((r) => (r.general_average ?? 0) >= 10).length / rankings.length) * 100}
+                progress={classSuccessRate}
               />
             </div>
 
@@ -1637,7 +1649,7 @@ export function TabResultats({ schoolId, yearId }: { schoolId: string; yearId: s
                             </span>
                             <div className="min-w-0">
                               <p className="truncate text-sm font-bold text-slate-800">{s.subject_name}</p>
-                              <p className="text-[11px] text-slate-400">{s.grade_count} note(s) saisie(s)</p>
+                              <p className="text-[11px] text-slate-400">{s.grade_count} évaluation(s) comptabilisée(s)</p>
                             </div>
                           </div>
                           <Badge tone={good ? 'emerald' : 'amber'}>

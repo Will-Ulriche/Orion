@@ -3236,6 +3236,21 @@ fn appreciation(avg: f64) -> String {
     }
 }
 
+pub(crate) fn normalized_grade_score(score: f64, is_absent: bool) -> f64 {
+    if is_absent { 0.0 } else { score }
+}
+
+fn grade_on20_sql(alias: &str) -> String {
+    format!(
+        "CASE WHEN {a}.is_absent = 1 THEN 0.0 ELSE {a}.score / NULLIF({a}.max_score, 0.0) * 20.0 END",
+        a = alias
+    )
+}
+
+fn grade_evaluable_sql(alias: &str) -> String {
+    format!("({a}.is_absent = 1 OR {a}.max_score > 0)", a = alias)
+}
+
 // ── SUBJECTS ────────────────────────────────────────────────
 
 #[tauri::command]
@@ -3696,7 +3711,8 @@ pub fn get_grades_by_class(
     let mut stmt = conn.prepare(
         "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
                 g.class_subject_id, g.grading_period_id, g.grade_type_id,
-                g.score, g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
+                CASE WHEN g.is_absent = 1 THEN 0.0 ELSE g.score END AS score,
+                g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
                 st.first_name, st.last_name, s.name, gt.name
          FROM grades g
          JOIN students st ON g.student_id = st.id
@@ -3755,7 +3771,8 @@ pub fn get_grades_by_student(
     let mut stmt = conn.prepare(
         "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
                 g.class_subject_id, g.grading_period_id, g.grade_type_id,
-                g.score, g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
+                CASE WHEN g.is_absent = 1 THEN 0.0 ELSE g.score END AS score,
+                g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
                 st.first_name, st.last_name, s.name, gt.name
          FROM grades g
          JOIN students st ON g.student_id = st.id
@@ -3782,36 +3799,28 @@ pub fn get_grades_by_student(
     Ok(res)
 }
 
-/// Crée ou corrige une note. Si une note du même (enrollment, class_subject, period, grade_type)
-/// existe déjà, elle est mise à jour (audit trail) ; sinon elle est insérée.
-#[tauri::command]
-pub fn upsert_grade(
-    school_id: String,
-    academic_year_id: String,
-    enrollment_id: String,
-    student_id: String,
-    class_subject_id: String,
-    grading_period_id: String,
-    grade_type_id: String,
+fn upsert_grade_conn(
+    conn: &Connection,
+    school_id: &str,
+    academic_year_id: &str,
+    enrollment_id: &str,
+    student_id: &str,
+    class_subject_id: &str,
+    grading_period_id: &str,
+    grade_type_id: &str,
     score: f64,
     max_score: f64,
     evaluation_date: Option<String>,
     notes: Option<String>,
-    _recorded_by: Option<String>,
+    recorded_by: &str,
     is_absent: bool,
-    state: State<'_, DbState>
 ) -> Result<String, String> {
-    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "PROFESSEUR", "SECRETAIRE"])?;
-    let recorded_by = sess.user_id;
-    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
-
     let now = chrono::Utc::now().to_rfc3339();
+    let score = normalized_grade_score(score, is_absent);
 
-    // Cherche une note existante pour ce triplet (enrollment, class_subject, period, grade_type)
     let existing_id: Option<String> = conn.query_row(
-        "SELECT id FROM grades WHERE enrollment_id=?1 AND class_subject_id=?2 AND grading_period_id=?3 AND grade_type_id=?4",
-        rusqlite::params![enrollment_id, class_subject_id, grading_period_id, grade_type_id],
+        "SELECT id FROM grades WHERE school_id=?1 AND academic_year_id=?2 AND enrollment_id=?3 AND class_subject_id=?4 AND grading_period_id=?5 AND grade_type_id=?6",
+        rusqlite::params![school_id, academic_year_id, enrollment_id, class_subject_id, grading_period_id, grade_type_id],
         |r| r.get(0)
     ).ok();
 
@@ -3841,22 +3850,54 @@ pub fn upsert_grade(
     Ok(grade_id)
 }
 
-// ── MOYENNES & CLASSEMENTS ────────────────────────────────────
-
-/// Calcule les moyennes d'un élève (par matière + générale) pour une période donnée.
-/// Formule : Σ(score_i × weight_i) / Σ(weight_i) par matière, puis pondération par coefficient.
+/// Crée ou corrige une note. Une absence est toujours enregistrée avec une note à zéro.
 #[tauri::command]
-pub fn get_student_averages(
+pub fn upsert_grade(
     school_id: String,
     academic_year_id: String,
     enrollment_id: String,
+    student_id: String,
+    class_subject_id: String,
     grading_period_id: String,
+    grade_type_id: String,
+    score: f64,
+    max_score: f64,
+    evaluation_date: Option<String>,
+    notes: Option<String>,
+    _recorded_by: Option<String>,
+    is_absent: bool,
     state: State<'_, DbState>
-) -> Result<crate::models::StudentAverages, String> {
+) -> Result<String, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "PROFESSEUR", "SECRETAIRE"])?;
+    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+    upsert_grade_conn(
+        &conn,
+        &school_id,
+        &academic_year_id,
+        &enrollment_id,
+        &student_id,
+        &class_subject_id,
+        &grading_period_id,
+        &grade_type_id,
+        score,
+        max_score,
+        evaluation_date,
+        notes,
+        &sess.user_id,
+        is_absent,
+    )
+}
 
-    // Infos élève
+// ── MOYENNES & CLASSEMENTS ────────────────────────────────────
+
+fn get_student_averages_conn(
+    conn: &Connection,
+    school_id: &str,
+    academic_year_id: &str,
+    enrollment_id: &str,
+    grading_period_id: &str,
+) -> Result<crate::models::StudentAverages, String> {
     let (student_id, first_name, last_name, enrollment_school): (String, String, String, String) = conn.query_row(
         "SELECT e.student_id, s.first_name, s.last_name, e.school_id FROM enrollments e JOIN students s ON e.student_id = s.id WHERE e.id=?1",
         rusqlite::params![enrollment_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
@@ -3866,7 +3907,6 @@ pub fn get_student_averages(
         return Err("Cette inscription n'appartient pas à cet établissement.".to_string());
     }
 
-    // Matières de la classe pour l'année
     let class_id: String = conn.query_row(
         "SELECT class_id FROM enrollments WHERE id=?1", rusqlite::params![enrollment_id], |r| r.get(0)
     ).map_err(|e| e.to_string())?;
@@ -3877,34 +3917,46 @@ pub fn get_student_averages(
     ).map_err(|e| e.to_string())?;
     let class_subjects: Vec<(String, String, String, f64)> = stmt.query_map(
         rusqlite::params![school_id, academic_year_id, class_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-    ).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+    ).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
 
+    let on20 = grade_on20_sql("g");
+    let evaluable = grade_evaluable_sql("g");
     let mut subject_avgs: Vec<crate::models::SubjectAverage> = Vec::new();
     let mut weighted_sum = 0.0_f64;
     let mut coeff_sum = 0.0_f64;
 
     for (cs_id, s_name, s_code, coeff) in &class_subjects {
-        // Notes de l'élève pour cette matière et cette période
-        let mut g_stmt = conn.prepare(
-            "SELECT g.score, g.max_score FROM grades g
-             WHERE g.enrollment_id=?1 AND g.class_subject_id=?2 AND g.grading_period_id=?3"
-        ).map_err(|e| e.to_string())?;
-        let grade_rows: Vec<(f64, f64)> = g_stmt.query_map(
-            rusqlite::params![enrollment_id, cs_id, grading_period_id], |r| Ok((r.get(0)?, r.get(1)?))
-        ).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+        let sql = format!(
+            "SELECT {on20} FROM grades g
+             WHERE g.enrollment_id=?1 AND g.class_subject_id=?2 AND g.grading_period_id=?3
+               AND g.school_id=?4 AND g.academic_year_id=?5 AND {evaluable}"
+        );
+        let mut g_stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let grade_values: Vec<f64> = g_stmt.query_map(
+            rusqlite::params![enrollment_id, cs_id, grading_period_id, school_id, academic_year_id],
+            |r| r.get(0)
+        ).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
 
-        let grade_count = grade_rows.len() as i64;
-
-        let avg: Option<f64> = if grade_count == 0 { None } else {
-            let num: f64 = grade_rows.iter().map(|(sc, ms)| sc / ms * 20.0).sum();
-            let den = grade_count as f64;
-            if den > 0.0 { Some(num / den) } else { None }
+        let grade_count = grade_values.len() as i64;
+        let avg: Option<f64> = if grade_count == 0 {
+            None
+        } else {
+            Some(grade_values.iter().sum::<f64>() / grade_count as f64)
         };
 
-        // Moyenne de la classe pour la même matière/période
+        let class_sql = format!(
+            "SELECT AVG({on20}) FROM grades g
+             JOIN enrollments e ON e.id = g.enrollment_id
+             JOIN class_subjects cs ON cs.id = g.class_subject_id
+             WHERE g.class_subject_id=?1 AND g.grading_period_id=?2 AND g.school_id=?3 AND g.academic_year_id=?4
+               AND e.class_id=?5 AND e.school_id=?3 AND e.academic_year_id=?4 AND e.status='ACTIVE'
+               AND cs.class_id=?5 AND cs.school_id=?3 AND cs.academic_year_id=?4
+               AND {evaluable}"
+        );
         let class_avg: Option<f64> = conn.query_row(
-            "SELECT AVG(g.score / g.max_score * 20.0) FROM grades g WHERE g.class_subject_id=?1 AND g.grading_period_id=?2 AND g.school_id=?3",
-            rusqlite::params![cs_id, grading_period_id, school_id], |r| r.get(0)
+            &class_sql,
+            rusqlite::params![cs_id, grading_period_id, school_id, academic_year_id, class_id],
+            |r| r.get(0)
         ).unwrap_or(None);
 
         let appr = avg.map(|a| appreciation(a)).unwrap_or_else(|| "—".into());
@@ -3921,33 +3973,102 @@ pub fn get_student_averages(
     }
 
     let general_average = if coeff_sum > 0.0 { Some(weighted_sum / coeff_sum) } else { None };
-
-    // Rang dans la classe pour cette période
-    let rank: Option<i64> = if general_average.is_some() {
-        let gen_avg_val = general_average.unwrap();
-        conn.query_row(
-            "SELECT COUNT(*)+1 FROM (
-                SELECT e2.id, SUM(g2.score / g2.max_score * 20.0 * cs2.coefficient) / NULLIF(SUM(cs2.coefficient), 0) AS gavg
-                FROM enrollments e2
-                JOIN grades g2 ON e2.id = g2.enrollment_id
-                JOIN class_subjects cs2 ON g2.class_subject_id = cs2.id
-                WHERE e2.class_id=?1 AND g2.grading_period_id=?2 AND g2.academic_year_id=?3
-                GROUP BY e2.id
-             ) WHERE gavg > ?4",
-            rusqlite::params![class_id, grading_period_id, academic_year_id, gen_avg_val],
-            |r| r.get(0)
-        ).ok()
-    } else { None };
+    let rank = get_class_rankings_conn(conn, school_id, academic_year_id, &class_id, grading_period_id)?
+        .into_iter()
+        .find(|r| r.enrollment_id == enrollment_id)
+        .map(|r| r.rank);
 
     let class_size: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM enrollments WHERE class_id=?1 AND academic_year_id=?2 AND status='ACTIVE'",
-        rusqlite::params![class_id, academic_year_id], |r| r.get(0)
+        "SELECT COUNT(*) FROM enrollments WHERE class_id=?1 AND academic_year_id=?2 AND status='ACTIVE' AND school_id=?3",
+        rusqlite::params![class_id, academic_year_id, school_id], |r| r.get(0)
     ).unwrap_or(0);
 
     Ok(crate::models::StudentAverages {
-        student_id, enrollment_id, first_name, last_name, grading_period_id,
-        general_average, rank, class_size, subjects: subject_avgs,
+        student_id, enrollment_id: enrollment_id.to_string(), first_name, last_name,
+        grading_period_id: grading_period_id.to_string(), general_average, rank, class_size,
+        subjects: subject_avgs,
     })
+}
+
+/// Calcule les moyennes d'un élève (par matière + générale) pour une période donnée.
+#[tauri::command]
+pub fn get_student_averages(
+    school_id: String,
+    academic_year_id: String,
+    enrollment_id: String,
+    grading_period_id: String,
+    state: State<'_, DbState>
+) -> Result<crate::models::StudentAverages, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    get_student_averages_conn(&conn, &school_id, &academic_year_id, &enrollment_id, &grading_period_id)
+}
+
+fn get_class_rankings_conn(
+    conn: &Connection,
+    school_id: &str,
+    academic_year_id: &str,
+    class_id: &str,
+    grading_period_id: &str,
+) -> Result<Vec<crate::models::ClassRankingEntry>, String> {
+    let on20 = grade_on20_sql("g");
+    let evaluable = grade_evaluable_sql("g");
+    let sql = format!(
+        "WITH student_subject_average AS (
+             SELECT g.enrollment_id, g.class_subject_id, AVG({on20}) AS average_on20
+             FROM grades g
+             JOIN enrollments e ON e.id = g.enrollment_id
+             JOIN class_subjects cs ON cs.id = g.class_subject_id
+             WHERE g.school_id = ?4 AND g.academic_year_id = ?2 AND g.grading_period_id = ?3
+               AND e.class_id = ?1 AND e.school_id = ?4 AND e.academic_year_id = ?2 AND e.status = 'ACTIVE'
+               AND cs.class_id = ?1 AND cs.school_id = ?4 AND cs.academic_year_id = ?2
+               AND {evaluable}
+             GROUP BY g.enrollment_id, g.class_subject_id
+         )
+         SELECT e.id, e.student_id, s.first_name, s.last_name,
+                SUM(ssa.average_on20 * cs.coefficient)
+                  / NULLIF(SUM(CASE WHEN ssa.average_on20 IS NOT NULL THEN cs.coefficient ELSE 0 END), 0) AS gavg
+         FROM enrollments e
+         JOIN students s ON e.student_id = s.id
+         LEFT JOIN student_subject_average ssa ON ssa.enrollment_id = e.id
+         LEFT JOIN class_subjects cs ON cs.id = ssa.class_subject_id
+           AND cs.class_id = ?1 AND cs.school_id = ?4 AND cs.academic_year_id = ?2
+         WHERE e.class_id = ?1 AND e.academic_year_id = ?2 AND e.status = 'ACTIVE' AND e.school_id = ?4
+         GROUP BY e.id, e.student_id, s.first_name, s.last_name
+         ORDER BY gavg DESC NULLS LAST, s.last_name"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(
+        rusqlite::params![class_id, academic_year_id, grading_period_id, school_id],
+        |row| {
+            let avg: Option<f64> = row.get(4)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                avg,
+            ))
+        },
+    ).map_err(|e| e.to_string())?;
+    let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .enumerate()
+        .map(|(rank, r)| {
+            let appr = r.4.map(|a| appreciation(a)).unwrap_or_else(|| "—".into());
+            crate::models::ClassRankingEntry {
+                rank: (rank + 1) as i64,
+                enrollment_id: r.0,
+                student_id: r.1,
+                first_name: r.2,
+                last_name: r.3,
+                general_average: r.4,
+                appreciation: appr,
+            }
+        })
+        .collect())
 }
 
 /// Retourne le classement complet d'une classe pour une période.
@@ -3961,70 +4082,125 @@ pub fn get_class_rankings(
 ) -> Result<Vec<crate::models::ClassRankingEntry>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-    let mut stmt = conn.prepare(
-        "SELECT e.id, e.student_id, s.first_name, s.last_name,
-                SUM(g.score / g.max_score * 20.0 * cs.coefficient) / NULLIF(SUM(cs.coefficient), 0) AS gavg
-         FROM enrollments e
-         JOIN students s ON e.student_id = s.id
-         LEFT JOIN grades g ON e.id = g.enrollment_id AND g.grading_period_id = ?3 AND g.academic_year_id = ?2
-         LEFT JOIN class_subjects cs ON g.class_subject_id = cs.id
-         WHERE e.class_id=?1 AND e.academic_year_id=?2 AND e.status='ACTIVE' AND e.school_id=?4
-         GROUP BY e.id, e.student_id, s.first_name, s.last_name
-         ORDER BY gavg DESC NULLS LAST, s.last_name"
-    ).map_err(|e| e.to_string())?;
-
-    let rows = stmt.query_map(rusqlite::params![class_id, academic_year_id, grading_period_id, school_id], |row| {
-        let avg: Option<f64> = row.get(4)?;
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, avg))
-    }).map_err(|e| e.to_string())?;
-
-    let mut result = Vec::new();
-    for (rank, r) in rows.filter_map(Result::ok).enumerate() {
-        let appr = r.4.map(|a| appreciation(a)).unwrap_or_else(|| "—".into());
-        result.push(crate::models::ClassRankingEntry {
-            rank: (rank + 1) as i64,
-            enrollment_id: r.0, student_id: r.1, first_name: r.2, last_name: r.3,
-            general_average: r.4, appreciation: appr,
-        });
-    }
-    Ok(result)
+    get_class_rankings_conn(&conn, &school_id, &academic_year_id, &class_id, &grading_period_id)
 }
 
 /// Statistiques par matière pour une classe et une période.
+fn get_class_statistics_conn(
+    conn: &Connection,
+    school_id: &str,
+    academic_year_id: &str,
+    class_id: &str,
+    grading_period_id: &str,
+) -> Result<Vec<crate::models::SubjectStats>, String> {
+    let on20 = grade_on20_sql("g");
+    let evaluable = grade_evaluable_sql("g");
+    let sql = format!(
+        "WITH class_students AS (
+             SELECT DISTINCT e.student_id
+             FROM enrollments e
+             WHERE e.school_id = ?1
+               AND e.academic_year_id = ?2
+               AND e.class_id = ?4
+               AND e.status = 'ACTIVE'
+         ),
+         class_size AS (
+             SELECT COUNT(*) AS total FROM class_students
+         ),
+         evaluated_grades AS (
+             SELECT g.class_subject_id,
+                    COUNT(*) AS grade_count,
+                    AVG({on20}) AS class_average,
+                    MIN({on20}) AS min_score,
+                    MAX({on20}) AS max_score
+             FROM grades g
+             JOIN class_students e ON e.student_id = g.student_id
+             JOIN class_subjects cs ON cs.id = g.class_subject_id
+               AND cs.school_id = ?1 AND cs.academic_year_id = ?2 AND cs.class_id = ?4
+             WHERE g.school_id = ?1
+               AND g.academic_year_id = ?2
+               AND g.grading_period_id = ?3
+               AND {evaluable}
+             GROUP BY g.class_subject_id
+         ),
+         student_subject_average AS (
+             SELECT g.student_id, g.class_subject_id,
+                    AVG({on20}) AS average_on20
+             FROM grades g
+             JOIN class_students e ON e.student_id = g.student_id
+             JOIN class_subjects cs ON cs.id = g.class_subject_id
+               AND cs.school_id = ?1 AND cs.academic_year_id = ?2 AND cs.class_id = ?4
+             WHERE g.school_id = ?1
+               AND g.academic_year_id = ?2
+               AND g.grading_period_id = ?3
+               AND {evaluable}
+             GROUP BY g.student_id, g.class_subject_id
+         ),
+         successful_students AS (
+             SELECT class_subject_id, COUNT(*) AS successful_count
+             FROM student_subject_average
+             WHERE average_on20 >= 10.0
+             GROUP BY class_subject_id
+         )
+         SELECT cs.id, s.name, s.code,
+                COALESCE(eg.grade_count, 0),
+                eg.class_average,
+                eg.min_score,
+                eg.max_score,
+                COALESCE(ROUND(ss.successful_count * 100.0 / NULLIF(cs_size.total, 0), 2), 0.0)
+         FROM class_subjects cs
+         JOIN subjects s ON s.id = cs.subject_id
+         CROSS JOIN class_size cs_size
+         LEFT JOIN evaluated_grades eg ON eg.class_subject_id = cs.id
+         LEFT JOIN successful_students ss ON ss.class_subject_id = cs.id
+         WHERE cs.school_id = ?1
+           AND cs.academic_year_id = ?2
+           AND cs.class_id = ?4
+         ORDER BY s.name"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![school_id, academic_year_id, grading_period_id, class_id],
+            |row| {
+                Ok(crate::models::SubjectStats {
+                    class_subject_id: row.get(0)?,
+                    subject_name: row.get(1)?,
+                    subject_code: row.get(2)?,
+                    grade_count: row.get(3)?,
+                    class_average: row.get(4)?,
+                    min_score: row.get(5)?,
+                    max_score: row.get(6)?,
+                    success_rate: row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_class_statistics(
     school_id: String,
     academic_year_id: String,
     class_id: String,
     grading_period_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::SubjectStats>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-    let mut stmt = conn.prepare(
-        "SELECT cs.id, s.name, s.code,
-                COUNT(DISTINCT g.enrollment_id),
-                AVG(g.score / g.max_score * 20.0),
-                MIN(g.score / g.max_score * 20.0),
-                MAX(g.score / g.max_score * 20.0),
-                SUM(CASE WHEN (g.score / g.max_score * 20.0) >= 10 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(DISTINCT g.enrollment_id), 0)
-         FROM class_subjects cs
-         JOIN subjects s ON cs.subject_id = s.id
-         LEFT JOIN grades g ON g.class_subject_id = cs.id AND g.grading_period_id = ?3 AND g.academic_year_id = ?2
-         WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?4
-         GROUP BY cs.id, s.name, s.code ORDER BY s.name"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, grading_period_id, class_id], |row| {
-        Ok(crate::models::SubjectStats {
-            class_subject_id: row.get(0)?, subject_name: row.get(1)?, subject_code: row.get(2)?,
-            grade_count: row.get(3)?, class_average: row.get(4)?,
-            min_score: row.get(5)?, max_score: row.get(6)?,
-            success_rate: row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
-        })
-    }).map_err(|e| e.to_string())?;
-    let mut res = Vec::new();
-    for r in rows { if let Ok(s) = r { res.push(s); } }
-    Ok(res)
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
+    get_class_statistics_conn(
+        &conn,
+        &school_id,
+        &academic_year_id,
+        &class_id,
+        &grading_period_id,
+    )
 }
 
 // ── RÉCAP DES NOTES (matrice élèves × matières) ──────────────
@@ -4060,20 +4236,15 @@ pub struct ClassNotesRecap {
 /// classe et une période donnée, la moyenne par matière et la moyenne générale
 /// pondérée. Si `teacher_id` est fourni, seules les matières de ce professeur
 /// sont incluses (restriction d'accès des enseignants).
-#[tauri::command]
-pub fn get_class_notes_recap(
-    school_id: String,
-    academic_year_id: String,
-    class_id: String,
-    grading_period_id: String,
-    teacher_id: Option<String>,
-    state: State<'_, DbState>,
+fn get_class_notes_recap_conn(
+    conn: &Connection,
+    school_id: &str,
+    academic_year_id: &str,
+    class_id: &str,
+    grading_period_id: &str,
+    teacher_id: Option<&str>,
 ) -> Result<ClassNotesRecap, String> {
-    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-
-    // 1. Colonnes : matières de la classe (filtrées par professeur si besoin)
-    let subjects: Vec<RecapSubjectColumn> = if let Some(tid) = teacher_id.as_ref() {
+    let subjects: Vec<RecapSubjectColumn> = if let Some(tid) = teacher_id {
         let mut stmt = conn.prepare(
             "SELECT cs.id, s.name, s.code, cs.coefficient
              FROM class_subjects cs JOIN subjects s ON cs.subject_id = s.id
@@ -4086,7 +4257,7 @@ pub fn get_class_notes_recap(
                 subject_code: row.get(2)?, coefficient: row.get(3)?,
             })
         }).map_err(|e| e.to_string())?;
-        rows.filter_map(Result::ok).collect()
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     } else {
         let mut stmt = conn.prepare(
             "SELECT cs.id, s.name, s.code, cs.coefficient
@@ -4100,13 +4271,12 @@ pub fn get_class_notes_recap(
                 subject_code: row.get(2)?, coefficient: row.get(3)?,
             })
         }).map_err(|e| e.to_string())?;
-        rows.filter_map(Result::ok).collect()
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     };
 
     let allowed: std::collections::HashSet<String> =
         subjects.iter().map(|s| s.class_subject_id.clone()).collect();
 
-    // 2. Élèves actifs de la classe
     let mut stmt = conn.prepare(
         "SELECT e.id, e.student_id, s.first_name, s.last_name, s.matricule
          FROM enrollments e JOIN students s ON e.student_id = s.id
@@ -4116,32 +4286,41 @@ pub fn get_class_notes_recap(
     let students_raw: Vec<(String, String, String, String, Option<String>)> = stmt.query_map(
         rusqlite::params![class_id, academic_year_id, school_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-    ).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+    ).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
 
-    // 3. Agrégation des notes : (enrollment_id, class_subject_id) -> (somme /20, nombre)
+    let evaluable = grade_evaluable_sql("g");
+    let sql = format!(
+        "SELECT g.enrollment_id, g.class_subject_id, g.score, g.max_score, g.is_absent
+         FROM grades g
+         JOIN class_subjects cs ON g.class_subject_id = cs.id
+         WHERE g.school_id=?1 AND g.academic_year_id=?2 AND g.grading_period_id=?3
+           AND cs.class_id=?4 AND cs.school_id=?1 AND cs.academic_year_id=?2
+           AND {evaluable}"
+    );
     let mut acc: std::collections::HashMap<(String, String), (f64, f64)> = std::collections::HashMap::new();
     {
-        let mut g_stmt = conn.prepare(
-            "SELECT g.enrollment_id, g.class_subject_id, g.score, g.max_score
-             FROM grades g
-             JOIN class_subjects cs ON g.class_subject_id = cs.id
-             WHERE g.school_id=?1 AND g.academic_year_id=?2 AND g.grading_period_id=?3
-               AND cs.class_id=?4 AND g.is_absent=0"
-        ).map_err(|e| e.to_string())?;
+        let mut g_stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = g_stmt.query_map(
             rusqlite::params![school_id, academic_year_id, grading_period_id, class_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?, row.get::<_, f64>(3)?)),
+            |row| Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, i64>(4)?,
+            )),
         ).map_err(|e| e.to_string())?;
-        for (eid, csid, score, max_score) in rows.filter_map(Result::ok) {
+        for (eid, csid, score, max_score, is_absent) in
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        {
             if !allowed.contains(&csid) { continue; }
-            let on20 = if max_score > 0.0 { score / max_score * 20.0 } else { 0.0 };
+            let on20 = if is_absent != 0 { 0.0 } else { score / max_score * 20.0 };
             let entry = acc.entry((eid, csid)).or_insert((0.0, 0.0));
             entry.0 += on20;
             entry.1 += 1.0;
         }
     }
 
-    // 4. Construction des lignes (moyennes par matière + moyenne générale)
     let mut rows_out: Vec<RecapStudentRow> = Vec::new();
     for (en_id, student_id, first_name, last_name, matricule) in students_raw {
         let mut averages: std::collections::HashMap<String, Option<f64>> = std::collections::HashMap::new();
@@ -4163,7 +4342,6 @@ pub fn get_class_notes_recap(
         });
     }
 
-    // 5. Calcul des rangs (ex-æquo partagent le même rang)
     let mut order: Vec<(usize, Option<f64>)> = rows_out.iter().enumerate()
         .map(|(i, r)| (i, r.general_average)).collect();
     order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -4183,6 +4361,27 @@ pub fn get_class_notes_recap(
     }
 
     Ok(ClassNotesRecap { subjects, students: rows_out })
+}
+
+#[tauri::command]
+pub fn get_class_notes_recap(
+    school_id: String,
+    academic_year_id: String,
+    class_id: String,
+    grading_period_id: String,
+    teacher_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<ClassNotesRecap, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    get_class_notes_recap_conn(
+        &conn,
+        &school_id,
+        &academic_year_id,
+        &class_id,
+        &grading_period_id,
+        teacher_id.as_deref(),
+    )
 }
 
 // ── TEACHER ASSIGNMENTS ──────────────────────────────────────
@@ -9117,5 +9316,368 @@ mod sync_local_user_tests {
 
         assert_eq!(profile_state(&conn).0, "Nouveau");
         cleanup();
+    }
+}
+
+#[cfg(test)]
+mod class_statistics_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    const SCHOOL: &str = "ped-school";
+    const YEAR: &str = "ped-year";
+    const CLASS: &str = "ped-class";
+    const PERIOD: &str = "ped-period";
+    const OTHER_PERIOD: &str = "ped-period-2";
+    const MATH: &str = "ped-cs-math";
+    const FRENCH: &str = "ped-cs-fr";
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO schools (id, name) VALUES ('ped-school', 'École Test');
+             INSERT INTO users (id, email) VALUES ('ped-user', 'ped@orion.test');
+             INSERT INTO academic_years (id, school_id, name) VALUES ('ped-year', 'ped-school', '2026-2027');
+             INSERT INTO classes (id, school_id, academic_year_id, name) VALUES ('ped-class', 'ped-school', 'ped-year', '6ème A');
+             INSERT INTO grading_periods (id, school_id, academic_year_id, name, period_order, created_at, updated_at) VALUES
+                 ('ped-period', 'ped-school', 'ped-year', 'Trimestre 1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                 ('ped-period-2', 'ped-school', 'ped-year', 'Trimestre 2', 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+             INSERT INTO grade_types (id, school_id, name, max_score, created_at, updated_at) VALUES
+                 ('ped-gt', 'ped-school', 'Devoir', 20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+             INSERT INTO subjects (id, school_id, name, code, created_at, updated_at) VALUES
+                 ('ped-subject-math', 'ped-school', 'Mathématiques', 'MATH', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                 ('ped-subject-fr', 'ped-school', 'Français', 'FR', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+             INSERT INTO class_subjects (id, school_id, academic_year_id, class_id, subject_id, coefficient, created_at, updated_at) VALUES
+                 ('ped-cs-math', 'ped-school', 'ped-year', 'ped-class', 'ped-subject-math', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                 ('ped-cs-fr', 'ped-school', 'ped-year', 'ped-class', 'ped-subject-fr', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn add_enrollment(conn: &Connection, enrollment_id: &str, student_key: &str, status: &str) {
+        let student_id = format!("stu-{student_key}");
+        conn.execute(
+            "INSERT INTO enrollments (id, school_id, academic_year_id, student_id, class_id, status, enrollment_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'INITIAL')",
+            rusqlite::params![enrollment_id, SCHOOL, YEAR, student_id, CLASS, status],
+        )
+        .unwrap();
+    }
+
+    fn add_student(conn: &Connection, student_key: &str) {
+        let student_id = format!("stu-{student_key}");
+        let enrollment_id = format!("enr-{student_key}");
+        conn.execute(
+            "INSERT INTO students (id, school_id, first_name, last_name) VALUES (?1, ?2, ?1, 'Élève')",
+            rusqlite::params![student_id, SCHOOL],
+        )
+        .unwrap();
+        add_enrollment(conn, &enrollment_id, student_key, "ACTIVE");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_grade(
+        conn: &Connection,
+        grade_id: &str,
+        student_key: &str,
+        subject: &str,
+        period: &str,
+        score: f64,
+        max_score: f64,
+        is_absent: i64,
+    ) {
+        let enrollment_id = format!("enr-{student_key}");
+        let student_id = format!("stu-{student_key}");
+        conn.execute(
+            "INSERT INTO grades (id, school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id, score, max_score, recorded_by, is_absent, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'ped-gt', ?8, ?9, 'ped-user', ?10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            rusqlite::params![grade_id, SCHOOL, YEAR, enrollment_id, student_id, subject, period, score, max_score, is_absent],
+        )
+        .unwrap();
+    }
+
+    fn stats(conn: &Connection, period: &str) -> Vec<crate::models::SubjectStats> {
+        get_class_statistics_conn(conn, SCHOOL, YEAR, CLASS, period).unwrap()
+    }
+
+    fn rate(conn: &Connection, subject: &str) -> f64 {
+        stats(conn, PERIOD)
+            .into_iter()
+            .find(|s| s.class_subject_id == subject)
+            .unwrap()
+            .success_rate
+    }
+
+    fn assert_bounded(stats: &[crate::models::SubjectStats]) {
+        for s in stats {
+            assert!(
+                (0.0..=100.0).contains(&s.success_rate),
+                "taux hors bornes pour {}: {}",
+                s.subject_name,
+                s.success_rate
+            );
+        }
+    }
+
+    #[test]
+    fn test_several_successful_grades_count_as_one_student() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "1", MATH, PERIOD, 18.0, 20.0, 0);
+        add_grade(&conn, "g3", "1", MATH, PERIOD, 20.0, 20.0, 0);
+
+        let result = stats(&conn, PERIOD);
+        assert_bounded(&result);
+        assert_eq!(rate(&conn, MATH), 100.0);
+        assert_eq!(
+            result
+                .iter()
+                .find(|s| s.class_subject_id == MATH)
+                .unwrap()
+                .grade_count,
+            3
+        );
+    }
+
+    #[test]
+    fn test_several_failing_grades_count_as_one_student() {
+        let conn = setup_db();
+        add_student(&conn, "2");
+        add_grade(&conn, "g1", "2", MATH, PERIOD, 4.0, 20.0, 0);
+        add_grade(&conn, "g2", "2", MATH, PERIOD, 6.0, 20.0, 0);
+        add_grade(&conn, "g3", "2", MATH, PERIOD, 8.0, 20.0, 0);
+
+        let result = stats(&conn, PERIOD);
+        assert_bounded(&result);
+        assert_eq!(rate(&conn, MATH), 0.0);
+    }
+
+    #[test]
+    fn test_mixed_results_and_exact_threshold() {
+        let conn = setup_db();
+        for key in ["1", "2", "3"] {
+            add_student(&conn, key);
+        }
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "1", MATH, PERIOD, 18.0, 20.0, 0);
+        add_grade(&conn, "g3", "2", MATH, PERIOD, 4.0, 20.0, 0);
+        add_grade(&conn, "g4", "2", MATH, PERIOD, 6.0, 20.0, 0);
+        add_grade(&conn, "g5", "3", MATH, PERIOD, 10.0, 20.0, 0);
+        add_grade(&conn, "g6", "3", MATH, PERIOD, 10.0, 20.0, 0);
+
+        let result = stats(&conn, PERIOD);
+        assert_bounded(&result);
+        assert!((rate(&conn, MATH) - 66.67).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_students_without_grades_are_not_successful() {
+        let conn = setup_db();
+        for key in ["1", "2", "3", "4"] {
+            add_student(&conn, key);
+        }
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "2", MATH, PERIOD, 12.0, 20.0, 0);
+
+        let result = stats(&conn, PERIOD);
+        assert_bounded(&result);
+        assert_eq!(rate(&conn, MATH), 50.0);
+        assert_eq!(rate(&conn, FRENCH), 0.0);
+    }
+
+    #[test]
+    fn test_empty_class_returns_zero() {
+        let conn = setup_db();
+
+        let result = stats(&conn, PERIOD);
+        assert_eq!(result.len(), 2);
+        assert_bounded(&result);
+        assert!(result.iter().all(|s| s.success_rate == 0.0));
+    }
+
+    #[test]
+    fn test_each_subject_has_its_own_rate() {
+        let conn = setup_db();
+        for key in ["1", "2", "3"] {
+            add_student(&conn, key);
+        }
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "2", MATH, PERIOD, 8.0, 20.0, 0);
+        add_grade(&conn, "g3", "3", MATH, PERIOD, 8.0, 20.0, 0);
+        add_grade(&conn, "g4", "1", FRENCH, PERIOD, 4.0, 20.0, 0);
+        add_grade(&conn, "g5", "2", FRENCH, PERIOD, 14.0, 20.0, 0);
+        add_grade(&conn, "g6", "3", FRENCH, PERIOD, 16.0, 20.0, 0);
+
+        let result = stats(&conn, PERIOD);
+        assert_bounded(&result);
+        assert!((rate(&conn, MATH) - 33.33).abs() < 0.01);
+        assert!((rate(&conn, FRENCH) - 66.67).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_grades_from_another_period_are_ignored() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        add_student(&conn, "2");
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "2", MATH, PERIOD, 8.0, 20.0, 0);
+        add_grade(&conn, "g3", "1", MATH, OTHER_PERIOD, 20.0, 20.0, 0);
+        add_grade(&conn, "g4", "2", MATH, OTHER_PERIOD, 20.0, 20.0, 0);
+
+        let current = stats(&conn, PERIOD);
+        let other = stats(&conn, OTHER_PERIOD);
+        assert_bounded(&current);
+        assert_bounded(&other);
+        assert_eq!(rate(&conn, MATH), 50.0);
+        let other_rate = other
+            .into_iter()
+            .find(|s| s.class_subject_id == MATH)
+            .unwrap()
+            .success_rate;
+        assert_eq!(other_rate, 100.0);
+    }
+
+    #[test]
+    fn test_absent_counts_as_zero_and_invalid_max_score_is_ignored() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        add_student(&conn, "2");
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "1", MATH, PERIOD, 14.0, 20.0, 1);
+        add_grade(&conn, "g3", "2", MATH, PERIOD, 20.0, 0.0, 0);
+
+        let result = stats(&conn, PERIOD);
+        let math = result.iter().find(|s| s.class_subject_id == MATH).unwrap();
+        assert_bounded(&result);
+        assert_eq!(math.grade_count, 2);
+        assert!((math.class_average.unwrap() - 8.0).abs() < 1e-9);
+        assert_eq!(math.min_score, Some(0.0));
+        assert_eq!(math.max_score, Some(16.0));
+        assert_eq!(math.success_rate, 0.0);
+    }
+
+    #[test]
+    fn test_inactive_enrollments_are_excluded() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        add_student(&conn, "2");
+        conn.execute(
+            "UPDATE enrollments SET status = 'INACTIVE' WHERE id = 'enr-2'",
+            [],
+        )
+        .unwrap();
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "2", MATH, PERIOD, 8.0, 20.0, 0);
+
+        let result = stats(&conn, PERIOD);
+        assert_bounded(&result);
+        assert_eq!(rate(&conn, MATH), 100.0);
+    }
+
+    #[test]
+    fn test_upsert_grade_forces_zero_score_when_absent() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+
+        let grade_id = upsert_grade_conn(
+            &conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt", 14.0, 20.0, None, None,
+            "ped-user", true,
+        )
+        .unwrap();
+        let (score, is_absent): (f64, i64) = conn
+            .query_row(
+                "SELECT score, is_absent FROM grades WHERE id=?1",
+                rusqlite::params![grade_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(score, 0.0);
+        assert_eq!(is_absent, 1);
+        assert_eq!(normalized_grade_score(14.0, true), 0.0);
+        assert_eq!(normalized_grade_score(14.0, false), 14.0);
+    }
+
+    #[test]
+    fn test_absence_is_consistent_across_averages_rankings_stats_and_recap() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        add_student(&conn, "2");
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "1", MATH, PERIOD, 14.0, 20.0, 1);
+        add_grade(&conn, "g3", "1", FRENCH, PERIOD, 12.0, 20.0, 0);
+        add_grade(&conn, "g4", "2", MATH, PERIOD, 10.0, 20.0, 0);
+        add_grade(&conn, "g5", "2", MATH, PERIOD, 18.0, 20.0, 1);
+        add_grade(&conn, "g6", "2", FRENCH, PERIOD, 14.0, 20.0, 0);
+
+        let averages1 = get_student_averages_conn(&conn, SCHOOL, YEAR, "enr-1", PERIOD).unwrap();
+        let math1 = averages1
+            .subjects
+            .iter()
+            .find(|s| s.class_subject_id == MATH)
+            .unwrap();
+        let fr1 = averages1
+            .subjects
+            .iter()
+            .find(|s| s.class_subject_id == FRENCH)
+            .unwrap();
+        assert_eq!(math1.grade_count, 2);
+        assert!((math1.average.unwrap() - 8.0).abs() < 1e-9);
+        assert!((fr1.average.unwrap() - 12.0).abs() < 1e-9);
+        assert!((averages1.general_average.unwrap() - 10.0).abs() < 1e-9);
+        assert_eq!(averages1.rank, Some(1));
+
+        let rankings = get_class_rankings_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD).unwrap();
+        let rank1 = rankings
+            .iter()
+            .find(|r| r.enrollment_id == "enr-1")
+            .unwrap();
+        let rank2 = rankings
+            .iter()
+            .find(|r| r.enrollment_id == "enr-2")
+            .unwrap();
+        assert_eq!(rank1.rank, 1);
+        assert_eq!(rank2.rank, 2);
+        assert!((rank1.general_average.unwrap() - 10.0).abs() < 1e-9);
+        assert!((rank2.general_average.unwrap() - 9.5).abs() < 1e-9);
+
+        let result = stats(&conn, PERIOD);
+        assert_bounded(&result);
+        let math_stats = result.iter().find(|s| s.class_subject_id == MATH).unwrap();
+        let fr_stats = result
+            .iter()
+            .find(|s| s.class_subject_id == FRENCH)
+            .unwrap();
+        assert_eq!(math_stats.grade_count, 4);
+        assert!((math_stats.class_average.unwrap() - 6.5).abs() < 1e-9);
+        assert_eq!(math_stats.min_score, Some(0.0));
+        assert_eq!(math_stats.max_score, Some(16.0));
+        assert_eq!(math_stats.success_rate, 0.0);
+        assert_eq!(fr_stats.grade_count, 2);
+        assert!((fr_stats.class_average.unwrap() - 13.0).abs() < 1e-9);
+        assert_eq!(fr_stats.success_rate, 100.0);
+
+        let recap = get_class_notes_recap_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD, None).unwrap();
+        let recap1 = recap
+            .students
+            .iter()
+            .find(|s| s.enrollment_id == "enr-1")
+            .unwrap();
+        let recap2 = recap
+            .students
+            .iter()
+            .find(|s| s.enrollment_id == "enr-2")
+            .unwrap();
+        assert!((recap1.averages[MATH].unwrap() - 8.0).abs() < 1e-9);
+        assert!((recap1.averages[FRENCH].unwrap() - 12.0).abs() < 1e-9);
+        assert!((recap2.averages[MATH].unwrap() - 5.0).abs() < 1e-9);
+        assert!((recap2.averages[FRENCH].unwrap() - 14.0).abs() < 1e-9);
+        assert!((recap1.general_average.unwrap() - 10.0).abs() < 1e-9);
+        assert!((recap2.general_average.unwrap() - 9.5).abs() < 1e-9);
+        assert_eq!(recap1.rank, 1);
+        assert_eq!(recap2.rank, 2);
     }
 }
