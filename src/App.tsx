@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth, AuthErrorScreen } from './contexts/AuthContext';
 import { resolveLoginMode } from './lib/licenseFlow';
+import { hasAnyRole, normalizeRoles, ROUTE_ROLES } from './lib/rbac';
 import { YearProvider } from './contexts/YearContext';
 import Layout from './components/Layout';
 import Login from './pages/LoginPage';
@@ -49,7 +50,7 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 };
 
 // Route avec vérification de rôle
-const RoleProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles: string[] }) => {
+const RoleProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode, allowedRoles: readonly string[] }) => {
   const { session, roles, rolesLoaded, authError, loading } = useAuth();
 
   if (loading) {
@@ -80,7 +81,7 @@ const RoleProtectedRoute = ({ children, allowedRoles }: { children: React.ReactN
     </div>;
   }
   
-  const hasAccess = roles.some(role => allowedRoles.includes(role));
+  const hasAccess = hasAnyRole(normalizeRoles(roles), allowedRoles);
   
   if (!hasAccess) {
     return (
@@ -168,32 +169,31 @@ function AppRoutes() {
         <Route path="/" element={<HomeRoute />} />
         
         {/* Espace SUPER_ADMIN — école de base + licences (cloud) */}
-        <Route path="/super-admin" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><SuperAdminHome /></RoleProtectedRoute>} />
-        <Route path="/super-admin/ecoles" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><Ecoles /></RoleProtectedRoute>} />
-        <Route path="/super-admin/comptes" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><ComptesSuperAdmin /></RoleProtectedRoute>} />
-        <Route path="/super-admin/licences" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><LicencesSuperAdmin /></RoleProtectedRoute>} />
-        <Route path="/super-admin/appareils" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><AppareilsSuperAdmin /></RoleProtectedRoute>} />
-        <Route path="/super-admin/stats" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><StatsSuperAdmin /></RoleProtectedRoute>} />
-        <Route path="/super-admin/export" element={<RoleProtectedRoute allowedRoles={['SUPER_ADMIN']}><ExportSuperAdmin /></RoleProtectedRoute>} />
+        <Route path="/super-admin" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/super-admin']}><SuperAdminHome /></RoleProtectedRoute>} />
+        <Route path="/super-admin/ecoles" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/super-admin']}><Ecoles /></RoleProtectedRoute>} />
+        <Route path="/super-admin/comptes" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/super-admin']}><ComptesSuperAdmin /></RoleProtectedRoute>} />
+        <Route path="/super-admin/licences" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/super-admin']}><LicencesSuperAdmin /></RoleProtectedRoute>} />
+        <Route path="/super-admin/appareils" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/super-admin']}><AppareilsSuperAdmin /></RoleProtectedRoute>} />
+        <Route path="/super-admin/stats" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/super-admin']}><StatsSuperAdmin /></RoleProtectedRoute>} />
+        <Route path="/super-admin/export" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/super-admin']}><ExportSuperAdmin /></RoleProtectedRoute>} />
         
-        {/* Réservé à DIRECTION, SECRETAIRE, SUPER_ADMIN */}
-        <Route path="/students" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE', 'COMPTABLE']}><StudentsMigration /></RoleProtectedRoute>} />
-        <Route path="/classes" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><Classes /></RoleProtectedRoute>} />
-        <Route path="/prise-en-main" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><PriseEnMain /></RoleProtectedRoute>} />
+        {/* Administration de l'établissement */}
+        <Route path="/students" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/students']}><StudentsMigration /></RoleProtectedRoute>} />
+        <Route path="/classes" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/classes']}><Classes /></RoleProtectedRoute>} />
+        <Route path="/prise-en-main" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/prise-en-main']}><PriseEnMain /></RoleProtectedRoute>} />
         
-        {/* Réservé à DIRECTION, SUPER_ADMIN */}
-        <Route path="/finances" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'COMPTABLE']}><Finances /></RoleProtectedRoute>} />
-        <Route path="/personnel" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Personnel /></RoleProtectedRoute>} />
-        <Route path="/security" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Security /></RoleProtectedRoute>} />
-        <Route path="/settings" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Settings /></RoleProtectedRoute>} />
-                    <Route path="/vie-scolaire" element={<Navigate to="/bibliotheque" replace />} />
-                    <Route path="/bibliotheque" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE']}><Bibliotheque /></RoleProtectedRoute>} />
-                    <Route path="/archives" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><Archives /></RoleProtectedRoute>} />
-        <Route path="/sync" element={<RoleProtectedRoute allowedRoles={['DIRECTION']}><SyncCenter /></RoleProtectedRoute>} />
+        <Route path="/finances" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/finances']}><Finances /></RoleProtectedRoute>} />
+        <Route path="/personnel" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/personnel']}><Personnel /></RoleProtectedRoute>} />
+        <Route path="/security" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/security']}><Security /></RoleProtectedRoute>} />
+        <Route path="/settings" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/settings']}><Settings /></RoleProtectedRoute>} />
+        <Route path="/vie-scolaire" element={<Navigate to="/bibliotheque" replace />} />
+        <Route path="/bibliotheque" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/bibliotheque']}><Bibliotheque /></RoleProtectedRoute>} />
+        <Route path="/archives" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/archives']}><Archives /></RoleProtectedRoute>} />
+        <Route path="/sync" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/sync']}><SyncCenter /></RoleProtectedRoute>} />
         
-        {/* Accès commun à tous (avec restrictions internes gérées dans la page si besoin) */}
-        <Route path="/pedagogie" element={<RoleProtectedRoute allowedRoles={['DIRECTION', 'SECRETAIRE', 'PROFESSEUR']}><Pedagogie /></RoleProtectedRoute>} />
-        <Route path="/recap-notes" element={<RoleProtectedRoute allowedRoles={['PROFESSEUR']}><RecapNotes /></RoleProtectedRoute>} />
+        {/* Pédagogie : DIRECTION et PROFESSEUR ont accès au récap, pas la Secrétaire */}
+        <Route path="/pedagogie" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/pedagogie']}><Pedagogie /></RoleProtectedRoute>} />
+        <Route path="/recap-notes" element={<RoleProtectedRoute allowedRoles={ROUTE_ROLES['/recap-notes']}><RecapNotes /></RoleProtectedRoute>} />
         <Route path="/account" element={<Account />} />
       </Route>
 

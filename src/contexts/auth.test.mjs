@@ -76,7 +76,8 @@ test('Auth System - Erreur réseau ou DB (Network / DB error)', async (t) => {
       })
     };
 
-    const res = await resolveUserRolesOnline(mockSupabase, 'user-id');
+  const res = await resolveUserRolesOnline(mockSupabase, 'user-id');
+
     assert.deepEqual(res.roles, [], 'Aucun privilège ne doit être accordé en cas d erreur réseau');
     assert.equal(res.roles.includes('DIRECTION'), false, 'Ne doit jamais fallback sur DIRECTION');
     assert.ok(res.error, 'L erreur doit être explicite');
@@ -102,13 +103,13 @@ test('Auth System - Rôle SUPER_ADMIN', async (t) => {
         assert.equal(table, 'user_roles');
         return {
           select: (fields) => {
-            assert.equal(fields, 'roles(name)');
+            assert.equal(fields, 'roles(name), school_id');
             return {
               eq: (col, val) => {
                 assert.equal(col, 'user_id');
                 assert.equal(val, 'super-admin-uuid');
                 return Promise.resolve({
-                  data: [{ roles: { name: 'SUPER_ADMIN' } }],
+                  data: [{ school_id: 'school-123', roles: { name: 'SUPER_ADMIN' } }],
                   error: null
                 });
               }
@@ -118,7 +119,7 @@ test('Auth System - Rôle SUPER_ADMIN', async (t) => {
       }
     };
 
-    const res = await resolveUserRolesOnline(mockSupabase, 'super-admin-uuid');
+    const res = await resolveUserRolesOnline(mockSupabase, 'super-admin-uuid', 'school-123');
     assert.deepEqual(res.roles, ['SUPER_ADMIN'], 'SUPER_ADMIN doit être validé depuis Supabase');
     assert.equal(res.error, null);
   });
@@ -151,14 +152,14 @@ test('Auth System - Utilisateur DIRECTION', async (t) => {
       from: () => ({
         select: () => ({
           eq: () => Promise.resolve({
-            data: [{ roles: { name: 'DIRECTION' } }],
+            data: [{ school_id: 'school-123', roles: { name: 'DIRECTION' } }],
             error: null
           })
         })
       })
     };
 
-    const res = await resolveUserRolesOnline(mockSupabase, 'dir-uuid');
+    const res = await resolveUserRolesOnline(mockSupabase, 'dir-uuid', 'school-123');
     assert.deepEqual(res.roles, ['DIRECTION']);
     assert.equal(res.error, null);
   });
@@ -211,6 +212,7 @@ test('Auth System - user_metadata.role ne peut jamais élever un utilisateur', a
         select: () => ({
           eq: () => Promise.resolve({
             data: [{
+              school_id: 'school-123',
               roles: { name: 'DIRECTION' },
               user_metadata: { role: 'SUPER_ADMIN' },
             }],
@@ -221,7 +223,7 @@ test('Auth System - user_metadata.role ne peut jamais élever un utilisateur', a
     }
   };
 
-  const res = await resolveUserRolesOnline(mockSupabase, 'user-id');
+  const res = await resolveUserRolesOnline(mockSupabase, 'user-id', 'school-123');
   assert.deepEqual(res.roles, ['DIRECTION'], 'Seule la table user_roles fait foi');
   assert.equal(res.roles.includes('SUPER_ADMIN'), false, 'user_metadata.role ne doit jamais accord SUPER_ADMIN');
 });
@@ -269,4 +271,34 @@ test('Auth System - SUPER_ADMIN : aucun appel de vérification de licence', () =
   const licenseQueryIndex = licenseGuardSource.indexOf(".from('licenses')");
   assert.ok(licenseGuardIndex > 0, 'LicenseGuard doit court-circuiter dans checkLicense');
   assert.ok(licenseQueryIndex > licenseGuardIndex, 'Aucune requête licenses ne doit précéder le court-circuit SUPER_ADMIN');
+});
+
+test('Auth System - les rôles locaux ne s’agrègent pas entre établissements', async () => {
+  const mockSupabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => Promise.resolve({
+          data: [
+            { school_id: 'school-A', roles: { name: 'SECRETAIRE' } },
+            { school_id: 'school-B', roles: { name: 'PROFESSEUR' } },
+            { school_id: 'school-main', roles: { name: 'SUPER_ADMIN' } },
+          ],
+          error: null,
+        }),
+      }),
+    }),
+  };
+
+  const scoped = await resolveUserRolesOnline(mockSupabase, 'user-multi-school', 'school-A');
+  assert.deepEqual(scoped.roles, ['SECRETAIRE', 'SUPER_ADMIN']);
+  assert.equal(scoped.roles.includes('PROFESSEUR'), false);
+
+  const withoutSchool = await resolveUserRolesOnline(mockSupabase, 'user-multi-school', '');
+  assert.deepEqual(withoutSchool.roles, ['SUPER_ADMIN']);
+
+  const syncSource = tsxSource.match(/const syncUserToLocalDb = async \([\s\S]*?\n  \};/);
+  assert.ok(syncSource, 'syncUserToLocalDb doit être présent');
+  const profileIndex = syncSource[0].indexOf(".from('profiles')");
+  const roleIndex = syncSource[0].indexOf('resolveUserRolesOnline(supabase');
+  assert.ok(profileIndex > 0 && roleIndex > profileIndex, 'Le school_id du profil doit être résolu avant les rôles');
 });

@@ -1,6 +1,26 @@
 ALTER TABLE public.devices
-  ADD COLUMN IF NOT EXISTS license_id uuid REFERENCES public.licenses(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+
+DO $device_license_column$
+DECLARE
+  v_type text;
+BEGIN
+  SELECT data_type INTO v_type
+    FROM information_schema.columns
+   WHERE table_schema = 'public'
+     AND table_name = 'licenses'
+     AND column_name = 'id';
+
+  IF v_type IS NULL THEN
+    RAISE EXCEPTION 'Colonne public.licenses.id introuvable';
+  END IF;
+
+  EXECUTE format(
+    'ALTER TABLE public.devices ADD COLUMN IF NOT EXISTS license_id %s REFERENCES public.licenses(id) ON DELETE SET NULL',
+    v_type
+  );
+END
+$device_license_column$;
 
 UPDATE public.devices
    SET status = upper(btrim(coalesce(status, 'ACTIVE')))
@@ -69,225 +89,273 @@ ALTER TABLE public.licenses
   ADD CONSTRAINT licenses_max_devices_positive
   CHECK (max_devices >= 1);
 
-CREATE OR REPLACE FUNCTION public.register_or_reactivate_device(
-  p_license_id uuid,
-  p_device_identifier text,
-  p_device_name text DEFAULT NULL,
-  p_platform text DEFAULT NULL
-)
-RETURNS jsonb
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $device_registration$
+DO $device_functions$
 DECLARE
-  v_user_id text := auth.uid()::text;
-  v_clean_identifier text := btrim(p_device_identifier);
-  v_lic public.licenses%ROWTYPE;
-  v_dev public.devices%ROWTYPE;
-  v_user_schools text[];
-  v_count integer;
-  v_max integer;
-  v_device_id uuid;
+  v_license_type text;
+  v_device_id_type text;
+  v_audit_id_type text;
+  v_audit_user_type text;
+  v_audit_device_type text;
 BEGIN
-  IF v_user_id IS NULL THEN
-    RAISE EXCEPTION 'Authentification requise pour enregistrer un appareil'
-      USING ERRCODE = '42501';
+  SELECT data_type INTO v_license_type
+    FROM information_schema.columns
+   WHERE table_schema = 'public' AND table_name = 'licenses' AND column_name = 'id';
+
+  SELECT data_type INTO v_device_id_type
+    FROM information_schema.columns
+   WHERE table_schema = 'public' AND table_name = 'devices' AND column_name = 'id';
+
+  SELECT data_type INTO v_audit_id_type
+    FROM information_schema.columns
+   WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'id';
+
+  SELECT data_type INTO v_audit_user_type
+    FROM information_schema.columns
+   WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'user_id';
+
+  SELECT data_type INTO v_audit_device_type
+    FROM information_schema.columns
+   WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'device_id';
+
+  IF v_license_type IS NULL OR v_device_id_type IS NULL OR v_audit_id_type IS NULL
+     OR v_audit_user_type IS NULL OR v_audit_device_type IS NULL THEN
+    RAISE EXCEPTION 'Types de clés devices/licenses/audit_logs introuvables';
   END IF;
 
-  IF v_clean_identifier IS NULL OR v_clean_identifier = '' OR length(v_clean_identifier) > 512 THEN
-    RAISE EXCEPTION 'Identifiant d''appareil invalide'
-      USING ERRCODE = '22023';
-  END IF;
-
-  SELECT * INTO v_lic
-    FROM public.licenses
-   WHERE id = p_license_id
-   FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Licence introuvable'
-      USING ERRCODE = 'P0002';
-  END IF;
-
-  IF NOT public.is_super_admin() THEN
-    SELECT array_agg(school_id::text) INTO v_user_schools
-      FROM public.user_school_ids() AS school_id;
-
-    IF v_user_schools IS NULL OR NOT (v_lic.school_id::text = ANY(v_user_schools)) THEN
-      RAISE EXCEPTION 'Non autorisé pour cet établissement'
-        USING ERRCODE = '42501';
-    END IF;
-
-    IF NOT public.has_school_role(v_lic.school_id::text, ARRAY['DIRECTION']::text[]) THEN
-      RAISE EXCEPTION 'Seule la direction de l''établissement peut enregistrer un appareil'
-        USING ERRCODE = '42501';
-    END IF;
-  END IF;
-
-  IF NOT v_lic.is_current THEN
-    RAISE EXCEPTION 'Licence remplacée ou archivée'
-      USING ERRCODE = 'P0001';
-  END IF;
-
-  IF v_lic.status <> 'ACTIVE' THEN
-    RAISE EXCEPTION 'Licence non active'
-      USING ERRCODE = 'P0001';
-  END IF;
-
-  IF v_lic.starts_at IS NOT NULL AND v_lic.starts_at > now() THEN
-    RAISE EXCEPTION 'Licence pas encore active'
-      USING ERRCODE = 'P0001';
-  END IF;
-
-  IF v_lic.expires_at IS NOT NULL AND v_lic.expires_at <= now() THEN
-    RAISE EXCEPTION 'Licence expirée'
-      USING ERRCODE = 'P0001';
-  END IF;
-
-  v_max := coalesce(v_lic.max_devices, 1);
-  IF v_max < 1 THEN
-    RAISE EXCEPTION 'Quota d''appareils invalide'
-      USING ERRCODE = '22023';
-  END IF;
-
-  SELECT * INTO v_dev
-    FROM public.devices
-   WHERE device_identifier = v_clean_identifier
-   FOR UPDATE;
-
-  IF FOUND THEN
-    IF v_dev.deleted_at IS NULL AND v_dev.status = 'ACTIVE'
-       AND (v_dev.license_id IS DISTINCT FROM v_lic.id
-            OR v_dev.school_id IS DISTINCT FROM v_lic.school_id) THEN
-      RAISE EXCEPTION 'Appareil déjà associé à une autre licence'
-        USING ERRCODE = '42501';
-    END IF;
-
-    IF v_dev.deleted_at IS NOT NULL OR v_dev.status <> 'ACTIVE' THEN
-      SELECT count(*) INTO v_count
-        FROM public.devices
-       WHERE license_id = v_lic.id
-         AND deleted_at IS NULL
-         AND status = 'ACTIVE';
-
-      IF v_count >= v_max THEN
-        RAISE EXCEPTION 'Limite d''appareils atteinte pour cette licence'
-          USING ERRCODE = 'P0001', DETAIL = 'DEVICE_LIMIT_REACHED';
-      END IF;
-    END IF;
-
-    UPDATE public.devices
-       SET school_id = v_lic.school_id,
-           license_id = v_lic.id,
-           device_name = coalesce(nullif(btrim(p_device_name), ''), device_name),
-           platform = coalesce(nullif(btrim(p_platform), ''), platform),
-           status = 'ACTIVE',
-           deleted_at = NULL,
-           last_seen_at = now(),
-           updated_at = now()
-     WHERE id = v_dev.id
-     RETURNING id INTO v_device_id;
-  ELSE
-    SELECT count(*) INTO v_count
-      FROM public.devices
-     WHERE license_id = v_lic.id
-       AND deleted_at IS NULL
-       AND status = 'ACTIVE';
-
-    IF v_count >= v_max THEN
-      RAISE EXCEPTION 'Limite d''appareils atteinte pour cette licence'
-        USING ERRCODE = 'P0001', DETAIL = 'DEVICE_LIMIT_REACHED';
-    END IF;
-
-    INSERT INTO public.devices (
-      school_id, license_id, device_identifier, device_name, platform,
-      status, last_seen_at
-    ) VALUES (
-      v_lic.school_id, v_lic.id, v_clean_identifier,
-      nullif(btrim(p_device_name), ''), nullif(btrim(p_platform), ''),
-      'ACTIVE', now()
+  EXECUTE format($fn$
+    CREATE OR REPLACE FUNCTION public.register_or_reactivate_device(
+      p_license_id %s,
+      p_device_identifier text,
+      p_device_name text DEFAULT NULL,
+      p_platform text DEFAULT NULL
     )
-    RETURNING id INTO v_device_id;
-  END IF;
+    RETURNS jsonb
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = public, pg_temp
+    AS $device_registration$
+    DECLARE
+      v_user_id text := auth.uid()::text;
+      v_clean_identifier text := btrim(p_device_identifier);
+      v_lic public.licenses%%ROWTYPE;
+      v_dev public.devices%%ROWTYPE;
+      v_user_schools text[];
+      v_count integer;
+      v_max integer;
+      v_device_id %s;
+    BEGIN
+      IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Authentification requise pour enregistrer un appareil'
+          USING ERRCODE = '42501';
+      END IF;
 
-  RETURN jsonb_build_object(
-    'device_id', v_device_id,
-    'device_identifier', v_clean_identifier,
-    'license_id', v_lic.id,
-    'school_id', v_lic.school_id,
-    'max_devices', v_max
+      IF v_clean_identifier IS NULL OR v_clean_identifier = '' OR length(v_clean_identifier) > 512 THEN
+        RAISE EXCEPTION 'Identifiant d''appareil invalide'
+          USING ERRCODE = '22023';
+      END IF;
+
+      SELECT * INTO v_lic
+        FROM public.licenses
+       WHERE id = p_license_id
+       FOR UPDATE;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Licence introuvable'
+          USING ERRCODE = 'P0002';
+      END IF;
+
+      IF NOT public.is_super_admin() THEN
+        SELECT array_agg(school_id::text) INTO v_user_schools
+          FROM public.user_school_ids() AS school_id;
+
+        IF v_user_schools IS NULL OR NOT (v_lic.school_id::text = ANY(v_user_schools)) THEN
+          RAISE EXCEPTION 'Non autorisé pour cet établissement'
+            USING ERRCODE = '42501';
+        END IF;
+
+        IF NOT public.has_school_role(v_lic.school_id::text, ARRAY['DIRECTION']::text[]) THEN
+          RAISE EXCEPTION 'Seule la direction de l''établissement peut enregistrer un appareil'
+            USING ERRCODE = '42501';
+        END IF;
+      END IF;
+
+      IF NOT v_lic.is_current THEN
+        RAISE EXCEPTION 'Licence remplacée ou archivée'
+          USING ERRCODE = 'P0001';
+      END IF;
+
+      IF v_lic.status <> 'ACTIVE' THEN
+        RAISE EXCEPTION 'Licence non active'
+          USING ERRCODE = 'P0001';
+      END IF;
+
+      IF v_lic.starts_at IS NOT NULL AND v_lic.starts_at > now() THEN
+        RAISE EXCEPTION 'Licence pas encore active'
+          USING ERRCODE = 'P0001';
+      END IF;
+
+      IF v_lic.expires_at IS NOT NULL AND v_lic.expires_at <= now() THEN
+        RAISE EXCEPTION 'Licence expirée'
+          USING ERRCODE = 'P0001';
+      END IF;
+
+      v_max := coalesce(v_lic.max_devices, 1);
+      IF v_max < 1 THEN
+        RAISE EXCEPTION 'Quota d''appareils invalide'
+          USING ERRCODE = '22023';
+      END IF;
+
+      SELECT * INTO v_dev
+        FROM public.devices
+       WHERE device_identifier = v_clean_identifier
+       FOR UPDATE;
+
+      IF FOUND THEN
+        IF v_dev.deleted_at IS NULL AND v_dev.status = 'ACTIVE'
+           AND (v_dev.license_id IS DISTINCT FROM v_lic.id
+                OR v_dev.school_id IS DISTINCT FROM v_lic.school_id) THEN
+          RAISE EXCEPTION 'Appareil déjà associé à une autre licence'
+            USING ERRCODE = '42501';
+        END IF;
+
+        IF v_dev.deleted_at IS NOT NULL OR v_dev.status <> 'ACTIVE' THEN
+          SELECT count(*) INTO v_count
+            FROM public.devices
+           WHERE license_id = v_lic.id
+             AND deleted_at IS NULL
+             AND status = 'ACTIVE';
+
+          IF v_count >= v_max THEN
+            RAISE EXCEPTION 'Limite d''appareils atteinte pour cette licence'
+              USING ERRCODE = 'P0001', DETAIL = 'DEVICE_LIMIT_REACHED';
+          END IF;
+        END IF;
+
+        UPDATE public.devices
+           SET school_id = v_lic.school_id,
+               license_id = v_lic.id,
+               device_name = coalesce(nullif(btrim(p_device_name), ''), device_name),
+               platform = coalesce(nullif(btrim(p_platform), ''), platform),
+               status = 'ACTIVE',
+               deleted_at = NULL,
+               last_seen_at = now(),
+               updated_at = now()
+         WHERE id = v_dev.id
+         RETURNING id INTO v_device_id;
+      ELSE
+        SELECT count(*) INTO v_count
+          FROM public.devices
+         WHERE license_id = v_lic.id
+           AND deleted_at IS NULL
+           AND status = 'ACTIVE';
+
+        IF v_count >= v_max THEN
+          RAISE EXCEPTION 'Limite d''appareils atteinte pour cette licence'
+            USING ERRCODE = 'P0001', DETAIL = 'DEVICE_LIMIT_REACHED';
+        END IF;
+
+        INSERT INTO public.devices (
+          school_id, license_id, device_identifier, device_name, platform,
+          status, last_seen_at
+        ) VALUES (
+          v_lic.school_id, v_lic.id, v_clean_identifier,
+          nullif(btrim(p_device_name), ''), nullif(btrim(p_platform), ''),
+          'ACTIVE', now()
+        )
+        RETURNING id INTO v_device_id;
+      END IF;
+
+      RETURN jsonb_build_object(
+        'device_id', v_device_id,
+        'device_identifier', v_clean_identifier,
+        'license_id', v_lic.id,
+        'school_id', v_lic.school_id,
+        'max_devices', v_max
+      );
+    END
+    $device_registration$;
+  $fn$, v_license_type, v_device_id_type);
+
+  EXECUTE format($fn$
+    CREATE OR REPLACE FUNCTION public.release_device(p_device_id %s)
+    RETURNS jsonb
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = public, pg_temp
+    AS $device_release$
+    DECLARE
+      v_user_id text := auth.uid()::text;
+      v_dev public.devices%%ROWTYPE;
+    BEGIN
+      IF v_user_id IS NULL OR NOT public.is_super_admin() THEN
+        RAISE EXCEPTION 'Action réservée au SUPER_ADMIN'
+          USING ERRCODE = '42501';
+      END IF;
+
+      SELECT * INTO v_dev
+        FROM public.devices
+       WHERE id = p_device_id
+       FOR UPDATE;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Appareil introuvable'
+          USING ERRCODE = 'P0002';
+      END IF;
+
+      UPDATE public.devices
+         SET status = 'REVOKED',
+             deleted_at = coalesce(deleted_at, now()),
+             updated_at = now()
+       WHERE id = p_device_id
+       RETURNING * INTO v_dev;
+
+      INSERT INTO public.audit_logs (
+        id, school_id, user_id, device_id, action, entity_type, entity_id,
+        old_data, new_data, created_at
+      ) VALUES (
+        gen_random_uuid()::%s, v_dev.school_id, v_user_id::%s, v_dev.id::%s,
+        'DEVICE_RELEASED', 'devices', v_dev.id::text,
+        jsonb_build_object(
+          'status', 'ACTIVE',
+          'license_id', v_dev.license_id,
+          'device_identifier', v_dev.device_identifier
+        ),
+        jsonb_build_object(
+          'status', 'REVOKED',
+          'license_id', v_dev.license_id,
+          'device_identifier', v_dev.device_identifier,
+          'deleted_at', v_dev.deleted_at
+        ),
+        now()
+      );
+
+      RETURN jsonb_build_object(
+        'device_id', v_dev.id,
+        'school_id', v_dev.school_id,
+        'license_id', v_dev.license_id,
+        'device_identifier', v_dev.device_identifier,
+        'status', v_dev.status,
+        'deleted_at', v_dev.deleted_at
+      );
+    END
+    $device_release$;
+  $fn$, v_device_id_type, v_audit_id_type, v_audit_user_type, v_audit_device_type);
+
+  EXECUTE format(
+    'REVOKE ALL ON FUNCTION public.register_or_reactivate_device(%s, text, text, text) FROM PUBLIC, anon',
+    v_license_type
+  );
+  EXECUTE format(
+    'GRANT EXECUTE ON FUNCTION public.register_or_reactivate_device(%s, text, text, text) TO authenticated, service_role',
+    v_license_type
+  );
+  EXECUTE format(
+    'REVOKE ALL ON FUNCTION public.release_device(%s) FROM PUBLIC, anon',
+    v_device_id_type
+  );
+  EXECUTE format(
+    'GRANT EXECUTE ON FUNCTION public.release_device(%s) TO authenticated, service_role',
+    v_device_id_type
   );
 END
-$device_registration$;
-
-REVOKE ALL ON FUNCTION public.register_or_reactivate_device(uuid, text, text, text)
-  FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.register_or_reactivate_device(uuid, text, text, text)
-  TO authenticated, service_role;
-
-CREATE OR REPLACE FUNCTION public.release_device(p_device_id uuid)
-RETURNS jsonb
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $device_release$
-DECLARE
-  v_user_id text := auth.uid()::text;
-  v_dev public.devices%ROWTYPE;
-BEGIN
-  IF v_user_id IS NULL OR NOT public.is_super_admin() THEN
-    RAISE EXCEPTION 'Action réservée au SUPER_ADMIN'
-      USING ERRCODE = '42501';
-  END IF;
-
-  SELECT * INTO v_dev
-    FROM public.devices
-   WHERE id = p_device_id
-   FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Appareil introuvable'
-      USING ERRCODE = 'P0002';
-  END IF;
-
-  UPDATE public.devices
-     SET status = 'REVOKED',
-         deleted_at = coalesce(deleted_at, now()),
-         updated_at = now()
-   WHERE id = p_device_id
-   RETURNING * INTO v_dev;
-
-  INSERT INTO public.audit_logs (
-    id, school_id, user_id, device_id, action, entity_type, entity_id,
-    old_data, new_data, created_at
-  ) VALUES (
-    gen_random_uuid(), v_dev.school_id, v_user_id::uuid, v_dev.id,
-    'DEVICE_RELEASED', 'devices', v_dev.id::text,
-    jsonb_build_object(
-      'status', 'ACTIVE',
-      'license_id', v_dev.license_id,
-      'device_identifier', v_dev.device_identifier
-    ),
-    jsonb_build_object(
-      'status', 'REVOKED',
-      'license_id', v_dev.license_id,
-      'device_identifier', v_dev.device_identifier,
-      'deleted_at', v_dev.deleted_at
-    ),
-    now()
-  );
-
-  RETURN jsonb_build_object(
-    'device_id', v_dev.id,
-    'school_id', v_dev.school_id,
-    'license_id', v_dev.license_id,
-    'device_identifier', v_dev.device_identifier,
-    'status', v_dev.status,
-    'deleted_at', v_dev.deleted_at
-  );
-END
-$device_release$;
-
-REVOKE ALL ON FUNCTION public.release_device(uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.release_device(uuid) TO authenticated, service_role;
+$device_functions$;

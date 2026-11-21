@@ -44,6 +44,7 @@ const roleStyle: Record<string, { bg: string; text: string; dot: string }> = {
   DIRECTION:   { bg: 'bg-indigo-50',  text: 'text-indigo-700',  dot: 'bg-indigo-500' },
   SECRETAIRE:  { bg: 'bg-sky-50',     text: 'text-sky-700',     dot: 'bg-sky-500' },
   PROFESSEUR:  { bg: 'bg-emerald-50', text: 'text-emerald-700', dot: 'bg-emerald-500' },
+  COMPTABLE:   { bg: 'bg-amber-50',   text: 'text-amber-700',   dot: 'bg-amber-500' },
   SUPER_ADMIN: { bg: 'bg-rose-50',    text: 'text-rose-700',    dot: 'bg-rose-500' },
 };
 

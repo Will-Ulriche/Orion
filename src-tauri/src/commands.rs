@@ -899,14 +899,7 @@ pub fn establish_online_session_conn(
 }
 
 
-/// Retourne l'identifiant `staff` correspondant à l'utilisateur connecté.
-/// Le lien explicite `profiles.staff_id` est prioritaire ; à défaut, on
-/// retombe sur le rapprochement par email (users.email == staff.email).
-/// Un professeur ne peut ainsi accéder qu'à ses propres affectations.
-#[tauri::command]
-pub fn get_current_staff_id(state: State<'_, DbState>, user_id: String, school_id: String) -> Result<Option<String>, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-
+fn current_staff_id_conn(conn: &Connection, user_id: &str, school_id: &str) -> Option<String> {
     let linked_staff_id: Option<String> = conn.query_row(
         "SELECT p.staff_id
            FROM profiles p
@@ -918,7 +911,7 @@ pub fn get_current_staff_id(state: State<'_, DbState>, user_id: String, school_i
     ).unwrap_or(None);
 
     if linked_staff_id.is_some() {
-        return Ok(linked_staff_id);
+        return linked_staff_id;
     }
 
     let email: Option<String> = conn.query_row(
@@ -926,21 +919,57 @@ pub fn get_current_staff_id(state: State<'_, DbState>, user_id: String, school_i
         rusqlite::params![user_id],
         |row| row.get::<_, Option<String>>(0),
     ).unwrap_or(None);
-
-    let Some(email) = email else { return Ok(None); };
+    let Some(email) = email else { return None; };
     if email.trim().is_empty() {
-        return Ok(None);
+        return None;
     }
 
-    let staff_id: Option<String> = conn.query_row(
+    conn.query_row(
         "SELECT id FROM staff
           WHERE school_id = ?1 AND email IS NOT NULL AND lower(email) = lower(?2)
           LIMIT 1",
         rusqlite::params![school_id, email],
         |row| row.get::<_, String>(0),
-    ).ok();
+    ).ok()
+}
 
-    Ok(staff_id)
+/// Résout l'identifiant professeur autorisé pour une lecture pédagogique.
+/// DIRECTION et SECRETAIRE peuvent demander n'importe quel professeur (ou `None`
+/// pour l'établissement entier). Les autres acteurs, y compris SUPER_ADMIN sans
+/// rôle local explicite, sont strictement limités à leur propre fiche `staff`.
+/// Le professeur peut être identifié par son `staff.id` ou par son `users.id`.
+fn scoped_pedagogical_teacher_id(
+    conn: &Connection,
+    session: &crate::auth_guard::SessionUser,
+    school_id: &str,
+    requested_teacher_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let is_school_admin = session
+        .roles
+        .iter()
+        .any(|role| role == "DIRECTION" || role == "SECRETAIRE");
+    if is_school_admin {
+        return Ok(requested_teacher_id.map(str::to_string));
+    }
+
+    let staff_id = current_staff_id_conn(conn, &session.user_id, school_id)
+        .ok_or_else(|| "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string())?;
+    if let Some(requested) = requested_teacher_id {
+        if requested != staff_id && requested != session.user_id {
+            return Err("Accès refusé : vous ne pouvez consulter que vos propres affectations.".to_string());
+        }
+    }
+    Ok(Some(staff_id))
+}
+
+/// Retourne l'identifiant `staff` correspondant à l'utilisateur connecté.
+/// Le lien explicite `profiles.staff_id` est prioritaire ; à défaut, on
+/// retombe sur le rapprochement par email (users.email == staff.email).
+/// Un professeur ne peut ainsi accéder qu'à ses propres affectations.
+#[tauri::command]
+pub fn get_current_staff_id(state: State<'_, DbState>, user_id: String, school_id: String) -> Result<Option<String>, String> {
+    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    Ok(current_staff_id_conn(&conn, &user_id, &school_id))
 }
 
 // ──────────────────────────────────────────────
@@ -3240,6 +3269,45 @@ pub(crate) fn normalized_grade_score(score: f64, is_absent: bool) -> f64 {
     if is_absent { 0.0 } else { score }
 }
 
+const RANK_EPSILON: f64 = 1e-9;
+
+fn same_average(a: Option<f64>, b: Option<f64>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => (x - y).abs() <= RANK_EPSILON,
+        _ => false,
+    }
+}
+
+fn competition_ranks(averages: &[Option<f64>]) -> Vec<i64> {
+    if averages.is_empty() {
+        return Vec::new();
+    }
+    if averages.iter().all(|a| a.is_none()) {
+        return vec![0; averages.len()];
+    }
+
+    let mut order: Vec<usize> = (0..averages.len()).collect();
+    order.sort_by(|&a, &b| match (averages[a], averages[b]) {
+        (Some(x), Some(y)) => y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    let mut ranks = vec![0_i64; averages.len()];
+    let mut rank = 1_i64;
+    let mut previous = averages[order[0]];
+    for (idx, &i) in order.iter().enumerate() {
+        if idx > 0 && !same_average(previous, averages[i]) {
+            rank = idx as i64 + 1;
+            previous = averages[i];
+        }
+        ranks[i] = rank;
+    }
+    ranks
+}
+
 fn grade_on20_sql(alias: &str) -> String {
     format!(
         "CASE WHEN {a}.is_absent = 1 THEN 0.0 ELSE {a}.score / NULLIF({a}.max_score, 0.0) * 20.0 END",
@@ -3395,7 +3463,9 @@ pub fn get_teacher_class_subjects(
     state: State<'_, DbState>
 ) -> Result<Vec<crate::models::ClassSubject>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    let teacher_id = scoped_pedagogical_teacher_id(&conn, &sess, &school_id, Some(&teacher_id))?
+        .ok_or_else(|| "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string())?;
     let mut stmt = conn.prepare(
         "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
                 cs.teacher_id, cs.coefficient,
@@ -3814,38 +3884,176 @@ fn upsert_grade_conn(
     notes: Option<String>,
     recorded_by: &str,
     is_absent: bool,
+    actor_roles: &[String],
 ) -> Result<String, String> {
-    let now = chrono::Utc::now().to_rfc3339();
+    if !score.is_finite() || !max_score.is_finite() {
+        return Err("La note et le barème doivent être des nombres finis.".into());
+    }
+    if max_score <= 0.0 {
+        return Err("Le barème doit être strictement supérieur à zéro.".into());
+    }
     let score = normalized_grade_score(score, is_absent);
+    if score < 0.0 || score > max_score {
+        return Err(format!("La note doit être comprise entre 0 et {}.", max_score));
+    }
 
-    let existing_id: Option<String> = conn.query_row(
-        "SELECT id FROM grades WHERE school_id=?1 AND academic_year_id=?2 AND enrollment_id=?3 AND class_subject_id=?4 AND grading_period_id=?5 AND grade_type_id=?6",
+    let now = chrono::Utc::now().to_rfc3339();
+    let is_admin = actor_roles.iter().any(|r| r == "DIRECTION");
+    let tx = conn.unchecked_transaction()
+        .map_err(|e| format!("Impossible de démarrer la transaction : {}", e))?;
+
+    let relation: Option<(
+        String, String, String, String, String,
+        String, String, String, String, Option<String>,
+        String, String, Option<String>, i64,
+        String, f64, String, String,
+    )> = tx.query_row(
+        "SELECT e.student_id, e.school_id, e.academic_year_id, e.class_id, e.status,
+                st.school_id,
+                cs.school_id, cs.academic_year_id, cs.class_id, cs.teacher_id,
+                gp.school_id, gp.academic_year_id, gp.class_id, gp.is_active,
+                gt.school_id, gt.max_score,
+                ay.school_id, ay.status
+           FROM enrollments e
+           JOIN students st ON st.id = e.student_id
+           JOIN class_subjects cs ON cs.id = ?4
+           JOIN grading_periods gp ON gp.id = ?5
+           JOIN grade_types gt ON gt.id = ?6
+           JOIN academic_years ay ON ay.id = ?2
+          WHERE e.id = ?3",
         rusqlite::params![school_id, academic_year_id, enrollment_id, class_subject_id, grading_period_id, grade_type_id],
-        |r| r.get(0)
-    ).ok();
+        |row| Ok((
+            row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
+            row.get(5)?,
+            row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?,
+            row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?,
+            row.get(14)?, row.get(15)?, row.get(16)?, row.get(17)?,
+        )),
+    ).optional().map_err(|e| e.to_string())?;
 
-    let grade_id = if let Some(eid) = existing_id {
-        conn.execute(
+    let relation = relation.ok_or_else(|| {
+        "Inscription, élève, matière, période ou type d'évaluation introuvable.".to_string()
+    })?;
+
+    if relation.0 != student_id {
+        return Err("L'élève ne correspond pas à l'inscription sélectionnée.".into());
+    }
+    if [relation.1.as_str(), relation.5.as_str(), relation.6.as_str(), relation.10.as_str(), relation.14.as_str(), relation.16.as_str()]
+        .iter().any(|s| *s != school_id)
+    {
+        return Err("Les données de la note n'appartiennent pas à cet établissement.".into());
+    }
+    if [relation.2.as_str(), relation.7.as_str(), relation.11.as_str()]
+        .iter().any(|s| *s != academic_year_id)
+    {
+        return Err("Les données de la note n'appartiennent pas à cette année scolaire.".into());
+    }
+    if relation.4 != "ACTIVE" {
+        return Err("L'inscription n'est pas active pour cette année scolaire.".into());
+    }
+    if relation.3 != relation.8 {
+        return Err("La matière n'est pas associée à la classe de l'inscription.".into());
+    }
+    if let Some(period_class) = relation.12.as_deref() {
+        if period_class != relation.8 {
+            return Err("La période n'est pas associée à la classe de la note.".into());
+        }
+    }
+    if (relation.15 - max_score).abs() > 1e-9 {
+        return Err(format!(
+            "Le barème doit correspondre au type d'évaluation sélectionné ({}).",
+            relation.15
+        ));
+    }
+
+    match relation.17.as_str() {
+        "PLANNED" | "ACTIVE" => {}
+        "CLOSED" | "ARCHIVED" if !is_admin => {
+            return Err("Accès refusé : l'année sélectionnée est clôturée ou archivée.".into());
+        }
+        "CLOSED" | "ARCHIVED" => {}
+        other => return Err(format!("Statut d'année inattendu : {}.", other)),
+    }
+
+    if !is_admin {
+        if relation.13 != 1 {
+            return Err("Accès refusé : la période n'est pas ouverte à la saisie.".into());
+        }
+        let staff_id = current_staff_id_conn(&tx, recorded_by, school_id);
+        let assigned: Option<i64> = tx.query_row(
+            "SELECT 1 FROM class_subjects
+              WHERE id=?1 AND school_id=?2 AND academic_year_id=?3
+                AND (teacher_id=?4 OR teacher_id=?5)
+             UNION ALL
+             SELECT 1 FROM teacher_assignments
+              WHERE class_subject_id=?1 AND school_id=?2 AND academic_year_id=?3
+                AND (teacher_id=?5 OR teacher_id=?4)
+             LIMIT 1",
+            rusqlite::params![class_subject_id, school_id, academic_year_id, staff_id.as_deref(), recorded_by],
+            |row| row.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if assigned.is_none() {
+            return Err("Accès refusé : cette matière ne vous est pas attribuée.".into());
+        }
+    }
+
+    let existing: Option<(String, f64, f64, i64)> = tx.query_row(
+        "SELECT id, score, max_score, is_absent FROM grades
+          WHERE school_id=?1 AND academic_year_id=?2 AND enrollment_id=?3
+            AND student_id=?4 AND class_subject_id=?5 AND grading_period_id=?6 AND grade_type_id=?7",
+        rusqlite::params![school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).optional().map_err(|e| e.to_string())?;
+
+    let grade_id = if let Some((eid, _, _, _)) = existing.as_ref() {
+        tx.execute(
             "UPDATE grades SET score=?1, max_score=?2, evaluation_date=?3, notes=?4, recorded_by=?5, is_absent=?6, updated_at=?7 WHERE id=?8",
             rusqlite::params![score, max_score, evaluation_date, notes, recorded_by, is_absent, now, eid]
-        ).map_err(|e| e.to_string())?;
-        eid
+        ).map_err(|e| format!("Impossible de modifier la note : {}", e))?;
+        eid.clone()
     } else {
         let new_id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
+        tx.execute(
             "INSERT INTO grades (id, school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id, score, max_score, evaluation_date, notes, recorded_by, is_absent, created_at, updated_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
             rusqlite::params![new_id, school_id, academic_year_id, enrollment_id, student_id, class_subject_id, grading_period_id, grade_type_id, score, max_score, evaluation_date, notes, recorded_by, is_absent, now]
-        ).map_err(|e| format!("Erreur SQL: {}", e))?;
+        ).map_err(|e| format!("Impossible d'enregistrer la note : {}", e))?;
         new_id
     };
 
-    enqueue_entity(&conn, "grades", &school_id, &grade_id);
-    let payload = serde_json::json!({"id":grade_id,"student_id":student_id,"score":score,"is_absent":is_absent,"updated_at":now});
-    conn.execute(
-        "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1,?2,'UPSERT_GRADE','grades',?3)",
-        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, payload.to_string()]
-    ).unwrap_or(0);
+    let mut payload = serde_json::json!({
+        "grade_id": grade_id,
+        "school_id": school_id,
+        "academic_year_id": academic_year_id,
+        "enrollment_id": enrollment_id,
+        "student_id": student_id,
+        "class_subject_id": class_subject_id,
+        "grading_period_id": grading_period_id,
+        "grade_type_id": grade_type_id,
+        "old_score": null,
+        "new_score": score,
+        "old_max_score": null,
+        "new_max_score": max_score,
+        "old_is_absent": null,
+        "new_is_absent": is_absent,
+        "recorded_by": recorded_by,
+        "updated_at": now,
+    });
+    if let Some((_, old_score, old_max_score, old_is_absent)) = existing.as_ref() {
+        payload["old_score"] = serde_json::json!(old_score);
+        payload["old_max_score"] = serde_json::json!(old_max_score);
+        payload["old_is_absent"] = serde_json::json!(*old_is_absent != 0);
+    }
+
+    let remote_payload = remote_payload(&tx, "grades", &grade_id)
+        .map_err(|e| format!("Impossible de préparer la synchronisation de la note : {}", e))?;
+    record_mutation(&tx, school_id, "grades", &grade_id, "UPSERT", &remote_payload)?;
+    tx.execute(
+        "INSERT INTO audit_logs (id, school_id, user_id, action, entity_type, entity_id, new_data)
+         VALUES (?1,?2,?3,'UPSERT_GRADE','grades',?4,?5)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, recorded_by, grade_id, payload.to_string()]
+    ).map_err(|e| format!("Impossible de journaliser la modification de la note : {}", e))?;
+    tx.commit().map_err(|e| format!("Impossible d'enregistrer la note : {}", e))?;
 
     Ok(grade_id)
 }
@@ -3869,8 +4077,7 @@ pub fn upsert_grade(
     state: State<'_, DbState>
 ) -> Result<String, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "PROFESSEUR", "SECRETAIRE"])?;
-    ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
+    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "PROFESSEUR"])?;
     upsert_grade_conn(
         &conn,
         &school_id,
@@ -3886,6 +4093,7 @@ pub fn upsert_grade(
         notes,
         &sess.user_id,
         is_absent,
+        &sess.roles,
     )
 }
 
@@ -4053,13 +4261,15 @@ fn get_class_rankings_conn(
     ).map_err(|e| e.to_string())?;
     let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
 
+    let averages: Vec<Option<f64>> = rows.iter().map(|r| r.4).collect();
+    let ranks = competition_ranks(&averages);
     Ok(rows
         .into_iter()
-        .enumerate()
-        .map(|(rank, r)| {
+        .zip(ranks)
+        .map(|(r, rank)| {
             let appr = r.4.map(|a| appreciation(a)).unwrap_or_else(|| "—".into());
             crate::models::ClassRankingEntry {
-                rank: (rank + 1) as i64,
+                rank,
                 enrollment_id: r.0,
                 student_id: r.1,
                 first_name: r.2,
@@ -4342,22 +4552,9 @@ fn get_class_notes_recap_conn(
         });
     }
 
-    let mut order: Vec<(usize, Option<f64>)> = rows_out.iter().enumerate()
-        .map(|(i, r)| (i, r.general_average)).collect();
-    order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let mut rank = 0_i64;
-    let mut prev: Option<f64> = None;
-    for (idx, (i, avg)) in order.iter().enumerate() {
-        let changed = match (prev, avg) {
-            (None, None) => false,
-            (Some(_), None) | (None, Some(_)) => true,
-            (Some(p), Some(a)) => (p - a).abs() > 1e-9,
-        };
-        if changed {
-            rank = (idx + 1) as i64;
-            prev = *avg;
-        }
-        rows_out[*i].rank = rank;
+    let averages: Vec<Option<f64>> = rows_out.iter().map(|r| r.general_average).collect();
+    for (row, rank) in rows_out.iter_mut().zip(competition_ranks(&averages)) {
+        row.rank = rank;
     }
 
     Ok(ClassNotesRecap { subjects, students: rows_out })
@@ -4373,7 +4570,8 @@ pub fn get_class_notes_recap(
     state: State<'_, DbState>,
 ) -> Result<ClassNotesRecap, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "PROFESSEUR"])?;
+    let teacher_id = scoped_pedagogical_teacher_id(&conn, &sess, &school_id, teacher_id.as_deref())?;
     get_class_notes_recap_conn(
         &conn,
         &school_id,
@@ -4386,25 +4584,24 @@ pub fn get_class_notes_recap(
 
 // ── TEACHER ASSIGNMENTS ──────────────────────────────────────
 
-#[tauri::command]
-pub fn get_teacher_assignments(
-    school_id: String,
-    academic_year_id: String,
-    teacher_id: String,
-    state: State<'_, DbState>
+fn get_teacher_assignments_conn(
+    conn: &Connection,
+    school_id: &str,
+    academic_year_id: &str,
+    teacher_id: &str,
 ) -> Result<Vec<crate::models::TeacherAssignment>, String> {
-    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
     let mut stmt = conn.prepare(
-        "SELECT ta.id, ta.school_id, ta.academic_year_id, ta.teacher_id, ta.class_subject_id,
-                (u.first_name || ' ' || u.last_name), s.name, c.name
-         FROM teacher_assignments ta
-         JOIN class_subjects cs ON ta.class_subject_id = cs.id
-         JOIN subjects s ON cs.subject_id = s.id
-         JOIN classes c ON cs.class_id = c.id
-         LEFT JOIN users u ON ta.teacher_id = u.id
-         WHERE ta.school_id=?1 AND ta.academic_year_id=?2 AND ta.teacher_id=?3
-         ORDER BY c.name, s.name"
+         "SELECT ta.id, ta.school_id, ta.academic_year_id, ta.teacher_id, ta.class_subject_id,
+                 COALESCE(NULLIF(p.first_name || ' ' || p.last_name, ' '), stf.nom || ' ' || stf.prenoms),
+                 s.name, c.name
+          FROM teacher_assignments ta
+          JOIN class_subjects cs ON ta.class_subject_id = cs.id
+          JOIN subjects s ON cs.subject_id = s.id
+          JOIN classes c ON cs.class_id = c.id
+          LEFT JOIN profiles p ON p.user_id = ta.teacher_id AND p.school_id = ta.school_id
+          LEFT JOIN staff stf ON stf.id = p.staff_id AND stf.school_id = ta.school_id
+          WHERE ta.school_id=?1 AND ta.academic_year_id=?2 AND (ta.teacher_id=?3 OR stf.id=?3)
+          ORDER BY c.name, s.name"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, teacher_id], |row| {
         Ok(crate::models::TeacherAssignment {
@@ -4417,6 +4614,21 @@ pub fn get_teacher_assignments(
     for r in rows { if let Ok(ta) = r { res.push(ta); } }
     Ok(res)
 }
+
+#[tauri::command]
+pub fn get_teacher_assignments(
+    school_id: String,
+    academic_year_id: String,
+    teacher_id: String,
+    state: State<'_, DbState>
+) -> Result<Vec<crate::models::TeacherAssignment>, String> {
+    let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
+    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    let teacher_id = scoped_pedagogical_teacher_id(&conn, &sess, &school_id, Some(&teacher_id))?
+        .ok_or_else(|| "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string())?;
+    get_teacher_assignments_conn(&conn, &school_id, &academic_year_id, &teacher_id)
+}
+
 
 #[tauri::command]
 pub fn assign_teacher_to_class_subject(
@@ -9421,6 +9633,41 @@ mod class_statistics_tests {
         }
     }
 
+    fn save_grade(conn: &Connection, score: f64, max_score: f64) -> Result<String, String> {
+        save_grade_as(conn, &["DIRECTION"], score, max_score)
+    }
+
+    fn save_grade_as(conn: &Connection, roles: &[&str], score: f64, max_score: f64) -> Result<String, String> {
+        let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
+        upsert_grade_conn(
+            conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt",
+            score, max_score, None, None, "ped-user", false, &roles,
+        )
+    }
+
+    fn test_session(user_id: &str, roles: &[&str]) -> crate::auth_guard::SessionUser {
+        crate::auth_guard::SessionUser {
+            user_id: user_id.to_string(),
+            school_id: SCHOOL.to_string(),
+            email: None,
+            roles: roles.iter().map(|role| role.to_string()).collect(),
+            is_super_admin: roles.contains(&"SUPER_ADMIN"),
+        }
+    }
+
+    fn link_teacher_profile(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO staff (id, school_id, nom, prenoms, created_at, updated_at)
+             VALUES ('staff-1', ?1, 'Test', 'Enseignant', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            rusqlite::params![SCHOOL],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO profiles (id, user_id, school_id, staff_id, first_name, last_name)
+             VALUES ('profile-1', 'ped-user', ?1, 'staff-1', 'Test', 'Enseignant')",
+            rusqlite::params![SCHOOL],
+        ).unwrap();
+    }
+
     #[test]
     fn test_several_successful_grades_count_as_one_student() {
         let conn = setup_db();
@@ -9584,7 +9831,7 @@ mod class_statistics_tests {
 
         let grade_id = upsert_grade_conn(
             &conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt", 14.0, 20.0, None, None,
-            "ped-user", true,
+            "ped-user", true, &["DIRECTION".to_string()],
         )
         .unwrap();
         let (score, is_absent): (f64, i64) = conn
@@ -9679,5 +9926,372 @@ mod class_statistics_tests {
         assert!((recap2.general_average.unwrap() - 9.5).abs() < 1e-9);
         assert_eq!(recap1.rank, 1);
         assert_eq!(recap2.rank, 2);
+    }
+
+    #[test]
+    fn test_competition_ranks_cover_all_equality_cases() {
+        assert_eq!(competition_ranks(&[Some(16.0), Some(14.0), Some(12.0)]), vec![1, 2, 3]);
+        assert_eq!(competition_ranks(&[Some(16.0), Some(16.0), Some(14.0)]), vec![1, 1, 3]);
+        assert_eq!(competition_ranks(&[Some(16.0), Some(16.0), Some(16.0), Some(14.0)]), vec![1, 1, 1, 4]);
+        assert_eq!(competition_ranks(&[Some(12.345), Some(12.3449999995), Some(11.0)]), vec![1, 1, 3]);
+        assert_eq!(competition_ranks(&[Some(16.0), Some(16.0), Some(16.0)]), vec![1, 1, 1]);
+        assert_eq!(competition_ranks(&[Some(16.0)]), vec![1]);
+        assert_eq!(competition_ranks(&[Some(14.0), None, Some(16.0)]), vec![2, 3, 1]);
+        assert_eq!(competition_ranks(&[None, None]), vec![0, 0]);
+        assert!(competition_ranks(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_ranking_and_recap_share_competition_ranks() {
+        let conn = setup_db();
+        for key in ["1", "2", "3", "4", "5", "6", "7"] {
+            add_student(&conn, key);
+        }
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g2", "2", MATH, PERIOD, 16.0, 20.0, 0);
+        add_grade(&conn, "g3", "3", MATH, PERIOD, 14.0, 20.0, 0);
+        add_grade(&conn, "g4", "4", MATH, PERIOD, 12.345, 20.0, 0);
+        add_grade(&conn, "g5", "5", MATH, PERIOD, 12.3449999995, 20.0, 0);
+        add_grade(&conn, "g6", "6", MATH, PERIOD, 11.0, 20.0, 0);
+
+        let rankings = get_class_rankings_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD).unwrap();
+        let recap = get_class_notes_recap_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD, None).unwrap();
+        let expected = [
+            ("enr-1", 1), ("enr-2", 1), ("enr-3", 3), ("enr-4", 4),
+            ("enr-5", 4), ("enr-6", 6), ("enr-7", 7),
+        ];
+
+        for (enrollment_id, rank) in expected {
+            let ranking = rankings.iter().find(|r| r.enrollment_id == enrollment_id).unwrap();
+            let recap_row = recap.students.iter().find(|s| s.enrollment_id == enrollment_id).unwrap();
+            assert_eq!(ranking.rank, rank);
+            assert_eq!(recap_row.rank, rank);
+        }
+    }
+
+    #[test]
+    fn test_single_student_class_rank_is_stable() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+
+        let empty_rankings = get_class_rankings_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD).unwrap();
+        let empty_recap = get_class_notes_recap_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD, None).unwrap();
+        assert_eq!(empty_rankings[0].rank, 0);
+        assert_eq!(empty_recap.students[0].rank, 0);
+
+        add_grade(&conn, "g1", "1", MATH, PERIOD, 16.0, 20.0, 0);
+        let rankings = get_class_rankings_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD).unwrap();
+        let recap = get_class_notes_recap_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD, None).unwrap();
+        assert_eq!(rankings[0].rank, 1);
+        assert_eq!(recap.students[0].rank, 1);
+    }
+
+    #[test]
+    fn test_upsert_grade_accepts_valid_grade_and_keeps_sync_mutation() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+
+        let grade_id = save_grade(&conn, 14.0, 20.0).unwrap();
+        let (entity_type, entity_id, operation, payload): (String, String, String, String) = conn.query_row(
+            "SELECT entity_type, entity_id, operation, payload FROM pending_mutations ORDER BY rowid DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+        assert_eq!(entity_type, "grades");
+        assert_eq!(entity_id, grade_id);
+        assert_eq!(operation, "UPSERT");
+        let sync_payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(sync_payload["id"], serde_json::json!(grade_id));
+        assert_eq!(sync_payload["score"], serde_json::json!(14.0));
+
+        let updated = save_grade(&conn, 16.0, 20.0).unwrap();
+        assert_eq!(updated, grade_id);
+        let audit: String = conn.query_row(
+            "SELECT new_data FROM audit_logs WHERE action='UPSERT_GRADE' ORDER BY rowid DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        let audit: serde_json::Value = serde_json::from_str(&audit).unwrap();
+        assert_eq!(audit["old_score"], serde_json::json!(14.0));
+        assert_eq!(audit["new_score"], serde_json::json!(16.0));
+        let mutations: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0)).unwrap();
+        assert_eq!(mutations, 2);
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_invalid_scores() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+
+        assert!(save_grade(&conn, -1.0, 20.0).unwrap_err().contains("comprise entre 0 et 20"));
+        assert!(save_grade(&conn, 21.0, 20.0).unwrap_err().contains("comprise entre 0 et 20"));
+        assert!(save_grade(&conn, 14.0, 0.0).unwrap_err().contains("strictement supérieur à zéro"));
+        assert!(save_grade(&conn, f64::NAN, 20.0).unwrap_err().contains("nombres finis"));
+        assert!(save_grade(&conn, f64::INFINITY, 20.0).unwrap_err().contains("nombres finis"));
+        assert!(save_grade(&conn, 14.0, f64::NEG_INFINITY).unwrap_err().contains("nombres finis"));
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_max_score_mismatch() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+
+        let err = save_grade(&conn, 7.0, 10.0).unwrap_err();
+        assert!(err.contains("barème doit correspondre au type d'évaluation"));
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_wrong_student() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        add_student(&conn, "2");
+        let roles = vec!["DIRECTION".to_string()];
+
+        let result = upsert_grade_conn(
+            &conn, SCHOOL, YEAR, "enr-1", "stu-2", MATH, PERIOD, "ped-gt",
+            14.0, 20.0, None, None, "ped-user", false, &roles,
+        );
+        assert!(result.unwrap_err().contains("élève ne correspond pas"));
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_wrong_subject() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        conn.execute(
+            "INSERT INTO classes (id, school_id, academic_year_id, name) VALUES ('other-class', ?1, ?2, 'Autre classe')",
+            rusqlite::params![SCHOOL, YEAR],
+        ).unwrap();
+        conn.execute(
+            "UPDATE class_subjects SET class_id='other-class' WHERE id=?1",
+            rusqlite::params![FRENCH],
+        ).unwrap();
+        let roles = vec!["DIRECTION".to_string()];
+
+        let result = upsert_grade_conn(
+            &conn, SCHOOL, YEAR, "enr-1", "stu-1", FRENCH, PERIOD, "ped-gt",
+            14.0, 20.0, None, None, "ped-user", false, &roles,
+        );
+        assert!(result.unwrap_err().contains("n'est pas associée à la classe"));
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_wrong_period() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        conn.execute(
+            "INSERT INTO classes (id, school_id, academic_year_id, name) VALUES ('other-class', ?1, ?2, 'Autre classe')",
+            rusqlite::params![SCHOOL, YEAR],
+        ).unwrap();
+        conn.execute(
+            "UPDATE grading_periods SET class_id='other-class' WHERE id=?1",
+            rusqlite::params![PERIOD],
+        ).unwrap();
+        let roles = vec!["DIRECTION".to_string()];
+
+        let result = upsert_grade_conn(
+            &conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt",
+            14.0, 20.0, None, None, "ped-user", false, &roles,
+        );
+        assert!(result.unwrap_err().contains("période n'est pas associée"));
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_unknown_grade_type() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        let roles = vec!["DIRECTION".to_string()];
+
+        let result = upsert_grade_conn(
+            &conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "gt-inconnu",
+            14.0, 20.0, None, None, "ped-user", false, &roles,
+        );
+        assert!(result.unwrap_err().contains("introuvable"));
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_foreign_school() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('other-school', 'Autre école')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE grade_types SET school_id='other-school' WHERE id='ped-gt'",
+            [],
+        ).unwrap();
+
+        assert!(save_grade(&conn, 14.0, 20.0).unwrap_err().contains("n'appartiennent pas à cet établissement"));
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_teacher_without_assignment() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        conn.execute("UPDATE grading_periods SET is_active=1 WHERE id=?1", rusqlite::params![PERIOD]).unwrap();
+
+        assert!(save_grade_as(&conn, &["PROFESSEUR"], 14.0, 20.0)
+            .unwrap_err()
+            .contains("ne vous est pas attribuée"));
+    }
+
+    #[test]
+    fn test_upsert_grade_accepts_assigned_teacher_on_active_period() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        conn.execute("UPDATE grading_periods SET is_active=1 WHERE id=?1", rusqlite::params![PERIOD]).unwrap();
+        conn.execute(
+            "INSERT INTO teacher_assignments (id, school_id, academic_year_id, teacher_id, class_subject_id, created_at, updated_at)
+             VALUES ('ta-1', ?1, ?2, 'ped-user', ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            rusqlite::params![SCHOOL, YEAR, MATH],
+        ).unwrap();
+
+        let grade_id = save_grade_as(&conn, &["PROFESSEUR"], 14.0, 20.0).unwrap();
+        assert!(!grade_id.is_empty());
+
+        conn.execute("DELETE FROM teacher_assignments WHERE id='ta-1'", []).unwrap();
+        conn.execute(
+            "INSERT INTO staff (id, school_id, nom, prenoms, created_at, updated_at)
+             VALUES ('staff-1', ?1, 'Test', 'Enseignant', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            rusqlite::params![SCHOOL],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO profiles (id, user_id, school_id, staff_id, first_name, last_name)
+             VALUES ('profile-1', 'ped-user', ?1, 'staff-1', 'Test', 'Enseignant')",
+            rusqlite::params![SCHOOL],
+        ).unwrap();
+        conn.execute(
+            "UPDATE class_subjects SET teacher_id='staff-1' WHERE id=?1",
+            rusqlite::params![MATH],
+        ).unwrap();
+
+        assert!(!save_grade_as(&conn, &["PROFESSEUR"], 15.0, 20.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_upsert_grade_closed_year_requires_admin() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        conn.execute(
+            "UPDATE academic_years SET status='CLOSED' WHERE id=?1",
+            rusqlite::params![YEAR],
+        ).unwrap();
+
+        assert!(save_grade_as(&conn, &["PROFESSEUR"], 14.0, 20.0)
+            .unwrap_err()
+            .contains("clôturée ou archivée"));
+        assert!(!save_grade(&conn, 14.0, 20.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_upsert_grade_rejects_secretary_and_super_admin_without_assignment() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        conn.execute("UPDATE grading_periods SET is_active=1 WHERE id=?1", rusqlite::params![PERIOD]).unwrap();
+
+        let secretary_err = save_grade_as(&conn, &["SECRETAIRE"], 14.0, 20.0).unwrap_err();
+        assert!(secretary_err.contains("ne vous est pas attribuée"), "erreur inattendue: {secretary_err}");
+
+        let super_admin_err = save_grade_as(&conn, &["SUPER_ADMIN"], 14.0, 20.0).unwrap_err();
+        assert!(super_admin_err.contains("ne vous est pas attribuée"), "erreur inattendue: {super_admin_err}");
+    }
+
+    #[test]
+    fn test_scoped_pedagogical_teacher_id_restricts_professor() {
+        let conn = setup_db();
+        link_teacher_profile(&conn);
+        let teacher = test_session("ped-user", &["PROFESSEUR"]);
+
+        assert_eq!(
+            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, None).unwrap().as_deref(),
+            Some("staff-1")
+        );
+        assert_eq!(
+            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, Some("staff-1")).unwrap().as_deref(),
+            Some("staff-1")
+        );
+        assert_eq!(
+            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, Some("ped-user")).unwrap().as_deref(),
+            Some("staff-1")
+        );
+        assert!(
+            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, Some("staff-autre"))
+                .unwrap_err()
+                .contains("vos propres affectations")
+        );
+    }
+
+    #[test]
+    fn test_scoped_pedagogical_teacher_id_keeps_school_admin_scope() {
+        let conn = setup_db();
+        let direction = test_session("dir-user", &["DIRECTION"]);
+        let secretary = test_session("sec-user", &["SECRETAIRE"]);
+
+        assert_eq!(
+            scoped_pedagogical_teacher_id(&conn, &direction, SCHOOL, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            scoped_pedagogical_teacher_id(&conn, &secretary, SCHOOL, Some("staff-autre")).unwrap().as_deref(),
+            Some("staff-autre")
+        );
+    }
+
+    #[test]
+    fn test_scoped_pedagogical_teacher_id_denies_super_admin_without_local_role() {
+        let conn = setup_db();
+        let super_admin = test_session("cloud-user", &["SUPER_ADMIN"]);
+        assert!(
+            scoped_pedagogical_teacher_id(&conn, &super_admin, SCHOOL, None)
+                .unwrap_err()
+                .contains("aucune fiche professeur")
+        );
+    }
+
+    #[test]
+    fn test_get_teacher_assignments_resolves_staff_and_user_ids() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO staff (id, school_id, nom, prenoms, created_at, updated_at)
+             VALUES ('staff-prof', ?1, 'Dupont', 'Jean', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            rusqlite::params![SCHOOL],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO profiles (id, user_id, school_id, staff_id, first_name, last_name)
+             VALUES ('profile-prof', 'ped-user', ?1, 'staff-prof', 'Jean', 'Dupont')",
+            rusqlite::params![SCHOOL],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO teacher_assignments (id, school_id, academic_year_id, teacher_id, class_subject_id, created_at, updated_at)
+             VALUES ('ta-prof', ?1, ?2, 'ped-user', ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            rusqlite::params![SCHOOL, YEAR, MATH],
+        ).unwrap();
+
+        let by_user = get_teacher_assignments_conn(&conn, SCHOOL, YEAR, "ped-user").unwrap();
+        assert_eq!(by_user.len(), 1);
+        assert_eq!(by_user[0].teacher_name.as_deref(), Some("Jean Dupont"));
+        assert_eq!(by_user[0].class_subject_id, MATH);
+
+        let by_staff = get_teacher_assignments_conn(&conn, SCHOOL, YEAR, "staff-prof").unwrap();
+        assert_eq!(by_staff.len(), 1);
+        assert_eq!(by_staff[0].teacher_id, "ped-user");
+    }
+
+    #[test]
+    fn test_upsert_grade_rolls_back_when_audit_fails() {
+        let conn = setup_db();
+        add_student(&conn, "1");
+        conn.execute_batch(
+            "CREATE TRIGGER fail_grade_audit BEFORE INSERT ON audit_logs
+             BEGIN SELECT RAISE(ABORT, 'audit indisponible'); END;",
+        ).unwrap();
+
+        let err = save_grade(&conn, 14.0, 20.0).unwrap_err();
+        assert!(err.contains("journaliser"));
+        let grades: i64 = conn.query_row("SELECT COUNT(*) FROM grades", [], |r| r.get(0)).unwrap();
+        let mutations: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0)).unwrap();
+        assert_eq!(grades, 0);
+        assert_eq!(mutations, 0);
     }
 }

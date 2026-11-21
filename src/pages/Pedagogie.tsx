@@ -14,7 +14,6 @@ import {
   Loader, Modal, NumberInput, PanelHeader, SearchInput, Segmented, Select,
   TableShell, Td, Th, TextInput, type Tone, cx,
 } from '../components/ui';
-
 // ─── Types ──────────────────────────────────────────────────
 
 interface Subject {
@@ -109,18 +108,20 @@ function initials(label: string, fallback = '??') {
 
 type Tab = 'config' | 'saisie';
 
-const ADMIN_ROLES = ['DIRECTION', 'SECRETAIRE', 'SUPER_ADMIN'];
-
 export default function Pedagogie() {
   const { schoolId, roles, rolesLoaded, user } = useAuth();
   const { selectedYear } = useYear();
   const [tab, setTab] = useState<Tab>('config');
   const [saisieKey, setSaisieKey] = useState(0);
 
-  // Un professeur (sans rôle administratif) n'a accès qu'à ses propres
-  // classes et matières : il ne peut ni configurer l'établissement, ni
-  // consulter les affectations des autres enseignants.
-  const isTeacherOnly = rolesLoaded && roles.includes('PROFESSEUR') && !roles.some(r => ADMIN_ROLES.includes(r));
+  const canConfigure = rolesLoaded && roles.includes('DIRECTION');
+  const canEnterGrades = rolesLoaded && (roles.includes('DIRECTION') || roles.includes('PROFESSEUR'));
+  const isTeacherOnly = rolesLoaded && roles.includes('PROFESSEUR') && !roles.includes('DIRECTION');
+  const availableTabs: Tab[] = [
+    ...(canConfigure ? ['config' as const] : []),
+    ...(canEnterGrades ? ['saisie' as const] : []),
+  ];
+  const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0];
   const [staffId, setStaffId] = useState<string | null>(null);
   const [scopeReady, setScopeReady] = useState(false);
 
@@ -136,10 +137,12 @@ export default function Pedagogie() {
   }, [isTeacherOnly, user?.id, schoolId]);
 
   useEffect(() => {
-    if (isTeacherOnly) setTab('saisie');
-  }, [isTeacherOnly]);
+    if (canConfigure) setTab('config');
+    else if (canEnterGrades) setTab('saisie');
+  }, [canConfigure, canEnterGrades]);
 
   const handleTabChange = (newTab: Tab) => {
+    if (!availableTabs.includes(newTab)) return;
     if (newTab === 'saisie') setSaisieKey(k => k + 1); // force refresh
     setTab(newTab);
   };
@@ -155,18 +158,22 @@ export default function Pedagogie() {
             <div>
               <h1 className="text-xl font-bold tracking-tight text-slate-800">Pédagogie &amp; Notes</h1>
               <p className="text-[13px] text-slate-500">
-                {isTeacherOnly ? 'Vos classes, vos matières et la saisie des notes' : 'Matières, évaluations et résultats scolaires'}
+                {activeTab === undefined
+                  ? 'Accès pédagogique non autorisé pour ce rôle'
+                  : isTeacherOnly
+                    ? 'Vos classes, vos matières et la saisie des notes'
+                    : 'Matières, évaluations et résultats scolaires'}
               </p>
             </div>
           </div>
 
-          {!isTeacherOnly && (
+          {availableTabs.length > 1 && activeTab !== undefined && (
             <Segmented<Tab>
-              value={tab}
+              value={activeTab}
               onChange={handleTabChange}
               options={[
-                { value: 'config', label: 'Configuration', icon: SlidersHorizontal },
-                { value: 'saisie', label: 'Saisie des notes', icon: ClipboardList },
+                ...(canConfigure ? [{ value: 'config' as const, label: 'Configuration', icon: SlidersHorizontal }] : []),
+                ...(canEnterGrades ? [{ value: 'saisie' as const, label: 'Saisie des notes', icon: ClipboardList }] : []),
               ]}
             />
           )}
@@ -176,10 +183,18 @@ export default function Pedagogie() {
       <main className="min-h-0 flex-1 overflow-hidden">
         {!rolesLoaded || (isTeacherOnly && !scopeReady) ? (
           <Loader label="Chargement de vos affectations…" />
+        ) : activeTab === undefined ? (
+          <div className="p-5 lg:p-8">
+            <EmptyState
+              icon={ClipboardList}
+              title="Accès pédagogique non autorisé"
+              description="Votre rôle ne permet ni la configuration pédagogique ni la saisie des notes."
+            />
+          </div>
         ) : (
           <>
-            {tab === 'config' && !isTeacherOnly && <TabConfig schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
-            {tab === 'saisie' && (
+            {activeTab === 'config' && canConfigure && <TabConfig schoolId={schoolId} yearId={selectedYear?.id ?? ''} />}
+            {activeTab === 'saisie' && canEnterGrades && (
               <TabSaisie
                 key={saisieKey}
                 schoolId={schoolId}

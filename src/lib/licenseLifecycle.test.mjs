@@ -141,7 +141,7 @@ test('LIC-02 Frontend : LicenseGuard ne sélectionne plus dans tout l’historiq
 
 test('LIC-03 : quota appareils, liaison JWT et libération SUPER_ADMIN', () => {
   const migration = read('../../supabase/migrations/20261121000000_device_binding_hardening.sql');
-  assert.match(migration, /ADD COLUMN IF NOT EXISTS license_id uuid/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS license_id %s REFERENCES public\.licenses\(id\)/);
   assert.match(migration, /ADD COLUMN IF NOT EXISTS deleted_at timestamptz/);
   assert.match(migration, /CHECK \(max_devices >= 1\)/);
   assert.match(migration, /CREATE OR REPLACE FUNCTION public\.register_or_reactivate_device/);

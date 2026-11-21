@@ -34,6 +34,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/27_license_lifecycle.sql"),
     include_str!("../migrations/28_device_license_binding.sql"),
     include_str!("../migrations/29_normalize_absent_scores.sql"),
+    include_str!("../migrations/30_seed_comptable_role.sql"),
 ];
 
 pub(crate) fn run_migrations(conn: &Connection) -> Result<(), String> {
@@ -221,7 +222,7 @@ mod migration_tests {
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 29);
+        assert_eq!(user_version(&conn), 30);
         assert!(object_exists(&conn, "table", "enrollments_legacy_v1"));
         assert!(object_exists(
             &conn,
@@ -399,7 +400,7 @@ mod migration_tests {
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 29);
+        assert_eq!(user_version(&conn), 30);
         assert!(object_exists(&conn, "table", "enrollments_legacy_v1"));
         assert!(object_exists(
             &conn,
@@ -470,7 +471,7 @@ mod migration_tests {
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 29);
+        assert_eq!(user_version(&conn), 30);
         let absent_score: f64 = conn
             .query_row("SELECT score FROM grades WHERE id = 'abs-bad'", [], |r| r.get(0))
             .unwrap();
@@ -479,5 +480,17 @@ mod migration_tests {
             .unwrap();
         assert_eq!(absent_score, 0.0);
         assert_eq!(present_score, 14.5);
+    }
+
+    #[test]
+    fn migration_30_seeds_comptable_role() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), 30);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM roles WHERE name = 'COMPTABLE'"),
+            1
+        );
     }
 }

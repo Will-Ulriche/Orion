@@ -7,6 +7,7 @@ import {
   Avatar, Badge, EmptyState, Field, Kpi, Loader, SearchInput, Select,
   TableShell, Td, Th, cx,
 } from '../components/ui';
+import { SCHOOL_ADMIN_ROLES } from '../lib/rbac';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -29,7 +30,7 @@ interface RecapStudentRow {
 }
 interface ClassNotesRecap { subjects: RecapSubjectColumn[]; students: RecapStudentRow[]; }
 
-const ADMIN_ROLES = ['DIRECTION', 'SECRETAIRE', 'SUPER_ADMIN'];
+const ADMIN_ROLES = SCHOOL_ADMIN_ROLES;
 
 function avgTone(avg: number | null | undefined) {
   if (avg === null || avg === undefined) return 'text-slate-300';
@@ -54,7 +55,8 @@ export default function RecapNotes() {
   const { selectedYear } = useYear();
   const yearId = selectedYear?.id ?? '';
 
-  const isTeacherOnly = rolesLoaded && roles.includes('PROFESSEUR') && !roles.some(r => ADMIN_ROLES.includes(r));
+  const isTeacherOnly = rolesLoaded && roles.includes('PROFESSEUR') && !roles.some(r => (ADMIN_ROLES as readonly string[]).includes(r))
+;
   const [staffId, setStaffId] = useState<string | null>(null);
   const [scopeReady, setScopeReady] = useState(false);
 

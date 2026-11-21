@@ -202,8 +202,7 @@ const fmtCoeff = (v: number): string => (Number.isInteger(v) ? String(v) : v.toF
 /**
  * Appréciation automatique selon la moyenne (barème du bulletin) :
  * < 10 Insuffisant · 10–11,99 Passable · 12–13,99 Assez bien · 14–15,99 Bien ·
- * 16–17,99 Très bien · 18–20 Excellent. La moyenne est arrondie à 2 décimales
- * avant classement pour rester cohérente avec l'affichage.
+ * 16–17,99 Très bien · 18–20 Excellent. L'appréciation suit l'affichage à 2 décimales.
  */
 export const appreciationFor = (v: number | null): string => {
   if (v === null || Number.isNaN(v)) return 'Insuffisant';

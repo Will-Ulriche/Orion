@@ -679,9 +679,12 @@ pub fn require_self_or_direction(
 ///
 /// Vérifie dans l'ordre :
 /// 1. L'appelant est authentifié (session active).
-/// 2. Si SUPER_ADMIN : accès global accordé immédiatement.
+/// 2. Si SUPER_ADMIN et que `SUPER_ADMIN` figure dans les rôles requis : accès plateforme.
 /// 3. Le school_id de la session correspond au school_id cible (isolation multi-école).
 /// 4. L'appelant possède au moins un des rôles requis.
+///
+/// Un SUPER_ADMIN n'hérite donc d'aucun rôle d'établissement : les commands
+/// pédagogiques, financières ou de secrétariat restent soumises aux rôles locaux.
 ///
 /// Retourne le SessionUser vérifié dont user_id sert de ecorded_by côté serveur.
 pub fn authorize(
@@ -690,7 +693,7 @@ pub fn authorize(
     roles: &[&str],
 ) -> Result<SessionUser, String> {
     let s = require_authenticated(conn)?;
-    if s.is_super_admin {
+    if s.is_super_admin && roles.iter().any(|role| *role == "SUPER_ADMIN") {
         return Ok(s);
     }
     if s.school_id != school_id {
@@ -813,6 +816,18 @@ mod tests {
         assert!(require_direction_or_super_admin(&conn, Some("school-B")).is_ok());
         assert!(require_direction_or_super_admin(&conn, None).is_ok());
         assert!(require_self_or_direction(&conn, "u-dir-a", Some("school-A")).is_ok());
+    }
+
+    #[test]
+    fn test_authorize_does_not_grant_school_roles_to_super_admin() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        establish_local_session(&conn, "u-sa", "school-A").unwrap();
+
+        assert!(authorize(&conn, "school-A", &["DIRECTION", "PROFESSEUR"]).is_err());
+        assert!(authorize(&conn, "school-B", &["DIRECTION"]).is_err());
+        assert!(authorize(&conn, "school-A", &["SUPER_ADMIN"]).is_ok());
+        assert!(authorize(&conn, "school-B", &["SUPER_ADMIN"]).is_ok());
     }
 
     #[test]

@@ -7,6 +7,7 @@ import {
   type BulletinData, type BulletinSubjectRow,
 } from '../lib/bulletinPdf';
 import type { ReceiptSchoolInfo } from '../lib/receiptPdf';
+import { competitionRanks } from '../lib/ranking';
 
 const deaccent = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 
@@ -84,15 +85,9 @@ export default function BulletinModal({
       .catch(() => {});
   }, [schoolId]);
 
-  // ── Classes de l'onglet (une seule sélectionnable) ─────────────────────────
-  const grouped = useMemo(() => {
-    const q = deaccent(query.trim()).toLowerCase();
-    const match = (r: BulletinStudentRow) =>
-      !q || deaccent(`${r.last_name ?? ''} ${r.first_name ?? ''} ${r.matricule ?? ''} ${r.class_name ?? ''}`)
-        .toLowerCase().includes(q);
+  const allGrouped = useMemo(() => {
     const byClass = new Map<string, BulletinStudentRow[]>();
     for (const row of students) {
-      if (!match(row)) continue;
       const key = row.class_name ?? 'Sans classe';
       const list = byClass.get(key);
       if (list) list.push(row);
@@ -102,11 +97,21 @@ export default function BulletinModal({
       .map(([cls, rows]) => [cls, [...rows].sort((a, b) =>
         (a.last_name ?? '').localeCompare(b.last_name ?? '', 'fr')
         || (a.first_name ?? '').localeCompare(b.first_name ?? '', 'fr'))] as const);
-  }, [students, query]);
+  }, [students]);
+
+  const grouped = useMemo(() => {
+    const q = deaccent(query.trim()).toLowerCase();
+    const match = (r: BulletinStudentRow) =>
+      !q || deaccent(`${r.last_name ?? ''} ${r.first_name ?? ''} ${r.matricule ?? ''} ${r.class_name ?? ''}`)
+        .toLowerCase().includes(q);
+    return allGrouped
+      .map(([cls, rows]) => [cls, rows.filter(match)] as const)
+      .filter(([, rows]) => rows.length > 0);
+  }, [allGrouped, query]);
 
   const classRows = useMemo(
-    () => grouped.find(([cls]) => cls === activeClass)?.[1] ?? [],
-    [grouped, activeClass],
+    () => allGrouped.find(([cls]) => cls === activeClass)?.[1] ?? [],
+    [allGrouped, activeClass],
   );
 
   const pickClass = (cls: string, rows: BulletinStudentRow[]) => {
@@ -253,12 +258,10 @@ export default function BulletinModal({
             }
           }
 
-          // Rang dans la matière : classement sur ces moyennes parmi les élèves évalués
           const means = classRows.map(row => ({
             id: row.student_id, mean: meanOf(byStudent.get(row.student_id)),
           }));
-          const sorted = means.filter(m => m.mean !== null).sort((a, b) => b.mean! - a.mean!);
-          const rankIdx = sorted.findIndex(m => m.id === selectedRow.student_id);
+          const subjectRanks = competitionRanks(means);
           const own = byStudent.get(selectedRow.student_id);
           const ownMean = meanOf(own);
 
@@ -269,7 +272,7 @@ export default function BulletinModal({
             devoir: own && own.d.length > 0 ? avg(own.d) : null,
             compo: own && own.c.length > 0 ? avg(own.c) : null,
             average: ownMean,
-            rank: ownMean !== null && rankIdx >= 0 ? rankIdx + 1 : null,
+            rank: ownMean !== null ? subjectRanks.get(selectedRow.student_id) ?? null : null,
             appreciation: ownMean !== null ? appreciationFor(ownMean) : '—',
           });
         }
@@ -280,19 +283,17 @@ export default function BulletinModal({
           const mean = cur && cur.totalCoefs > 0 ? cur.totalPoints / cur.totalCoefs : null;
           return { id: row.student_id, mean };
         });
-        const generalSorted = generalMeans
-          .filter(m => m.mean !== null)
-          .sort((a, b) => b.mean! - a.mean!);
-        const ownRankIdx = generalSorted.findIndex(m => m.id === selectedRow.student_id);
-        const generalAvgs = generalSorted.map(m => m.mean as number);
+        const generalValues = generalMeans
+          .map(m => m.mean)
+          .filter((m): m is number => m !== null);
         const ownMeanObj = generalMeans.find(m => m.id === selectedRow.student_id);
         const ownGeneralAvg = ownMeanObj?.mean ?? null;
 
-        const classAverage = generalAvgs.length > 0
-          ? generalAvgs.reduce((a, b) => a + b, 0) / generalAvgs.length
+        const classAverage = generalValues.length > 0
+          ? generalValues.reduce((a, b) => a + b, 0) / generalValues.length
           : null;
-        const bestAverage = generalAvgs.length > 0 ? generalAvgs[0] : null;
-        const worstAverage = generalAvgs.length > 0 ? generalAvgs[generalAvgs.length - 1] : null;
+        const bestAverage = generalValues.length > 0 ? Math.max(...generalValues) : null;
+        const worstAverage = generalValues.length > 0 ? Math.min(...generalValues) : null;
 
         const ownRanking = rankings.find(r => r.student_id === selectedRow.student_id);
 
@@ -305,7 +306,7 @@ export default function BulletinModal({
           yearName,
           subjects: subjectsRows,
           generalAverage: ownGeneralAvg,
-          rank: ownRanking?.rank ?? (ownGeneralAvg !== null && ownRankIdx >= 0 ? ownRankIdx + 1 : null),
+          rank: ownRanking?.rank ?? null,
           classSize: classRows.length,
           classAverage,
           bestAverage,

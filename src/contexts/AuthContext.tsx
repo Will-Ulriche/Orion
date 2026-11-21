@@ -72,12 +72,13 @@ export const SCHOOL_CHANGED_EVENT = 'orion:school-changed';
  */
 export async function resolveUserRolesOnline(
   supabaseClient: any,
-  userId: string
+  userId: string,
+  schoolId?: string | null
 ): Promise<{ roles: string[]; error: string | null }> {
   try {
     const { data, error } = await supabaseClient
       .from('user_roles')
-      .select('roles(name)')
+      .select('roles(name), school_id')
       .eq('user_id', userId);
 
     if (error) {
@@ -87,20 +88,26 @@ export async function resolveUserRolesOnline(
       };
     }
 
-    const candidates: unknown[] = [];
+    const expectedSchoolId = typeof schoolId === 'string' ? schoolId.trim() : '';
+    const candidates: string[] = [];
     for (const r of (data ?? []) as any[]) {
       const embedded = r?.roles;
-      if (Array.isArray(embedded)) {
-        candidates.push(...embedded.map((role: any) => role?.name));
-      } else {
-        candidates.push(embedded?.name);
+      const names: unknown[] = Array.isArray(embedded)
+        ? embedded.map((role: any) => role?.name)
+        : [embedded?.name];
+      const rowSchoolId = typeof r?.school_id === 'string' ? r.school_id : '';
+      for (const name of names) {
+        if (typeof name !== 'string') continue;
+        const roleName = name.trim().toUpperCase();
+        if (!roleName) continue;
+        const isGlobalRole = roleName === 'SUPER_ADMIN';
+        const isCurrentSchool =
+          expectedSchoolId.length > 0 && (rowSchoolId === '' || rowSchoolId === expectedSchoolId);
+        if (!isGlobalRole && !isCurrentSchool) continue;
+        candidates.push(roleName);
       }
     }
-    const roleNames = Array.from(new Set(
-      candidates
-        .filter((n: unknown): n is string => typeof n === 'string' && n.trim().length > 0)
-        .map((n: string) => n.trim())
-    ));
+    const roleNames = Array.from(new Set(candidates));
 
     if (roleNames.length === 0) {
       return {
@@ -130,7 +137,13 @@ export async function resolveUserRolesOffline(
   try {
     const userRoles = await invokeFn<string[]>('get_current_user_roles', { userId, schoolId });
     if (Array.isArray(userRoles) && userRoles.length > 0) {
-      return { roles: userRoles, error: null };
+      const normalized = Array.from(new Set(
+        userRoles
+          .filter((role: unknown): role is string => typeof role === 'string')
+          .map((role: string) => role.trim().toUpperCase())
+          .filter((role: string) => role.length > 0)
+      ));
+      if (normalized.length > 0) return { roles: normalized, error: null };
     }
     return {
       roles: [],
@@ -250,7 +263,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('orion_offline_session');
   };
 
-  // Ouvre l'espace direction d'un �tablissement (le SUPER_ADMIN "devient" la direction).
+  // Ouvre l'espace direction d'un �tablissement sans hériter des rôles locaux du SUPER_ADMIN.
   const enterSchoolMode = (nextSchoolId: string, nextSchoolName?: string | null) => {
     try {
       const current = getCurrentSchoolId();
@@ -327,7 +340,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       let effectiveRoles: string[] = [];
       if (isOnlineSession) {
-        const roleRes = await resolveUserRolesOnline(supabase, userSession.user.id);
+        try {
+          const { data: prof } = await supabase
+            .from('profiles')
+            .select('school_id, first_name, last_name, staff_id')
+            .eq('user_id', userSession.user.id)
+            .limit(1)
+            .maybeSingle();
+          if (prof) {
+            if ((prof as any)?.first_name) firstName = (prof as any).first_name;
+            if ((prof as any)?.last_name) lastName = (prof as any).last_name;
+            if ((prof as any)?.school_id) schoolId = (prof as any).school_id;
+            if ((prof as any)?.staff_id) staffId = (prof as any).staff_id;
+          }
+        } catch (profileErr) {
+          console.warn('Erreur profil cloud:', profileErr);
+        }
+
+        const roleRes = await resolveUserRolesOnline(supabase, userSession.user.id, schoolId);
         if (roleRes.error || roleRes.roles.length === 0) {
           setRoles([]);
           setRolesLoaded(true);
@@ -347,23 +377,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (isOnlineSession) {
-        try {
-          const { data: prof } = await supabase
-            .from('profiles')
-            .select('school_id, first_name, last_name, staff_id')
-            .eq('user_id', userSession.user.id)
-            .limit(1)
-            .maybeSingle();
-          if (prof) {
-            if ((prof as any)?.first_name) firstName = (prof as any).first_name;
-            if ((prof as any)?.last_name) lastName = (prof as any).last_name;
-            if ((prof as any)?.school_id) schoolId = (prof as any).school_id;
-            if ((prof as any)?.staff_id) staffId = (prof as any).staff_id;
-          }
-        } catch (profileErr) {
-          console.warn('Erreur profil cloud:', profileErr);
-        }
-
         if (schoolId) {
           try {
             const { data: sch } = await supabase

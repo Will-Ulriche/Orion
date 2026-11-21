@@ -9,6 +9,7 @@ import {
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useNetwork } from '../hooks/useNetwork';
+import { hasAnyRole, normalizeRoles, ROUTE_ROLES } from '../lib/rbac';
 import { useUpdater } from '../contexts/UpdateContext';
 import YearSelector from './YearSelector';
 import { listSchools, listLicenses, listDevices } from '../lib/superAdminApi';
@@ -16,33 +17,33 @@ import { listSchools, listLicenses, listDevices } from '../lib/superAdminApi';
 // Remplacement des icônes pour coller exactement au style "piqowallet" 
 // tout en gardant vos routes.
 const manageItems = [
-  { to: '/', icon: PieChart, label: 'Tableau de bord', roles: [] }, // Tous
-  { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ['DIRECTION', 'SECRETAIRE', 'COMPTABLE'] },
-  { to: '/archives', icon: Archive, label: 'Gestion Archives', roles: ['DIRECTION'] },
-  { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ['DIRECTION', 'SECRETAIRE'] },
-  { to: '/finances', icon: Coins, label: 'Gestion des finances', roles: ['DIRECTION', 'COMPTABLE'] },
-  { to: '/personnel', icon: UserCog, label: 'Gestion du personnel', roles: ['DIRECTION'] },
-  { to: '/bibliotheque', icon: School, label: 'Bibliothèque', roles: ['DIRECTION', 'SECRETAIRE'] },
-  { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Examens', roles: ['DIRECTION', 'SECRETAIRE', 'PROFESSEUR'] },
-  { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ['PROFESSEUR'] },
+  { to: '/', icon: PieChart, label: 'Tableau de bord', roles: [] as readonly string[] }, // Tous
+  { to: '/students', icon: Users, label: 'Élèves & Inscriptions', roles: ROUTE_ROLES['/students'] },
+  { to: '/archives', icon: Archive, label: 'Gestion Archives', roles: ROUTE_ROLES['/archives'] },
+  { to: '/classes', icon: GraduationCap, label: 'Gestion des classes', roles: ROUTE_ROLES['/classes'] },
+  { to: '/finances', icon: Coins, label: 'Gestion des finances', roles: ROUTE_ROLES['/finances'] },
+  { to: '/personnel', icon: UserCog, label: 'Gestion du personnel', roles: ROUTE_ROLES['/personnel'] },
+  { to: '/bibliotheque', icon: School, label: 'Bibliothèque', roles: ROUTE_ROLES['/bibliotheque'] },
+  { to: '/pedagogie', icon: BookOpen, label: 'Pédagogie & Examens', roles: ROUTE_ROLES['/pedagogie'] },
+  { to: '/recap-notes', icon: ClipboardList, label: 'Récap des notes', roles: ROUTE_ROLES['/recap-notes'] },
 ];
 
 const settingsItems = [
-  { to: '/prise-en-main', icon: Rocket, label: 'Prise en main', roles: ['DIRECTION'] },
-  { to: '/sync', icon: RefreshCw, label: 'Synchronisation', roles: ['DIRECTION'] },
-  { to: '/security', icon: Shield, label: 'Sécurité', roles: ['DIRECTION'] },
-  { to: '/settings', icon: Settings, label: "Paramètres", roles: ['DIRECTION'] },
+  { to: '/prise-en-main', icon: Rocket, label: 'Prise en main', roles: ROUTE_ROLES['/prise-en-main'] },
+  { to: '/sync', icon: RefreshCw, label: 'Synchronisation', roles: ROUTE_ROLES['/sync'] },
+  { to: '/security', icon: Shield, label: 'Sécurité', roles: ROUTE_ROLES['/security'] },
+  { to: '/settings', icon: Settings, label: "Paramètres", roles: ROUTE_ROLES['/settings'] },
 ];
 
 // Menu dédié au SUPER_ADMIN : école de base + licences (gérés dans le cloud).
 const superAdminItems = [
-  { to: '/super-admin',          icon: LayoutDashboard,    label: 'Vue globale',        roles: ['SUPER_ADMIN'], end: true },
-  { to: '/super-admin/ecoles',   icon: Building2,          label: 'Établissements',     roles: ['SUPER_ADMIN'] },
-  { to: '/super-admin/comptes',  icon: KeyRound,           label: 'Identifiants & Accès', roles: ['SUPER_ADMIN'] },
-  { to: '/super-admin/licences', icon: Shield,             label: 'Licences',           roles: ['SUPER_ADMIN'] },
-  { to: '/super-admin/appareils',icon: MonitorSmartphone,  label: 'Appareils',          roles: ['SUPER_ADMIN'] },
-  { to: '/super-admin/stats',    icon: BarChart2,          label: 'Statistiques',       roles: ['SUPER_ADMIN'] },
-  { to: '/super-admin/export',   icon: FileSpreadsheet,    label: 'Export Excel',       roles: ['SUPER_ADMIN'] },
+  { to: '/super-admin',          icon: LayoutDashboard,    label: 'Vue globale',         roles: ROUTE_ROLES['/super-admin'], end: true },
+  { to: '/super-admin/ecoles',   icon: Building2,          label: 'Établissements',      roles: ROUTE_ROLES['/super-admin/ecoles'] },
+  { to: '/super-admin/comptes',  icon: KeyRound,           label: 'Identifiants & Accès', roles: ROUTE_ROLES['/super-admin/comptes'] },
+  { to: '/super-admin/licences', icon: Shield,             label: 'Licences',            roles: ROUTE_ROLES['/super-admin/licences'] },
+  { to: '/super-admin/appareils',icon: MonitorSmartphone,  label: 'Appareils',           roles: ROUTE_ROLES['/super-admin/appareils'] },
+  { to: '/super-admin/stats',    icon: BarChart2,          label: 'Statistiques',        roles: ROUTE_ROLES['/super-admin/stats'] },
+  { to: '/super-admin/export',   icon: FileSpreadsheet,    label: 'Export Excel',        roles: ROUTE_ROLES['/super-admin/export'] },
 ];
 
 export default function Sidebar() {
@@ -100,19 +101,19 @@ export default function Sidebar() {
   const displayName = user?.email?.split('@')[0] ?? 'Direction';
   const email = user?.email ?? 'direction@orion.com';
 
-  const hasAccess = (itemRoles: string[]) => {
+  const hasAccess = (itemRoles: readonly string[]) => {
     // Items sans restriction de rôle → toujours visibles
     if (itemRoles.length === 0) return true;
     // Tant que les rôles ne sont pas chargés, on masque les items restreints
     // (évite le flash de "Récap des notes" visible par la DIRECTION au chargement)
     if (!rolesLoaded) return false;
-    return roles.some(r => itemRoles.includes(r) || r === 'SUPER_ADMIN');
+    return hasAnyRole(normalizeRoles(roles), itemRoles);
   };
 
-  // Le SUPER_ADMIN dispose d'un espace dédié (écoles + licences, gérés dans le cloud).
-  // Sauf lorsqu'il visite l'espace d'un établissement : là, il voit l'interface
-  // exactement comme la direction de cet établissement.
-  const isSuperAdmin = rolesLoaded && roles.includes('SUPER_ADMIN') && !inSchoolMode;
+  // Le SUPER_ADMIN dispose uniquement de son espace cloud (écoles + licences).
+  // Même en mode visite d'un établissement, il n'hérite pas des droits locaux
+  // d'administration pédagogique ou de direction.
+  const isSuperAdmin = rolesLoaded && normalizeRoles(roles).includes('SUPER_ADMIN') && !inSchoolMode;
 
   // Préchargement passif du cache en tâche de fond pour une réactivité instantanée à chaque clic
   useEffect(() => {
