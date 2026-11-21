@@ -1830,12 +1830,208 @@ fn transfer_class_within_year_conn(
     Ok(())
 }
 
-// ──────────────────────────────────────────────
-// COMMANDE : Synchroniser l'utilisateur Supabase en local
-// ──────────────────────────────────────────────
+struct SyncLocalUserInput<'a> {
+    token: Option<&'a str>,
+    user_id: &'a str,
+    school_id: &'a str,
+    school_name: &'a str,
+    first_name: Option<&'a str>,
+    last_name: Option<&'a str>,
+    staff_id: Option<&'a str>,
+    role_name: Option<&'a str>,
+    short_name: Option<&'a str>,
+    address: Option<&'a str>,
+    city: Option<&'a str>,
+    country: Option<&'a str>,
+    phone_primary: Option<&'a str>,
+    phone_secondary: Option<&'a str>,
+    school_email: Option<&'a str>,
+    website: Option<&'a str>,
+    currency: Option<&'a str>,
+    timezone: Option<&'a str>,
+    logo_url: Option<&'a str>,
+}
+
+fn clean_sync_optional(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+fn sync_local_user_conn(
+    conn: &mut rusqlite::Connection,
+    input: &SyncLocalUserInput<'_>,
+) -> Result<(), String> {
+    let token = clean_sync_optional(input.token).ok_or_else(|| {
+        "Synchronisation locale refusée : jeton cloud vérifié absent.".to_string()
+    })?;
+    let verified_token = crate::sync::current_sync_access_token().ok_or_else(|| {
+        "Synchronisation locale refusée : jeton cloud vérifié absent.".to_string()
+    })?;
+    if verified_token.as_str() != token {
+        return Err("Synchronisation locale refusée : le jeton fourni n'est pas une session cloud vérifiée.".to_string());
+    }
+
+    let session = crate::auth_guard::require_authenticated(conn)?;
+    let _ = input.role_name;
+
+    let provided_user_id = input.user_id.trim();
+    if !provided_user_id.is_empty() && provided_user_id != session.user_id {
+        return Err("Usurpation d'identité détectée : l'identifiant utilisateur ne correspond pas à la session vérifiée.".to_string());
+    }
+
+    let provided_school_id = input.school_id.trim();
+    if !provided_school_id.is_empty() && provided_school_id != session.school_id {
+        return Err(
+            "Accès refusé : l'établissement fourni ne correspond pas à la session vérifiée."
+                .to_string(),
+        );
+    }
+
+    let effective_email = session
+        .email
+        .clone()
+        .ok_or_else(|| "Adresse e-mail de session indisponible.".to_string())?;
+    let effective_school_id = session.school_id.clone();
+    let effective_user_id = session.user_id.clone();
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Impossible de démarrer la transaction SQLite : {}", e))?;
+
+    tx.execute(
+        "INSERT INTO schools (id, name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone, logo_url)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(id) DO UPDATE SET
+            name = CASE
+                     WHEN TRIM(COALESCE(excluded.name, '')) <> ''
+                          AND excluded.name NOT IN ('École', 'Établissement', 'Établissement Principal')
+                     THEN excluded.name
+                     ELSE schools.name END,
+            short_name      = COALESCE(NULLIF(TRIM(COALESCE(excluded.short_name, '')), ''), schools.short_name),
+            address         = COALESCE(NULLIF(TRIM(COALESCE(excluded.address, '')), ''), schools.address),
+            city            = COALESCE(NULLIF(TRIM(COALESCE(excluded.city, '')), ''), schools.city),
+            country         = COALESCE(NULLIF(TRIM(COALESCE(excluded.country, '')), ''), schools.country),
+            phone_primary   = COALESCE(NULLIF(TRIM(COALESCE(excluded.phone_primary, '')), ''), schools.phone_primary),
+            phone_secondary = COALESCE(NULLIF(TRIM(COALESCE(excluded.phone_secondary, '')), ''), schools.phone_secondary),
+            email           = COALESCE(NULLIF(TRIM(COALESCE(excluded.email, '')), ''), schools.email),
+            website         = COALESCE(NULLIF(TRIM(COALESCE(excluded.website, '')), ''), schools.website),
+            currency        = COALESCE(NULLIF(TRIM(COALESCE(excluded.currency, '')), ''), schools.currency),
+            timezone        = COALESCE(NULLIF(TRIM(COALESCE(excluded.timezone, '')), ''), schools.timezone),
+            logo_url        = COALESCE(NULLIF(TRIM(COALESCE(excluded.logo_url, '')), ''), schools.logo_url)",
+        rusqlite::params![
+            effective_school_id, input.school_name, input.short_name, input.address, input.city,
+            input.country, input.phone_primary, input.phone_secondary, input.school_email,
+            input.website, input.currency, input.timezone, input.logo_url
+        ],
+    ).map_err(|e| format!("Erreur sync école: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?2, 'ACTIVE')
+         ON CONFLICT(id) DO UPDATE SET email = excluded.email,
+             username = COALESCE(users.username, excluded.username)",
+        rusqlite::params![effective_user_id, effective_email],
+    )
+    .map_err(|e| format!("Erreur sync utilisateur: {}", e))?;
+
+    let existing_profile: Option<String> = tx
+        .query_row(
+            "SELECT id FROM profiles
+          WHERE user_id = ?1 AND school_id = ?2 AND deleted_at IS NULL
+          LIMIT 1",
+            rusqlite::params![effective_user_id, effective_school_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Erreur lecture profil: {}", e))?;
+
+    let is_direction = session
+        .roles
+        .iter()
+        .any(|role| role.eq_ignore_ascii_case("DIRECTION"));
+
+    let requested_staff_id = clean_sync_optional(input.staff_id);
+    let requested_staff_valid = match requested_staff_id {
+        Some(staff_id) => {
+            tx.query_row(
+                "SELECT COUNT(*) FROM staff WHERE id = ?1 AND school_id = ?2",
+                rusqlite::params![staff_id, effective_school_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+                > 0
+        }
+        None => false,
+    };
+
+    let resolved_staff_id = if requested_staff_valid {
+        requested_staff_id.map(str::to_string)
+    } else {
+        let by_email: Option<String> = tx
+            .query_row(
+                "SELECT id FROM staff
+              WHERE school_id = ?1 AND email IS NOT NULL
+                AND lower(email) = lower(?2)
+              LIMIT 1",
+                rusqlite::params![effective_school_id, effective_email],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("Erreur recherche personnel: {}", e))?;
+
+        if by_email.is_some() || !is_direction {
+            by_email
+        } else {
+            tx.query_row(
+                "SELECT id FROM staff
+                  WHERE school_id = ?1 AND matricule LIKE '%-P-0001'
+                  ORDER BY matricule
+                  LIMIT 1",
+                rusqlite::params![effective_school_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("Erreur recherche responsable: {}", e))?
+        }
+    };
+
+    let f_name = clean_sync_optional(input.first_name)
+        .unwrap_or("Direction")
+        .to_string();
+    let l_name = clean_sync_optional(input.last_name)
+        .unwrap_or("Établissement")
+        .to_string();
+
+    match existing_profile {
+        Some(profile_id) => {
+            tx.execute(
+                "UPDATE profiles
+                    SET first_name = COALESCE(?1, first_name),
+                        last_name  = COALESCE(?2, last_name),
+                        staff_id   = COALESCE(?3, staff_id),
+                        updated_at = CURRENT_TIMESTAMP
+                  WHERE id = ?4",
+                rusqlite::params![f_name, l_name, resolved_staff_id, profile_id],
+            )
+            .map_err(|e| format!("Erreur sync profil: {}", e))?;
+        }
+        None => {
+            let profile_id = format!("prof-{}", effective_user_id);
+            tx.execute(
+                "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, staff_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                rusqlite::params![profile_id, effective_user_id, effective_school_id, f_name, l_name, resolved_staff_id],
+            ).map_err(|e| format!("Erreur création profil: {}", e))?;
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| format!("Erreur validation synchronisation locale : {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn sync_local_user(
+    token: Option<String>,
     user_id: String,
     email: String,
     school_id: String,
@@ -1857,119 +2053,35 @@ pub fn sync_local_user(
     logo_url: Option<String>,
     state: State<'_, DbState>,
 ) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let _ = email;
 
-    // Upsert établissement — les informations saisies par le super-administrateur
-    // dans le cloud sont rapatriées localement, afin que la direction les
-    // retrouve dans « Paramètres » sans les ressaisir (source de vérité unique).
-    // - Le nom n'écrase un libellé local que s'il n'est pas un placeholder.
-    // - Les autres champs priment lorsqu'ils sont renseignés dans le cloud,
-    //   sinon la valeur locale (éditée par la direction) est conservée.
-    conn.execute(
-        "INSERT INTO schools (id, name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone, logo_url)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(id) DO UPDATE SET
-            name = CASE
-                     WHEN TRIM(COALESCE(excluded.name, '')) <> ''
-                          AND excluded.name NOT IN ('École', 'Établissement', 'Établissement Principal')
-                     THEN excluded.name
-                     ELSE schools.name END,
-            short_name      = COALESCE(NULLIF(TRIM(COALESCE(excluded.short_name, '')), ''), schools.short_name),
-            address         = COALESCE(NULLIF(TRIM(COALESCE(excluded.address, '')), ''), schools.address),
-            city            = COALESCE(NULLIF(TRIM(COALESCE(excluded.city, '')), ''), schools.city),
-            country         = COALESCE(NULLIF(TRIM(COALESCE(excluded.country, '')), ''), schools.country),
-            phone_primary   = COALESCE(NULLIF(TRIM(COALESCE(excluded.phone_primary, '')), ''), schools.phone_primary),
-            phone_secondary = COALESCE(NULLIF(TRIM(COALESCE(excluded.phone_secondary, '')), ''), schools.phone_secondary),
-            email           = COALESCE(NULLIF(TRIM(COALESCE(excluded.email, '')), ''), schools.email),
-            website         = COALESCE(NULLIF(TRIM(COALESCE(excluded.website, '')), ''), schools.website),
-            currency        = COALESCE(NULLIF(TRIM(COALESCE(excluded.currency, '')), ''), schools.currency),
-            timezone        = COALESCE(NULLIF(TRIM(COALESCE(excluded.timezone, '')), ''), schools.timezone),
-            logo_url        = COALESCE(NULLIF(TRIM(COALESCE(excluded.logo_url, '')), ''), schools.logo_url)",
-        rusqlite::params![
-            school_id, school_name, short_name, address, city, country,
-            phone_primary, phone_secondary, school_email, website, currency, timezone, logo_url
-        ],
-    ).map_err(|e| format!("Erreur sync école: {}", e))?;
-
-    // Upsert user — le nom d'utilisateur par défaut reprend l'email pour
-    // permettre au compte cloud de se reconnecter localement.
-    conn.execute(
-        "INSERT INTO users (id, email, username) VALUES (?1, ?2, ?2)
-         ON CONFLICT(id) DO UPDATE SET email = excluded.email,
-             username = COALESCE(users.username, excluded.username)",
-        rusqlite::params![user_id, email],
-    ).map_err(|e| format!("Erreur sync utilisateur: {}", e))?;
-
-    // Upsert profil (nécessaire pour que l'utilisateur apparaisse dans la
-    // sélection de compte et la gestion des PIN côté interface locale).
-    let existing_profile: Option<String> = conn.query_row(
-        "SELECT id FROM profiles
-          WHERE user_id = ?1 AND school_id = ?2 AND deleted_at IS NULL
-          LIMIT 1",
-        rusqlite::params![user_id, school_id],
-        |row| row.get(0),
-    ).ok();
-
-    // Si le profil cloud ne porte pas encore de staff_id (migration non
-    // appliquée ou compte ancien), on rapproche par email au sein de l'école.
-    // Pour un compte DIRECTION dont l'email de connexion diffère de celui du
-    // personnel, on rattache la fiche du responsable (matricule *-P-0001).
-    let resolved_staff_id: Option<String> = match staff_id.as_deref() {
-        Some(s) if !s.trim().is_empty() => staff_id.clone(),
-        _ => {
-            let by_email: Option<String> = conn.query_row(
-                "SELECT id FROM staff
-                  WHERE school_id = ?1 AND email IS NOT NULL
-                    AND lower(email) = lower(?2)
-                  LIMIT 1",
-                rusqlite::params![school_id, email],
-                |row| row.get(0),
-            ).ok();
-            if by_email.is_some() || !role_name.as_deref().unwrap_or("").eq_ignore_ascii_case("DIRECTION") {
-                by_email
-            } else {
-                conn.query_row(
-                    "SELECT id FROM staff
-                      WHERE school_id = ?1 AND matricule LIKE '%-P-0001'
-                      ORDER BY matricule
-                      LIMIT 1",
-                    rusqlite::params![school_id],
-                    |row| row.get(0),
-                ).ok()
-            }
-        }
+    let input = SyncLocalUserInput {
+        token: token.as_deref(),
+        user_id: &user_id,
+        school_id: &school_id,
+        school_name: &school_name,
+        first_name: first_name.as_deref(),
+        last_name: last_name.as_deref(),
+        staff_id: staff_id.as_deref(),
+        role_name: role_name.as_deref(),
+        short_name: short_name.as_deref(),
+        address: address.as_deref(),
+        city: city.as_deref(),
+        country: country.as_deref(),
+        phone_primary: phone_primary.as_deref(),
+        phone_secondary: phone_secondary.as_deref(),
+        school_email: school_email.as_deref(),
+        website: website.as_deref(),
+        currency: currency.as_deref(),
+        timezone: timezone.as_deref(),
+        logo_url: logo_url.as_deref(),
     };
 
-    let f_name = first_name
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "Direction".to_string());
-    let l_name = last_name
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "Établissement".to_string());
-
-    match existing_profile {
-        Some(profile_id) => {
-            conn.execute(
-                "UPDATE profiles
-                    SET first_name = COALESCE(?1, first_name),
-                        last_name  = COALESCE(?2, last_name),
-                        staff_id   = COALESCE(?3, staff_id),
-                        updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ?4",
-                rusqlite::params![f_name, l_name, resolved_staff_id, profile_id],
-            ).map_err(|e| format!("Erreur sync profil: {}", e))?;
-        }
-        None => {
-            let profile_id = format!("prof-{}", user_id);
-            conn.execute(
-                "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, staff_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                rusqlite::params![profile_id, user_id, school_id, f_name, l_name, resolved_staff_id],
-            ).map_err(|e| format!("Erreur création profil: {}", e))?;
-        }
-    }
-
-    Ok(())
+    sync_local_user_conn(&mut conn, &input)
 }
 
 // ──────────────────────────────────────────────
@@ -8721,5 +8833,289 @@ mod auth_tests {
         );
 
         crate::auth_guard::clear_session();
+    }
+}
+
+#[cfg(test)]
+mod sync_local_user_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    const TOKEN: &str = "verified-user-token";
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO schools (id, name) VALUES
+                 ('school-1', 'École Alpha'),
+                 ('school-2', 'École Bêta');
+             INSERT INTO users (id, email, status) VALUES
+                 ('user-1', 'user@orion.test', 'ACTIVE');
+             INSERT INTO profiles (id, user_id, school_id, first_name, last_name) VALUES
+                 ('profile-user-1', 'user-1', 'school-1', 'Ancien', 'Profil');
+             INSERT INTO staff (id, school_id, matricule, nom, prenoms, email, created_at, updated_at) VALUES
+                 ('staff-dir', 'school-1', 'ABC-P-0001', 'Responsable', 'École', 'direction@orion.test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                 ('staff-other', 'school-1', 'ABC-P-0002', 'Autre', 'Personne', 'autre@orion.test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                 ('staff-school2', 'school-2', 'XYZ-P-0001', 'Autre école', 'Personne', 'autre2@orion.test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);"
+        )
+        .unwrap();
+        conn
+    }
+
+    fn grant(conn: &Connection, role: &str) {
+        let role_id: String = conn
+            .query_row(
+                "SELECT id FROM roles WHERE name = ?1",
+                rusqlite::params![role],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, 'user-1', 'school-1', ?2)",
+            rusqlite::params![format!("ur-{role}"), role_id],
+        )
+        .unwrap();
+    }
+
+    fn start_session(conn: &Connection) {
+        crate::auth_guard::clear_session();
+        crate::auth_guard::establish_local_session(conn, "user-1", "school-1").unwrap();
+    }
+
+    fn input<'a>(
+        token: &'a str,
+        user_id: &'a str,
+        school_id: &'a str,
+        staff_id: Option<&'a str>,
+        role_name: Option<&'a str>,
+    ) -> SyncLocalUserInput<'a> {
+        SyncLocalUserInput {
+            token: Some(token),
+            user_id,
+            school_id,
+            school_name: "École Alpha Modifiée",
+            first_name: Some("Nouveau"),
+            last_name: Some("Nom"),
+            staff_id,
+            role_name,
+            short_name: Some("ALPHA"),
+            address: Some("1 rue de l'École"),
+            city: Some("Ville"),
+            country: Some("Pays"),
+            phone_primary: None,
+            phone_secondary: None,
+            school_email: Some("contact@orion.test"),
+            website: None,
+            currency: Some("XOF"),
+            timezone: Some("UTC"),
+            logo_url: None,
+        }
+    }
+
+    fn profile_state(conn: &Connection) -> (String, String, Option<String>) {
+        conn.query_row(
+            "SELECT first_name, last_name, staff_id FROM profiles WHERE user_id = 'user-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    fn school_exists(conn: &Connection, school_id: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM schools WHERE id = ?1",
+            rusqlite::params![school_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    fn cleanup() {
+        crate::sync::set_sync_access_token(None);
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_valid_user_is_synced_with_session_identity() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_db();
+        grant(&conn, "DIRECTION");
+        start_session(&conn);
+        crate::sync::set_sync_access_token(Some(TOKEN.to_string()));
+
+        let data = input(
+            TOKEN,
+            "user-1",
+            "school-1",
+            Some("staff-other"),
+            Some("DIRECTION"),
+        );
+        sync_local_user_conn(&mut conn, &data).unwrap();
+
+        let (first_name, last_name, staff_id): (String, String, Option<String>) =
+            profile_state(&conn);
+        assert_eq!(first_name, "Nouveau");
+        assert_eq!(last_name, "Nom");
+        assert_eq!(staff_id.as_deref(), Some("staff-other"));
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM schools WHERE id = 'school-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "École Alpha Modifiée");
+        cleanup();
+    }
+
+    #[test]
+    fn test_invalid_or_expired_jwt_is_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_db();
+        grant(&conn, "DIRECTION");
+        start_session(&conn);
+        crate::sync::set_sync_access_token(Some(TOKEN.to_string()));
+
+        let data = input(
+            "expired-or-forged",
+            "user-1",
+            "school-1",
+            None,
+            Some("DIRECTION"),
+        );
+        let err = sync_local_user_conn(&mut conn, &data).unwrap_err();
+        assert!(err.contains("jeton fourni"), "erreur inattendue: {err}");
+        assert_eq!(profile_state(&conn).0, "Ancien");
+        cleanup();
+    }
+
+    #[test]
+    fn test_nonexistent_user_cannot_be_created_from_client_payload() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_db();
+        crate::sync::set_sync_access_token(Some(TOKEN.to_string()));
+        crate::auth_guard::clear_session();
+
+        let data = input(TOKEN, "ghost-user", "school-1", None, None);
+        let err = sync_local_user_conn(&mut conn, &data).unwrap_err();
+        assert!(err.contains("Non authentifié"), "erreur inattendue: {err}");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE id = 'ghost-user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        cleanup();
+    }
+
+    #[test]
+    fn test_wrong_school_is_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_db();
+        grant(&conn, "DIRECTION");
+        start_session(&conn);
+        crate::sync::set_sync_access_token(Some(TOKEN.to_string()));
+
+        let data = input(TOKEN, "user-1", "school-evil", None, Some("DIRECTION"));
+        let err = sync_local_user_conn(&mut conn, &data).unwrap_err();
+        assert!(
+            err.contains("établissement fourni"),
+            "erreur inattendue: {err}"
+        );
+        assert!(!school_exists(&conn, "school-evil"));
+        assert_eq!(profile_state(&conn).0, "Ancien");
+        cleanup();
+    }
+
+    #[test]
+    fn test_role_change_attempt_is_ignored() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_db();
+        grant(&conn, "DIRECTION");
+        start_session(&conn);
+        crate::sync::set_sync_access_token(Some(TOKEN.to_string()));
+
+        let data = input(TOKEN, "user-1", "school-1", None, Some("SUPER_ADMIN"));
+        sync_local_user_conn(&mut conn, &data).unwrap();
+
+        let super_admin_links: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_roles ur JOIN roles r ON ur.role_id = r.id
+                 WHERE ur.user_id = 'user-1' AND r.name = 'SUPER_ADMIN'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(super_admin_links, 0);
+        assert_eq!(profile_state(&conn).2.as_deref(), Some("staff-dir"));
+        cleanup();
+    }
+
+    #[test]
+    fn test_inconsistent_client_identity_is_rejected() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_db();
+        grant(&conn, "DIRECTION");
+        start_session(&conn);
+        crate::sync::set_sync_access_token(Some(TOKEN.to_string()));
+
+        let data = input(TOKEN, "another-user", "school-1", None, Some("DIRECTION"));
+        let err = sync_local_user_conn(&mut conn, &data).unwrap_err();
+        assert!(
+            err.contains("Usurpation d'identité"),
+            "erreur inattendue: {err}"
+        );
+        assert_eq!(profile_state(&conn).0, "Ancien");
+        cleanup();
+    }
+
+    #[test]
+    fn test_connection_loss_preserves_local_account() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_db();
+        grant(&conn, "DIRECTION");
+        start_session(&conn);
+        crate::sync::set_sync_access_token(None);
+
+        let data = input(
+            TOKEN,
+            "user-1",
+            "school-1",
+            Some("staff-other"),
+            Some("DIRECTION"),
+        );
+        let err = sync_local_user_conn(&mut conn, &data).unwrap_err();
+        assert!(
+            err.contains("jeton cloud vérifié absent"),
+            "erreur inattendue: {err}"
+        );
+        assert_eq!(
+            profile_state(&conn),
+            ("Ancien".to_string(), "Profil".to_string(), None)
+        );
+        cleanup();
+    }
+
+    #[test]
+    fn test_reconnect_syncs_only_after_fresh_verified_session() {
+        let _guard = crate::auth_guard::lock_test_session();
+        let mut conn = setup_db();
+        grant(&conn, "DIRECTION");
+        crate::sync::set_sync_access_token(None);
+        crate::auth_guard::clear_session();
+
+        let data = input(TOKEN, "user-1", "school-1", None, Some("DIRECTION"));
+        assert!(sync_local_user_conn(&mut conn, &data).is_err());
+
+        start_session(&conn);
+        crate::sync::set_sync_access_token(Some(TOKEN.to_string()));
+        sync_local_user_conn(&mut conn, &data).unwrap();
+
+        assert_eq!(profile_state(&conn).0, "Nouveau");
+        cleanup();
     }
 }

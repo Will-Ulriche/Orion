@@ -23,7 +23,7 @@ test('Moteur Offline-First : Déclenche une synchronisation initiale après auth
 
   // Vérifie l'appel effectif après validation du compte et des rôles
   assert.ok(
-    authContextSource.includes("void triggerInitialOrReconnectedSync(userSession.access_token);"),
+    /void triggerInitialOrReconnectedSync\((userSession\.access_token|accessToken)\);/.test(authContextSource),
     "AuthContext doit déclencher la synchronisation initiale après l'authentification en ligne réussie"
   );
 });

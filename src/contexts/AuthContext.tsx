@@ -312,84 +312,118 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const syncUserToLocalDb = async (userSession: Session | null) => {
-    if (userSession?.user) {
-      const userMeta = (userSession.user.user_metadata as any) || {};
-      let schoolId = userMeta.school_id || localStorage.getItem('current_school_id') || '';
-      let schoolName = 'Établissement';
-      let firstName: string = userMeta.first_name || '';
-      let lastName: string = userMeta.last_name || '';
-      let staffId: string | null = null;
-      let school: any = null;
+    if (!userSession?.user) return;
 
-      try {
-        // Déterminer les rôles effectifs de façon fiable (jamais de user_metadata.role ni de fallback DIRECTION)
-        let effectiveRoles: string[] = [];
-        if (userSession.access_token !== 'offline') {
-          const roleRes = await resolveUserRolesOnline(supabase, userSession.user.id);
-          if (roleRes.error || roleRes.roles.length === 0) {
-            setRoles([]);
-            setRolesLoaded(true);
-            setAuthError(roleRes.error || "Aucun rôle valide attribué à ce compte. Privilèges bloqués.");
-            return;
-          }
-          effectiveRoles = roleRes.roles;
-        } else {
-          const offlineRes = await resolveUserRolesOffline(invoke, userSession.user.id, schoolId || 'school-main');
-          if (offlineRes.error || offlineRes.roles.length === 0) {
-            setRoles([]);
-            setRolesLoaded(true);
-            setAuthError(offlineRes.error || "Aucun rôle enregistré localement. Privilèges bloqués.");
-            return;
-          }
-          effectiveRoles = offlineRes.roles;
+    const accessToken = userSession.access_token;
+    const isOnlineSession = !!accessToken && accessToken !== 'offline';
+    const userMeta = (userSession.user.user_metadata as any) || {};
+    let schoolId = userMeta.school_id || localStorage.getItem('current_school_id') || '';
+    let schoolName = 'Établissement';
+    let firstName: string = userMeta.first_name || '';
+    let lastName: string = userMeta.last_name || '';
+    let staffId: string | null = null;
+    let school: any = null;
+
+    try {
+      let effectiveRoles: string[] = [];
+      if (isOnlineSession) {
+        const roleRes = await resolveUserRolesOnline(supabase, userSession.user.id);
+        if (roleRes.error || roleRes.roles.length === 0) {
+          setRoles([]);
+          setRolesLoaded(true);
+          setAuthError(roleRes.error || "Aucun rôle valide attribué à ce compte. Privilèges bloqués.");
+          return;
         }
+        effectiveRoles = roleRes.roles;
+      } else {
+        const offlineRes = await resolveUserRolesOffline(invoke, userSession.user.id, schoolId || 'school-main');
+        if (offlineRes.error || offlineRes.roles.length === 0) {
+          setRoles([]);
+          setRolesLoaded(true);
+          setAuthError(offlineRes.error || "Aucun rôle enregistré localement. Privilèges bloqués.");
+          return;
+        }
+        effectiveRoles = offlineRes.roles;
+      }
 
-        // Si connecté en ligne, tenter de récupérer l'établissement et profil cloud.
-        if (userSession.access_token !== 'offline') {
-          try {
-            const { data: prof } = await supabase
-              .from('profiles')
-              .select('school_id, first_name, last_name, staff_id')
-              .eq('user_id', userSession.user.id)
-              .limit(1)
-              .maybeSingle();
-            if (prof) {
-              if ((prof as any)?.first_name) firstName = (prof as any).first_name;
-              if ((prof as any)?.last_name) lastName = (prof as any).last_name;
-              if ((prof as any)?.school_id) schoolId = (prof as any).school_id;
-              if ((prof as any)?.staff_id) staffId = (prof as any).staff_id;
-            }
-          } catch (profileErr) {
-            console.warn('Erreur profil cloud:', profileErr);
+      if (isOnlineSession) {
+        try {
+          const { data: prof } = await supabase
+            .from('profiles')
+            .select('school_id, first_name, last_name, staff_id')
+            .eq('user_id', userSession.user.id)
+            .limit(1)
+            .maybeSingle();
+          if (prof) {
+            if ((prof as any)?.first_name) firstName = (prof as any).first_name;
+            if ((prof as any)?.last_name) lastName = (prof as any).last_name;
+            if ((prof as any)?.school_id) schoolId = (prof as any).school_id;
+            if ((prof as any)?.staff_id) staffId = (prof as any).staff_id;
           }
-
-          if (schoolId) {
-            try {
-              const { data: sch } = await supabase
-                .from('schools')
-                .select('name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone, logo_url')
-                .eq('id', schoolId)
-                .maybeSingle();
-              if (sch) {
-                school = sch;
-                if ((sch as any).name) schoolName = (sch as any).name;
-              }
-            } catch (schoolErr) {
-              console.warn('Erreur lecture établissement cloud:', schoolErr);
-            }
-          }
+        } catch (profileErr) {
+          console.warn('Erreur profil cloud:', profileErr);
         }
 
         if (schoolId) {
-          localStorage.setItem('current_school_id', schoolId);
-          setSchoolId(schoolId);
+          try {
+            const { data: sch } = await supabase
+              .from('schools')
+              .select('name, short_name, address, city, country, phone_primary, phone_secondary, email, website, currency, timezone, logo_url')
+              .eq('id', schoolId)
+              .maybeSingle();
+            if (sch) {
+              school = sch;
+              if ((sch as any).name) schoolName = (sch as any).name;
+            }
+          } catch (schoolErr) {
+            console.warn('Erreur lecture établissement cloud:', schoolErr);
+          }
         }
+      }
 
-        // Synchroniser l'utilisateur localement
+      schoolId = schoolId || 'school-main';
+      localStorage.setItem('current_school_id', schoolId);
+      setSchoolId(schoolId);
+
+      if (!isOnlineSession) {
+        setRoles(effectiveRoles);
+        setRolesLoaded(true);
+        setAuthError(null);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        await invoke('establish_online_session', {
+          token: accessToken,
+          schoolId,
+        });
+      } catch (tokErr) {
+        const message = tokErr instanceof Error ? tokErr.message : String(tokErr);
+        const networkFailure = /Impossible de contacter|Impossible de lire|statut HTTP 5|timeout|délai/i.test(message);
+        console.error('Erreur establish_online_session:', tokErr);
+        setRoles(effectiveRoles);
+        setRolesLoaded(true);
+        setLoading(false);
+        if (networkFailure) {
+          setAuthError('Connexion cloud indisponible. Session locale conservée.');
+          return;
+        }
+        await supabase.auth.signOut().catch(() => { });
+        setSession(null);
+        setUser(null);
+        setRoles([]);
+        setRolesLoaded(true);
+        setAuthError("Échec de vérification de session avec le module de sécurité.");
+        return;
+      }
+
+      try {
         await invoke('sync_local_user', {
+          token: accessToken,
           userId: userSession.user.id,
           email: userSession.user.email || '',
-          schoolId: schoolId || 'school-main',
+          schoolId,
           schoolName,
           firstName,
           lastName,
@@ -407,70 +441,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           timezone: school?.timezone ?? null,
           logoUrl: school?.logo_url ?? null,
         });
-
-        // Établir la session locale authentifiée côté backend Rust via Supabase Auth & RLS
-        // SEC-VERIFY3-05 : un échec est bloquant — déconnexion forcée, l'UI ne progresse pas.
-        if (userSession.access_token && userSession.access_token !== 'offline') {
-          try {
-            await invoke('establish_online_session', {
-              token: userSession.access_token,
-              schoolId: schoolId || null,
-            });
-          } catch (tokErr) {
-            console.error('Erreur establish_online_session — déconnexion forcée:', tokErr);
-            await supabase.auth.signOut().catch(() => { });
-            setSession(null);
-            setUser(null);
-            setRoles([]);
-            setRolesLoaded(true);
-            setLoading(false);
-            setAuthError("Échec de vérification de session avec le module de sécurité.");
-            return;
-          }
-        }
-
-        // Si le rôle est SUPER_ADMIN, tenter l'amorçage initial sécurisé
-        // (requis lors de la première installation sur une base vierge)
-        if (effectiveRoles.includes('SUPER_ADMIN') && userSession.access_token && userSession.access_token !== 'offline') {
-          try {
-            await invoke('bootstrap_initial_super_admin', {
-              token: userSession.access_token,
-              schoolId: schoolId || 'school-main',
-            });
-          } catch (bErr) {
-            console.debug('Amorçage initial SUPER_ADMIN:', bErr);
-          }
-        }
-
-        // Rapatrier les rôles vers SQLite local
-        for (const roleName of effectiveRoles) {
-          try {
-            await invoke('set_local_user_role', {
-              userId: userSession.user.id,
-              schoolId: schoolId || 'school-main',
-              roleName,
-            });
-          } catch (rErr) {
-            console.warn('Erreur set_local_user_role:', rErr);
-          }
-        }
-
-        // Succès Supabase Auth = compte en ligne configuré, PAS licence activée.
-        markOnlineConfigured();
-        setRoles(effectiveRoles);
-        setRolesLoaded(true);
-        setAuthError(null);
-
-        // Déclencher une synchronisation initiale après authentification en ligne réussie
-        if (userSession.access_token && userSession.access_token !== 'offline') {
-          void triggerInitialOrReconnectedSync(userSession.access_token);
-        }
-      } catch (err: any) {
-        console.error("Erreur de synchronisation locale de l'utilisateur:", err);
+      } catch (syncErr) {
+        console.error('Erreur sync_local_user:', syncErr);
         setRoles([]);
         setRolesLoaded(true);
-        setAuthError(err?.message || "Erreur de chargement des privilèges.");
+        setLoading(false);
+        setAuthError(syncErr instanceof Error ? syncErr.message : 'Erreur de synchronisation locale sécurisée.');
+        return;
       }
+
+      if (effectiveRoles.includes('SUPER_ADMIN')) {
+        try {
+          await invoke('bootstrap_initial_super_admin', {
+            token: accessToken,
+            schoolId,
+          });
+        } catch (bErr) {
+          console.debug('Amorçage initial SUPER_ADMIN:', bErr);
+        }
+      }
+
+      for (const roleName of effectiveRoles) {
+        try {
+          await invoke('set_local_user_role', {
+            userId: userSession.user.id,
+            schoolId,
+            roleName,
+          });
+        } catch (rErr) {
+          console.warn('Erreur set_local_user_role:', rErr);
+        }
+      }
+
+      await revokeStoredOfflineToken();
+      markOnlineConfigured();
+      setRoles(effectiveRoles);
+      setRolesLoaded(true);
+      setAuthError(null);
+      void triggerInitialOrReconnectedSync(accessToken);
+    } catch (err: any) {
+      console.error("Erreur de synchronisation locale de l'utilisateur:", err);
+      setRoles([]);
+      setRolesLoaded(true);
+      setAuthError(err?.message || "Erreur de chargement des privilèges.");
     }
   };
 
@@ -484,7 +497,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSession(session);
         setUser(session.user ?? null);
         syncUserToLocalDb(session);
-        void revokeStoredOfflineToken(); // Nettoyer si on est connect� en ligne
       } else if (localOfflineStr) {
         try {
           const parsed = JSON.parse(localOfflineStr);
@@ -560,7 +572,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSession(session);
         setUser(session.user ?? null);
         syncUserToLocalDb(session);
-        void revokeStoredOfflineToken();
 
         // Renouvellement ou mise à jour du JWT dans le moteur Rust
         if (session.access_token && session.access_token !== 'offline') {
