@@ -459,7 +459,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setRoles([]);
         setRolesLoaded(true);
         setLoading(false);
-        setAuthError(syncErr instanceof Error ? syncErr.message : 'Erreur de synchronisation locale sécurisée.');
+        setAuthError(`Erreur de synchronisation locale sécurisée. Détail : ${syncErr instanceof Error ? syncErr.message : String(syncErr)}`);
         return;
       }
 

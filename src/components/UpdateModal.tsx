@@ -1,6 +1,6 @@
 import {
   X, Download, RefreshCw, CheckCircle2, AlertTriangle, Sparkles,
-  ArrowRight, ShieldCheck, HardDriveDownload, Rocket
+  ArrowRight, ShieldCheck, HardDriveDownload, Rocket, Info
 } from 'lucide-react';
 import { useUpdater } from '../contexts/UpdateContext';
 
@@ -14,6 +14,7 @@ export default function UpdateModal() {
     lastChecked,
     isModalOpen,
     closeModal,
+    dismissBanner,
     checkForUpdates,
     downloadAndInstall,
     restartApp,
@@ -31,13 +32,13 @@ export default function UpdateModal() {
 
   return (
     <div
-      className="absolute inset-0 z-50 flex items-center justify-center p-6 bg-slate-950/50 backdrop-blur-xs animate-fadeIn rounded-2xl"
+      className="absolute inset-0 z-50 flex items-center justify-center p-6 bg-slate-950/50 backdrop-blur-xs animate-fade-in rounded-2xl"
       onClick={() => {
         if (!isDownloading) closeModal();
       }}
     >
       <div
-        className="w-full max-w-lg bg-[#1f1e27] text-slate-100 rounded-3xl border border-white/10 shadow-2xl overflow-hidden flex flex-col relative animate-scaleUp"
+        className="w-full max-w-lg bg-[#1f1e27] text-slate-100 rounded-3xl border border-white/10 shadow-2xl overflow-hidden flex flex-col relative animate-scale-in"
         onClick={(e) => e.stopPropagation()}
         style={{
           boxShadow: '0 25px 60px -15px rgba(0, 0, 0, 0.7), 0 0 40px rgba(59, 130, 246, 0.1)',
@@ -83,6 +84,10 @@ export default function UpdateModal() {
           {/* 2. ÉTAT : MISE À JOUR DISPONIBLE */}
           {status === 'available' && updateInfo && (
             <div className="space-y-4">
+              <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold text-blue-300 uppercase tracking-wider bg-blue-500/15 border border-blue-500/30 rounded-md px-2 py-0.5">
+                <Sparkles size={11} /> Nouvelle version disponible
+              </span>
+
               {/* Bannière de comparaison des versions */}
               <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-900/30 to-indigo-900/30 border border-blue-500/30 flex items-center justify-between">
                 <div>
@@ -136,10 +141,17 @@ export default function UpdateModal() {
                 </div>
               </div>
 
+              {errorMessage && (
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-2.5 text-xs text-amber-300">
+                  <Info size={16} className="flex-shrink-0 mt-0.5" />
+                  <p>{errorMessage}</p>
+                </div>
+              )}
+
               <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-start gap-2.5 text-xs text-blue-300">
                 <ShieldCheck size={16} className="flex-shrink-0 mt-0.5 text-blue-400" />
                 <p>
-                  Le téléchargement est sécurisé et signé numériquement. L'installation sera prête immédiatement après le téléchargement.
+                  La signature cryptographique est vérifiée automatiquement par Orion. Aucun téléchargement ne démarre sans votre confirmation.
                 </p>
               </div>
             </div>
@@ -195,13 +207,13 @@ export default function UpdateModal() {
                 <CheckCircle2 size={32} />
               </div>
               <div>
-                <h4 className="text-base font-bold text-white">Mise à jour prête !</h4>
+                <h4 className="text-base font-bold text-white">Téléchargement terminé</h4>
                 <p className="text-xs text-slate-300 mt-1 max-w-sm">
-                  Le paquet d'installation pour la version <strong className="text-emerald-400">v{updateInfo?.version}</strong> a été téléchargé et validé avec succès.
+                  La version <strong className="text-emerald-400">v{updateInfo?.version}</strong> a été téléchargée, vérifiée et transmise à l'installateur.
                 </p>
               </div>
               <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-xs text-slate-400 text-left w-full">
-                💡 Cliquez sur <strong>Redémarrer Orion</strong> pour appliquer la mise à jour maintenant. L'application redémarrera sur la nouvelle version sans perte de vos données.
+                Sous Windows, Orion se ferme automatiquement au lancement de l'installateur. Sur les autres systèmes, utilisez le bouton ci-dessous pour finaliser.
               </div>
             </div>
           )}
@@ -269,17 +281,20 @@ export default function UpdateModal() {
             {status === 'available' && (
               <>
                 <button
-                  onClick={closeModal}
+                  onClick={() => {
+                    void dismissBanner();
+                    closeModal();
+                  }}
                   className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer"
                 >
                   Plus tard
                 </button>
                 <button
-                  onClick={downloadAndInstall}
+                  onClick={() => void downloadAndInstall(true)}
                   className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:scale-[0.98] shadow-lg shadow-blue-600/30 transition-all flex items-center gap-2 cursor-pointer"
                 >
                   <Download size={15} />
-                  Télécharger et installer
+                  Installer maintenant
                 </button>
               </>
             )}
@@ -302,7 +317,7 @@ export default function UpdateModal() {
                 className="px-5 py-2.5 rounded-xl text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] shadow-lg shadow-emerald-600/30 transition-all flex items-center gap-2 cursor-pointer"
               >
                 <Rocket size={15} />
-                Redémarrer Orion maintenant
+                Redémarrer pour finaliser
               </button>
             )}
 

@@ -1908,7 +1908,7 @@ fn sync_local_user_conn(
     }
 
     let provided_school_id = input.school_id.trim();
-    if !provided_school_id.is_empty() && provided_school_id != session.school_id {
+    if !session.is_super_admin && !provided_school_id.is_empty() && provided_school_id != session.school_id {
         return Err(
             "Accès refusé : l'établissement fourni ne correspond pas à la session vérifiée."
                 .to_string(),
@@ -1918,7 +1918,7 @@ fn sync_local_user_conn(
     let effective_email = session
         .email
         .clone()
-        .ok_or_else(|| "Adresse e-mail de session indisponible.".to_string())?;
+        .unwrap_or_else(|| format!("{}@orion.app", session.user_id));
     let effective_school_id = session.school_id.clone();
     let effective_user_id = session.user_id.clone();
 
@@ -1964,7 +1964,8 @@ fn sync_local_user_conn(
     let existing_profile: Option<String> = tx
         .query_row(
             "SELECT id FROM profiles
-          WHERE user_id = ?1 AND school_id = ?2 AND deleted_at IS NULL
+          WHERE user_id = ?1
+          ORDER BY (school_id = ?2) DESC, (deleted_at IS NULL) DESC
           LIMIT 1",
             rusqlite::params![effective_user_id, effective_school_id],
             |row| row.get(0),
@@ -2033,12 +2034,14 @@ fn sync_local_user_conn(
         Some(profile_id) => {
             tx.execute(
                 "UPDATE profiles
-                    SET first_name = COALESCE(?1, first_name),
-                        last_name  = COALESCE(?2, last_name),
-                        staff_id   = COALESCE(?3, staff_id),
+                    SET school_id  = ?1,
+                        first_name = COALESCE(?2, first_name),
+                        last_name  = COALESCE(?3, last_name),
+                        staff_id   = COALESCE(?4, staff_id),
+                        deleted_at = NULL,
                         updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ?4",
-                rusqlite::params![f_name, l_name, resolved_staff_id, profile_id],
+                  WHERE id = ?5",
+                rusqlite::params![effective_school_id, f_name, l_name, resolved_staff_id, profile_id],
             )
             .map_err(|e| format!("Erreur sync profil: {}", e))?;
         }
@@ -2046,7 +2049,14 @@ fn sync_local_user_conn(
             let profile_id = format!("prof-{}", effective_user_id);
             tx.execute(
                 "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, staff_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                 ON CONFLICT(id) DO UPDATE SET
+                    school_id  = excluded.school_id,
+                    first_name = excluded.first_name,
+                    last_name  = excluded.last_name,
+                    staff_id   = excluded.staff_id,
+                    deleted_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP",
                 rusqlite::params![profile_id, effective_user_id, effective_school_id, f_name, l_name, resolved_staff_id],
             ).map_err(|e| format!("Erreur création profil: {}", e))?;
         }

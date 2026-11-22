@@ -799,11 +799,11 @@ export default function Settings() {
                       </div>
 
                       <button
-                        onClick={downloadAndInstall}
+                        onClick={() => void downloadAndInstall(true)}
                         className="bg-[#2383e2] hover:bg-[#1a73e8] active:scale-[0.98] text-white px-5 py-2.5 rounded-lg text-[13px] font-semibold flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 transition-all cursor-pointer self-start sm:self-auto"
                       >
                         <Download size={15} />
-                        Télécharger et installer
+                        Installer maintenant
                       </button>
                     </div>
 
@@ -853,9 +853,9 @@ export default function Settings() {
                     <div className="flex items-start gap-3">
                       <CheckCircle2 size={22} className="text-[#059669] flex-shrink-0 mt-0.5" />
                       <div>
-                        <h4 className="text-[13.5px] font-bold text-[#065f46]">Mise à jour prête pour l'installation</h4>
+                        <h4 className="text-[13.5px] font-bold text-[#065f46]">Téléchargement terminé</h4>
                         <p className="text-[12px] text-[#047857] mt-0.5">
-                          Le fichier d'installation a été téléchargé et validé cryptographiquement. Relancez l'application pour finaliser.
+                          La mise à jour a été vérifiée et transmise à l'installateur. Sous Windows, Orion se ferme automatiquement au lancement de l'installation.
                         </p>
                       </div>
                     </div>
@@ -906,10 +906,10 @@ export default function Settings() {
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
                     <h4 className="text-[13.5px] font-semibold text-[#37352f]">
-                      Recherche automatique au démarrage
+                      Recherche automatique des mises à jour
                     </h4>
                     <p className="text-[12px] text-[#787774]">
-                      Orion vérifiera automatiquement en arrière-plan la disponibilité d'une nouvelle version chaque fois que l'application s'ouvre.
+                      Orion vérifie discrètement au démarrage, puis toutes les 6 heures, si une nouvelle version est disponible. Aucun téléchargement n'est lancé sans votre accord.
                     </p>
                   </div>
 
