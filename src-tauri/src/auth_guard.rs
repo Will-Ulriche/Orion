@@ -616,6 +616,7 @@ pub fn require_super_admin(conn: &Connection) -> Result<SessionUser, String> {
 }
 
 /// Exige le rÃ´le DIRECTION pour l'Ã©tablissement cible (ou SUPER_ADMIN global)
+/// ainsi qu'une licence active et cryptographiquement valide pour les utilisateurs non-SUPER_ADMIN.
 pub fn require_direction_or_super_admin(
     conn: &Connection,
     target_school_id: Option<&str>,
@@ -656,11 +657,13 @@ pub fn require_direction_or_super_admin(
         }
     }
 
+    require_active_license_for_session(conn, &session)?;
+
     Ok(session)
 }
 
 /// Exige que l'appelant soit soit l'utilisateur cible lui-mÃªme, soit la Direction de son Ã©cole,
-/// soit le Super Administrateur
+/// soit le Super Administrateur (avec licence active pour les utilisateurs non-SUPER_ADMIN).
 pub fn require_self_or_direction(
     conn: &Connection,
     target_user_id: &str,
@@ -669,25 +672,115 @@ pub fn require_self_or_direction(
     let session = get_authenticated_user(conn)?;
 
     if session.user_id == target_user_id {
+        require_active_license_for_session(conn, &session)?;
         return Ok(session);
     }
 
     require_direction_or_super_admin(conn, target_school_id)
 }
 
-/// Helper universel d'autorisation pour les commandes Tauri sensibles.
+/// Vérifie la validité cryptographique et métier de la licence de la session active.
 ///
-/// Vérifie dans l'ordre :
-/// 1. L'appelant est authentifié (session active).
-/// 2. Si SUPER_ADMIN et que `SUPER_ADMIN` figure dans les rôles requis : accès plateforme.
-/// 3. Le school_id de la session correspond au school_id cible (isolation multi-école).
-/// 4. L'appelant possède au moins un des rôles requis.
-///
-/// Un SUPER_ADMIN n'hérite donc d'aucun rôle d'établissement : les commands
-/// pédagogiques, financières ou de secrétariat restent soumises aux rôles locaux.
-///
-/// Retourne le SessionUser vérifié dont user_id sert de ecorded_by côté serveur.
-pub fn authorize(
+/// - Le `SUPER_ADMIN` est exempté (aucune licence d'établissement requise).
+/// - Pour tout autre utilisateur, récupère la licence courante (`is_current = 1`) de
+///   `session.school_id` dans SQLite, exige la preuve JWT RS256 stockée par Rust,
+///   vérifie la signature RS256 avec la clé publique intégrée, l'établissement,
+///   l'identifiant machine, `is_current`, le statut `ACTIVE`, les dates de validité
+///   et la durée maximale de grâce hors ligne de 7 jours.
+pub fn require_active_license(conn: &Connection) -> Result<SessionUser, String> {
+    let session = require_authenticated(conn)?;
+    require_active_license_for_session(conn, &session)?;
+    Ok(session)
+}
+
+pub fn require_active_license_for_session(
+    conn: &Connection,
+    session: &SessionUser,
+) -> Result<(), String> {
+    if session.is_super_admin {
+        return Ok(());
+    }
+    let device_identifier = crate::commands::current_device_identifier()?;
+    let public_key_pem = crate::commands::license_public_key_pem();
+    require_active_license_with(conn, session, &device_identifier, &public_key_pem)
+}
+
+pub(crate) fn require_active_license_with(
+    conn: &Connection,
+    session: &SessionUser,
+    device_identifier: &str,
+    public_key_pem: &str,
+) -> Result<(), String> {
+    if session.is_super_admin {
+        return Ok(());
+    }
+
+    use rusqlite::OptionalExtension;
+
+    let row: Option<(crate::commands::LicenseRec, Option<String>)> = conn
+        .query_row(
+            "SELECT id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current, signed_token
+             FROM licenses
+             WHERE school_id = ?1 AND is_current = 1
+             LIMIT 1",
+            rusqlite::params![session.school_id],
+            |r| {
+                Ok((
+                    crate::commands::LicenseRec {
+                        id: r.get(0)?,
+                        school_id: r.get(1)?,
+                        license_key: r.get(2)?,
+                        status: r.get(3)?,
+                        starts_at: r.get(4)?,
+                        expires_at: r.get(5)?,
+                        max_devices: r.get(6)?,
+                        is_current: r.get::<_, i64>(7)? != 0,
+                    },
+                    r.get::<_, Option<String>>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| format!("Erreur lecture licence locale : {}", e))?;
+
+    let (license, signed_token) = row.ok_or_else(|| {
+        "Accès refusé : aucune licence active trouvée pour cet établissement.".to_string()
+    })?;
+
+    crate::commands::validate_license_record(&license, &session.school_id, chrono::Utc::now())?;
+
+    let token = signed_token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| {
+            "Accès refusé : preuve cryptographique de licence absente. Veuillez activer votre licence."
+                .to_string()
+        })?;
+
+    let verified = crate::commands::verify_license_token_internal(
+        &token,
+        &session.school_id,
+        device_identifier,
+        public_key_pem,
+    );
+    if !verified.valid {
+        return Err(format!(
+            "Accès refusé : licence invalide ou expirée ({}).",
+            verified.reason.unwrap_or_else(|| "raison inconnue".to_string())
+        ));
+    }
+
+    let claims = verified
+        .claims
+        .ok_or_else(|| "Accès refusé : claims de licence absents.".to_string())?;
+    crate::commands::license_claims_match_record(&claims, &license, &session.school_id)?;
+
+    Ok(())
+}
+
+/// Vérifie l'authentification, le périmètre d'établissement et les rôles, sans exiger de licence.
+/// Réservé exclusivement aux commandes d'affichage/renouvellement de licence (ex. `get_licenses`).
+pub fn authorize_without_license_check(
     conn: &Connection,
     school_id: &str,
     roles: &[&str],
@@ -711,12 +804,105 @@ pub fn authorize(
     Ok(s)
 }
 
+/// Helper universel d'autorisation pour les commandes Tauri sensibles.
+///
+/// Vérifie dans l'ordre :
+/// 1. L'appelant est authentifié (session active).
+/// 2. Si SUPER_ADMIN et que `SUPER_ADMIN` figure dans les rôles requis : accès plateforme.
+/// 3. Le school_id de la session correspond au school_id cible (isolation multi-école).
+/// 4. L'appelant possède au moins un des rôles requis.
+/// 5. L'établissement dispose d'une licence active et cryptographiquement valide (`require_active_license`).
+///
+/// Un SUPER_ADMIN n'hérite donc d'aucun rôle d'établissement : les commands
+/// pédagogiques, financières ou de secrétariat restent soumises aux rôles locaux.
+///
+/// Retourne le SessionUser vérifié dont user_id sert de recorded_by côté serveur.
+pub fn authorize(
+    conn: &Connection,
+    school_id: &str,
+    roles: &[&str],
+) -> Result<SessionUser, String> {
+    let s = authorize_without_license_check(conn, school_id, roles)?;
+    if s.is_super_admin && roles.iter().any(|role| *role == "SUPER_ADMIN") {
+        return Ok(s);
+    }
+    require_active_license_for_session(conn, &s)?;
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
 
+    fn sign_test_license_token(
+        claims: &crate::commands::LicenseClaims,
+        private_key_pem: &str,
+    ) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        let header = Header::new(Algorithm::RS256);
+        let key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).unwrap();
+        encode(&header, claims, &key).unwrap()
+    }
+
+    fn seed_test_license(
+        conn: &Connection,
+        id: &str,
+        school_id: &str,
+        status: &str,
+        is_current: bool,
+        starts_at: Option<&str>,
+        expires_at: Option<&str>,
+        device_identifier: &str,
+        iat: i64,
+        exp: i64,
+        private_key_pem: Option<&str>,
+        override_token: Option<&str>,
+    ) {
+        let claims = crate::commands::LicenseClaims {
+            iss: "orion-license".to_string(),
+            sub: id.to_string(),
+            license_id: id.to_string(),
+            school_id: school_id.to_string(),
+            license_key: format!("ORION-TEST-{}", id),
+            status: status.to_string(),
+            starts_at: starts_at.map(|s| s.to_string()),
+            expires_at: expires_at.map(|s| s.to_string()),
+            is_current,
+            max_devices: 5,
+            device_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            device_identifier: device_identifier.to_string(),
+            jti: Some("jti-test".to_string()),
+            iat,
+            exp,
+        };
+        let token = match override_token {
+            Some(t) => Some(t.to_string()),
+            None => private_key_pem.map(|pk| sign_test_license_token(&claims, pk)),
+        };
+        conn.execute(
+            "INSERT INTO licenses
+             (id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current, signed_token)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                id,
+                school_id,
+                claims.license_key,
+                status,
+                starts_at,
+                expires_at,
+                claims.max_devices,
+                if is_current { 1 } else { 0 },
+                token,
+            ],
+        )
+        .unwrap();
+    }
+
     fn setup_test_db() -> Connection {
+        crate::commands::set_test_license_public_key_pem(Some(crate::test_keys::TEST_RSA_PUBLIC_KEY_A));
+        crate::commands::set_test_device_identifier(Some("device-test"));
+
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE schools (id TEXT PRIMARY KEY, name TEXT);
@@ -727,6 +913,13 @@ mod tests {
                  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, school_id TEXT NOT NULL,
                  secret_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
                  expires_at INTEGER NOT NULL, revoked_at INTEGER
+             );
+             CREATE TABLE licenses (
+                 id TEXT PRIMARY KEY, school_id TEXT NOT NULL, license_key TEXT UNIQUE NOT NULL,
+                 status TEXT DEFAULT 'ACTIVE', issued_at DATETIME, starts_at DATETIME,
+                 expires_at DATETIME, max_devices INTEGER DEFAULT 1,
+                 is_current INTEGER NOT NULL DEFAULT 0, signed_token TEXT,
+                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
              );
              
              INSERT INTO schools (id, name) VALUES ('school-A', 'Ã‰cole A'), ('school-B', 'Ã‰cole B');
@@ -747,6 +940,27 @@ mod tests {
                 ('ur-3', 'u-dir-b', 'school-B', 'r-dir'),
                 ('ur-4', 'u-prof-a', 'school-A', 'r-prof');"
         ).unwrap();
+
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        seed_test_license(
+            &conn,
+            "lic-school-a",
+            "school-A",
+            "ACTIVE",
+            true,
+            Some(&starts),
+            Some(&expires),
+            "device-test",
+            iat,
+            exp,
+            Some(crate::test_keys::TEST_RSA_PRIVATE_KEY_A),
+            None,
+        );
+
         conn
     }
 
@@ -1365,6 +1579,254 @@ mod tests {
         assert_eq!(user.school_id, "school-A");
         assert!(user.roles.contains(&"DIRECTION".to_string()));
         assert!(!user.is_super_admin);
+
+        clear_session();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Tests SEC-01 : Validation native des licences dans le backend Rust
+    // ──────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sec01_active_license_grants_access() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+
+        assert!(require_active_license(&conn).is_ok());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_ok());
+        assert!(require_direction_or_super_admin(&conn, Some("school-A")).is_ok());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_expired_license_denies_access() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(30)).to_rfc3339();
+        let expires = (now - chrono::Duration::seconds(10)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        seed_test_license(
+            &conn, "lic-exp", "school-A", "ACTIVE", true,
+            Some(&starts), Some(&expires), "device-test", iat, exp,
+            Some(crate::test_keys::TEST_RSA_PRIVATE_KEY_A), None,
+        );
+
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_suspended_license_denies_access() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        seed_test_license(
+            &conn, "lic-susp", "school-A", "SUSPENDED", true,
+            Some(&starts), Some(&expires), "device-test", iat, exp,
+            Some(crate::test_keys::TEST_RSA_PRIVATE_KEY_A), None,
+        );
+
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_revoked_license_denies_access() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        seed_test_license(
+            &conn, "lic-rev", "school-A", "REVOKED", true,
+            Some(&starts), Some(&expires), "device-test", iat, exp,
+            Some(crate::test_keys::TEST_RSA_PRIVATE_KEY_A), None,
+        );
+
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_wrong_school_license_denies_access() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        // Licence valide mais appartenant à school-B alors que la session est sur school-A
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        seed_test_license(
+            &conn, "lic-b", "school-B", "ACTIVE", true,
+            Some(&starts), Some(&expires), "device-test", iat, exp,
+            Some(crate::test_keys::TEST_RSA_PRIVATE_KEY_A), None,
+        );
+
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_forged_token_denies_access() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+
+        // 1. Jeton falsifié (chaîne arbitraire / signature invalide)
+        seed_test_license(
+            &conn, "lic-forged", "school-A", "ACTIVE", true,
+            Some(&starts), Some(&expires), "device-test", iat, exp,
+            None, Some("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.fakesig"),
+        );
+
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+
+        // 2. Absence totale de jeton malgré une ligne SQLite ACTIVE
+        conn.execute("UPDATE licenses SET signed_token = NULL WHERE id = 'lic-forged'", []).unwrap();
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_wrong_machine_license_denies_access() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        seed_test_license(
+            &conn, "lic-other-pc", "school-A", "ACTIVE", true,
+            Some(&starts), Some(&expires), "autre-machine-uid", iat, exp,
+            Some(crate::test_keys::TEST_RSA_PRIVATE_KEY_A), None,
+        );
+
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_offline_grace_expired_denies_access() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(10)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+
+        // Cas 1 : Jeton hors ligne émis il y a 8 jours (exp dépassé)
+        let iat_old = (now - chrono::Duration::days(8)).timestamp();
+        let exp_old = iat_old + 7 * 24 * 60 * 60;
+        seed_test_license(
+            &conn, "lic-grace-exp", "school-A", "ACTIVE", true,
+            Some(&starts), Some(&expires), "device-test", iat_old, exp_old,
+            Some(crate::test_keys::TEST_RSA_PRIVATE_KEY_A), None,
+        );
+
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+
+        // Cas 2 : Jeton forgé avec une durée > 7 jours (ex: 10 jours)
+        conn.execute("DELETE FROM licenses", []).unwrap();
+        let iat_now = now.timestamp();
+        let exp_too_long = iat_now + 10 * 24 * 60 * 60;
+        seed_test_license(
+            &conn, "lic-grace-long", "school-A", "ACTIVE", true,
+            Some(&starts), Some(&expires), "device-test", iat_now, exp_too_long,
+            Some(crate::test_keys::TEST_RSA_PRIVATE_KEY_A), None,
+        );
+        assert!(require_active_license(&conn).is_err());
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_super_admin_bypasses_license_check() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        // Supprimer toutes les licences : le SUPER_ADMIN doit conserver son accès
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        establish_local_session(&conn, "u-sa", "school-A").unwrap();
+        assert!(require_active_license(&conn).is_ok());
+        assert!(authorize(&conn, "school-A", &["SUPER_ADMIN"]).is_ok());
+        assert!(require_direction_or_super_admin(&conn, Some("school-B")).is_ok());
+        clear_session();
+    }
+
+    #[test]
+    fn test_sec01_command_without_license_is_denied() {
+        let _guard = lock_test_session();
+        let conn = setup_test_db();
+        conn.execute("DELETE FROM licenses", []).unwrap();
+
+        // Ajouter les tables minimales pour transfer_class_within_year_conn
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS academic_years (id TEXT PRIMARY KEY, school_id TEXT, name TEXT, status TEXT);
+             CREATE TABLE IF NOT EXISTS classes (id TEXT PRIMARY KEY, school_id TEXT, academic_year_id TEXT);
+             CREATE TABLE IF NOT EXISTS enrollments (id TEXT PRIMARY KEY, school_id TEXT, student_id TEXT, academic_year_id TEXT, class_id TEXT, enrollment_type TEXT, previous_class_id TEXT);
+             CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, user_id TEXT, school_id TEXT, deleted_at TEXT);
+             CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, school_id TEXT, user_id TEXT, action TEXT, entity_type TEXT, entity_id TEXT, old_data TEXT, new_data TEXT);
+             INSERT INTO academic_years (id, school_id, name, status) VALUES ('ay-1', 'school-A', '2026-2027', 'OPEN');
+             INSERT INTO classes (id, school_id, academic_year_id) VALUES ('c-1', 'school-A', 'ay-1'), ('c-2', 'school-A', 'ay-1');
+             INSERT INTO profiles (id, user_id, school_id, deleted_at) VALUES ('p-dir-a', 'u-dir-a', 'school-A', NULL);
+             INSERT INTO enrollments (id, school_id, student_id, academic_year_id, class_id) VALUES ('enr-1', 'school-A', 'stu-1', 'ay-1', 'c-1');"
+        ).unwrap();
+
+        let mut conn = conn;
+        establish_local_session(&conn, "u-dir-a", "school-A").unwrap();
+
+        // Appel direct d'une commande métier sans licence valide → refusé
+        let transfer_res = crate::commands::transfer_class_within_year_conn(&mut conn, "enr-1", Some("c-2"));
+        assert!(transfer_res.is_err());
+
+        // Appel d'autorisation métier directe → refusé
+        assert!(authorize(&conn, "school-A", &["DIRECTION"]).is_err());
+
+        // Exception préservée : vérification des rôles d'authentification autorisée
+        assert!(crate::commands::check_user_role_conn(&conn, "u-dir-a", "school-A", "DIRECTION").unwrap());
 
         clear_session();
     }

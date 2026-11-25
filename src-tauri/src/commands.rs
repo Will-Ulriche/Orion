@@ -1,10 +1,10 @@
-use tauri::State;
-use tauri::Manager;
+use crate::models::AcademicYear;
 use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use sysinfo::System;
-use serde::{Deserialize, Serialize};
-use crate::models::AcademicYear;
+use tauri::Manager;
+use tauri::State;
 
 #[derive(Serialize, Deserialize)]
 pub struct DeviceInfo {
@@ -14,7 +14,7 @@ pub struct DeviceInfo {
 }
 
 // SyncStatus est défini dans sync.rs — on réexporte pour la compatibilité
-pub use crate::sync::{SyncStatus, PendingMutation, InboxConflict};
+pub use crate::sync::{InboxConflict, PendingMutation, SyncStatus};
 
 // Structure d'état pour conserver la connexion SQLite
 pub struct DbState(pub Mutex<Connection>);
@@ -42,48 +42,452 @@ pub fn record_mutation(
 // Toute colonne locale absente de cette liste est écartée du payload : PostgREST
 // rejette une requête dès qu'une colonne inconnue y figure.
 const REMOTE_COLUMNS: &[(&str, &[&str])] = &[
-    ("academic_years", &["id", "school_id", "name", "start_date", "end_date", "status", "is_current", "closed_at", "created_at", "updated_at"]),
-    ("classes",        &["id", "school_id", "academic_year_id", "name", "level", "created_at", "updated_at"]),
-    ("staff",          &[
-        "id", "school_id", "matricule", "nom", "prenoms", "sexe", "date_naissance", "lieu_naissance",
-        "nationalite", "photo_url", "situation_matrimoniale", "nombre_enfants", "telephone_principal",
-        "telephone_secondaire", "email", "adresse", "region", "prefecture", "commune", "quartier",
-        "urgence_nom", "urgence_telephone", "type_personnel", "fonction", "statut_professionnel",
-        "matricule_professionnel", "categorie", "grade", "classe_grade", "echelon", "indice",
-        "diplome_academique", "diplome_professionnel", "specialite", "date_recrutement",
-        "date_entree_fonction_pub", "etablissement", "annee_scolaire_id", "fonction_etablissement",
-        "decision_affectation_num", "date_affectation", "date_prise_service", "date_arrivee_region",
-        "date_arrivee_etablissement", "ancien_etablissement", "service_direction", "matiere_principale",
-        "matieres_secondaires", "classes_principales", "volume_horaire_hebdo", "est_prof_principal",
-        "est_responsable_classe", "heures_prevues", "heures_effectuees", "statut_administratif",
-        "date_debut_conge", "date_fin_conge", "date_disponibilite", "date_mutation", "date_suspension",
-        "date_retraite", "date_depart", "motif_depart", "observations", "est_actif", "created_by",
-        "updated_by", "created_at", "updated_at"
-    ]),
-    ("students",       &["id", "school_id", "first_name", "last_name", "birth_date", "gender", "photo_url", "matricule", "address", "phone", "parent_name", "parent_phone", "parent_email", "blood_type", "medical_notes", "birth_place", "created_at", "updated_at"]),
-    ("enrollments",    &["id", "school_id", "academic_year_id", "student_id", "class_id", "enrollment_number", "enrollment_date", "status", "enrollment_type", "previous_class_id", "created_at", "updated_at"]),
-    ("fee_structures", &["id", "school_id", "academic_year_id", "name", "amount", "fee_type", "applies_to", "class_id", "level", "due_date", "is_mandatory", "created_at", "updated_at"]),
-    ("payments",       &["id", "school_id", "academic_year_id", "enrollment_id", "student_id", "fee_structure_id", "amount", "payment_date", "payment_method", "reference", "receipt_number", "notes", "recorded_by", "status", "cancelled_at", "cancel_reason", "created_at", "updated_at"]),
+    (
+        "academic_years",
+        &[
+            "id",
+            "school_id",
+            "name",
+            "start_date",
+            "end_date",
+            "status",
+            "is_current",
+            "closed_at",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "classes",
+        &[
+            "id",
+            "school_id",
+            "academic_year_id",
+            "name",
+            "level",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "staff",
+        &[
+            "id",
+            "school_id",
+            "matricule",
+            "nom",
+            "prenoms",
+            "sexe",
+            "date_naissance",
+            "lieu_naissance",
+            "nationalite",
+            "photo_url",
+            "situation_matrimoniale",
+            "nombre_enfants",
+            "telephone_principal",
+            "telephone_secondaire",
+            "email",
+            "adresse",
+            "region",
+            "prefecture",
+            "commune",
+            "quartier",
+            "urgence_nom",
+            "urgence_telephone",
+            "type_personnel",
+            "fonction",
+            "statut_professionnel",
+            "matricule_professionnel",
+            "categorie",
+            "grade",
+            "classe_grade",
+            "echelon",
+            "indice",
+            "diplome_academique",
+            "diplome_professionnel",
+            "specialite",
+            "date_recrutement",
+            "date_entree_fonction_pub",
+            "etablissement",
+            "annee_scolaire_id",
+            "fonction_etablissement",
+            "decision_affectation_num",
+            "date_affectation",
+            "date_prise_service",
+            "date_arrivee_region",
+            "date_arrivee_etablissement",
+            "ancien_etablissement",
+            "service_direction",
+            "matiere_principale",
+            "matieres_secondaires",
+            "classes_principales",
+            "volume_horaire_hebdo",
+            "est_prof_principal",
+            "est_responsable_classe",
+            "heures_prevues",
+            "heures_effectuees",
+            "statut_administratif",
+            "date_debut_conge",
+            "date_fin_conge",
+            "date_disponibilite",
+            "date_mutation",
+            "date_suspension",
+            "date_retraite",
+            "date_depart",
+            "motif_depart",
+            "observations",
+            "est_actif",
+            "created_by",
+            "updated_by",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "students",
+        &[
+            "id",
+            "school_id",
+            "first_name",
+            "last_name",
+            "birth_date",
+            "gender",
+            "photo_url",
+            "matricule",
+            "address",
+            "phone",
+            "parent_name",
+            "parent_phone",
+            "parent_email",
+            "blood_type",
+            "medical_notes",
+            "birth_place",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "enrollments",
+        &[
+            "id",
+            "school_id",
+            "academic_year_id",
+            "student_id",
+            "class_id",
+            "enrollment_number",
+            "enrollment_date",
+            "status",
+            "enrollment_type",
+            "previous_class_id",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "fee_structures",
+        &[
+            "id",
+            "school_id",
+            "academic_year_id",
+            "name",
+            "amount",
+            "fee_type",
+            "applies_to",
+            "class_id",
+            "level",
+            "due_date",
+            "is_mandatory",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "payments",
+        &[
+            "id",
+            "school_id",
+            "academic_year_id",
+            "enrollment_id",
+            "student_id",
+            "fee_structure_id",
+            "amount",
+            "payment_date",
+            "payment_method",
+            "reference",
+            "receipt_number",
+            "notes",
+            "recorded_by",
+            "status",
+            "cancelled_at",
+            "cancel_reason",
+            "created_at",
+            "updated_at",
+        ],
+    ),
     // Session 5 — Module pédagogique
-    ("subjects",            &["id", "school_id", "name", "code", "color", "created_at", "updated_at"]),
-    ("grade_types",         &["id", "school_id", "name", "max_score", "created_at", "updated_at"]),
-    ("grading_periods",     &["id", "school_id", "academic_year_id", "name", "period_order", "start_date", "end_date", "is_active", "created_at", "updated_at"]),
-    ("class_subjects",      &["id", "school_id", "academic_year_id", "class_id", "subject_id", "teacher_id", "coefficient", "created_at", "updated_at"]),
-    ("teacher_assignments", &["id", "school_id", "academic_year_id", "teacher_id", "class_subject_id", "created_at", "updated_at"]),
-    ("grades",              &["id", "school_id", "academic_year_id", "enrollment_id", "student_id", "class_subject_id", "grading_period_id", "grade_type_id", "score", "max_score", "evaluation_date", "notes", "recorded_by", "is_absent", "created_at", "updated_at"]),
+    (
+        "subjects",
+        &[
+            "id",
+            "school_id",
+            "name",
+            "code",
+            "color",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "grade_types",
+        &[
+            "id",
+            "school_id",
+            "name",
+            "max_score",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "grading_periods",
+        &[
+            "id",
+            "school_id",
+            "academic_year_id",
+            "name",
+            "period_order",
+            "start_date",
+            "end_date",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "class_subjects",
+        &[
+            "id",
+            "school_id",
+            "academic_year_id",
+            "class_id",
+            "subject_id",
+            "teacher_id",
+            "coefficient",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "teacher_assignments",
+        &[
+            "id",
+            "school_id",
+            "academic_year_id",
+            "teacher_id",
+            "class_subject_id",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "grades",
+        &[
+            "id",
+            "school_id",
+            "academic_year_id",
+            "enrollment_id",
+            "student_id",
+            "class_subject_id",
+            "grading_period_id",
+            "grade_type_id",
+            "score",
+            "max_score",
+            "evaluation_date",
+            "notes",
+            "recorded_by",
+            "is_absent",
+            "created_at",
+            "updated_at",
+        ],
+    ),
     // Structure pédagogique étendue
-    ("sections",            &["id", "school_id", "name", "created_at", "updated_at"]),
-    ("levels",              &["id", "school_id", "section_id", "name", "level_order", "created_at", "updated_at"]),
-    ("series",              &["id", "school_id", "level_id", "name", "created_at", "updated_at"]),
+    (
+        "sections",
+        &["id", "school_id", "name", "created_at", "updated_at"],
+    ),
+    (
+        "levels",
+        &[
+            "id",
+            "school_id",
+            "section_id",
+            "name",
+            "level_order",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "series",
+        &[
+            "id",
+            "school_id",
+            "level_id",
+            "name",
+            "created_at",
+            "updated_at",
+        ],
+    ),
     // Session 6 — Module bibliothèque
-    ("library_categories",   &["id", "school_id", "name", "code", "description", "color", "created_at", "updated_at"]),
-    ("library_books",        &["id", "school_id", "category_id", "isbn", "title", "author", "publisher", "publication_year", "language", "edition", "pages", "description", "shelf_location", "is_reference", "created_at", "updated_at"]),
-    ("library_copies",       &["id", "school_id", "book_id", "inventory_code", "barcode", "status", "condition", "acquisition_date", "acquisition_source", "price", "location", "notes", "created_at", "updated_at"]),
-    ("library_readers",      &["id", "school_id", "reader_type", "student_id", "staff_id", "full_name", "email", "phone", "card_number", "class_name", "max_loans", "status", "registered_at", "expires_at", "notes", "created_at", "updated_at"]),
-    ("library_loans",        &["id", "school_id", "copy_id", "reader_id", "book_id", "loan_date", "due_date", "returned_at", "status", "loan_condition", "notes", "created_by", "created_at", "updated_at"]),
-    ("library_returns",      &["id", "school_id", "loan_id", "copy_id", "reader_id", "returned_at", "loan_condition", "late_days", "fine_amount", "remarks", "handled_by", "created_at", "updated_at"]),
-    ("library_penalties",    &["id", "school_id", "reader_id", "loan_id", "penalty_type", "amount", "days_late", "description", "status", "paid_at", "created_at", "updated_at"]),
-    ("library_reservations", &["id", "school_id", "book_id", "reader_id", "reserved_at", "available_at", "expires_at", "status", "queue_position", "notified_at", "fulfilled_at", "loan_id", "notes", "created_at", "updated_at"]),
+    (
+        "library_categories",
+        &[
+            "id",
+            "school_id",
+            "name",
+            "code",
+            "description",
+            "color",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "library_books",
+        &[
+            "id",
+            "school_id",
+            "category_id",
+            "isbn",
+            "title",
+            "author",
+            "publisher",
+            "publication_year",
+            "language",
+            "edition",
+            "pages",
+            "description",
+            "shelf_location",
+            "is_reference",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "library_copies",
+        &[
+            "id",
+            "school_id",
+            "book_id",
+            "inventory_code",
+            "barcode",
+            "status",
+            "condition",
+            "acquisition_date",
+            "acquisition_source",
+            "price",
+            "location",
+            "notes",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "library_readers",
+        &[
+            "id",
+            "school_id",
+            "reader_type",
+            "student_id",
+            "staff_id",
+            "full_name",
+            "email",
+            "phone",
+            "card_number",
+            "class_name",
+            "max_loans",
+            "status",
+            "registered_at",
+            "expires_at",
+            "notes",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "library_loans",
+        &[
+            "id",
+            "school_id",
+            "copy_id",
+            "reader_id",
+            "book_id",
+            "loan_date",
+            "due_date",
+            "returned_at",
+            "status",
+            "loan_condition",
+            "notes",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "library_returns",
+        &[
+            "id",
+            "school_id",
+            "loan_id",
+            "copy_id",
+            "reader_id",
+            "returned_at",
+            "loan_condition",
+            "late_days",
+            "fine_amount",
+            "remarks",
+            "handled_by",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "library_penalties",
+        &[
+            "id",
+            "school_id",
+            "reader_id",
+            "loan_id",
+            "penalty_type",
+            "amount",
+            "days_late",
+            "description",
+            "status",
+            "paid_at",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "library_reservations",
+        &[
+            "id",
+            "school_id",
+            "book_id",
+            "reader_id",
+            "reserved_at",
+            "available_at",
+            "expires_at",
+            "status",
+            "queue_position",
+            "notified_at",
+            "fulfilled_at",
+            "loan_id",
+            "notes",
+            "created_at",
+            "updated_at",
+        ],
+    ),
 ];
 
 // Colonnes booléennes : SQLite les range en 0/1, PostgreSQL attend true/false.
@@ -99,7 +503,11 @@ const BOOLEAN_COLUMNS: &[&str] = &[
 ];
 
 /// Convertit une valeur SQLite en JSON, en honorant le type booléen attendu.
-fn column_to_json(row: &rusqlite::Row, idx: usize, as_bool: bool) -> rusqlite::Result<serde_json::Value> {
+fn column_to_json(
+    row: &rusqlite::Row,
+    idx: usize,
+    as_bool: bool,
+) -> rusqlite::Result<serde_json::Value> {
     Ok(match row.get_ref(idx)? {
         rusqlite::types::ValueRef::Null => serde_json::Value::Null,
         rusqlite::types::ValueRef::Integer(i) => {
@@ -139,7 +547,11 @@ fn remote_payload(conn: &Connection, table: &str, id: &str) -> Result<serde_json
         .filter(|c| local.iter().any(|l| l == c))
         .collect();
 
-    let sql = format!("SELECT {} FROM {} WHERE id = ?1", selected.join(", "), table);
+    let sql = format!(
+        "SELECT {} FROM {} WHERE id = ?1",
+        selected.join(", "),
+        table
+    );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let cols = selected.clone();
     let mut rows = stmt
@@ -175,13 +587,45 @@ pub(crate) fn enqueue_entity(conn: &Connection, table: &str, school_id: &str, id
 // ──────────────────────────────────────────────
 #[tauri::command]
 pub fn check_db_status(state: State<'_, DbState>) -> Result<String, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données")?;
-    let mut stmt = conn.prepare("SELECT count(*) FROM roles").map_err(|e| e.to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données")?;
+    let mut stmt = conn
+        .prepare("SELECT count(*) FROM roles")
+        .map_err(|e| e.to_string())?;
     let count: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
-    Ok(format!("Base de données active. {} rôles configurés.", count))
+    Ok(format!(
+        "Base de données active. {} rôles configurés.",
+        count
+    ))
 }
 
-fn current_device_identifier() -> Result<String, String> {
+#[cfg(test)]
+std::thread_local! {
+    static TEST_LICENSE_PUBLIC_KEY_OVERRIDE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static TEST_DEVICE_ID_OVERRIDE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_license_public_key_pem(pem: Option<&str>) {
+    TEST_LICENSE_PUBLIC_KEY_OVERRIDE.with(|cell| {
+        *cell.borrow_mut() = pem.map(|s| s.to_string());
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_device_identifier(id: Option<&str>) {
+    TEST_DEVICE_ID_OVERRIDE.with(|cell| {
+        *cell.borrow_mut() = id.map(|s| s.to_string());
+    });
+}
+
+pub(crate) fn current_device_identifier() -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(overridden) = TEST_DEVICE_ID_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return Ok(overridden);
+    }
     machine_uid::get().map_err(|e| format!("Identifiant machine indisponible : {}", e))
 }
 
@@ -210,23 +654,27 @@ fn ensure_local_device_quota(
     }
 
     let active: i64 = match excluded_identifier {
-        Some(identifier) => tx.query_row(
-            "SELECT COUNT(*) FROM devices
+        Some(identifier) => tx
+            .query_row(
+                "SELECT COUNT(*) FROM devices
              WHERE school_id = ?1
                AND status = 'ACTIVE'
                AND (deleted_at IS NULL OR deleted_at = 0)
                AND device_identifier <> ?2",
-            rusqlite::params![school_id, identifier],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?,
-        None => tx.query_row(
-            "SELECT COUNT(*) FROM devices
+                rusqlite::params![school_id, identifier],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?,
+        None => tx
+            .query_row(
+                "SELECT COUNT(*) FROM devices
              WHERE school_id = ?1
                AND status = 'ACTIVE'
                AND (deleted_at IS NULL OR deleted_at = 0)",
-            rusqlite::params![school_id],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?,
+                rusqlite::params![school_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?,
     };
 
     if active >= max {
@@ -247,7 +695,11 @@ fn register_device_conn(
 ) -> Result<String, String> {
     let session = crate::auth_guard::require_authenticated(conn)?;
 
-    if let Some(requested) = school_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(requested) = school_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if requested != session.school_id {
             return Err("Établissement demandé non autorisé pour cet appareil".to_string());
         }
@@ -256,23 +708,21 @@ fn register_device_conn(
     let school = session.school_id.clone();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    let license_id: Option<String> = tx
+    let (license_id, max_devices): (String, Option<i64>) = tx
         .query_row(
-            "SELECT id FROM licenses WHERE school_id = ?1 AND is_current = 1",
+            "SELECT id, max_devices
+             FROM licenses
+             WHERE school_id = ?1 AND is_current = 1 AND status = 'ACTIVE'
+             LIMIT 1",
             rusqlite::params![school],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .map_err(|e| e.to_string())?;
-
-    let max_devices: Option<i64> = tx
-        .query_row(
-            "SELECT max_devices FROM licenses WHERE school_id = ?1 AND is_current = 1",
-            rusqlite::params![school],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            "Aucune licence active enregistrée pour cet établissement : enregistrez d'abord la licence."
+                .to_string()
+        })?;
 
     let existing: Option<(String, String, String, Option<i64>)> = tx
         .query_row(
@@ -303,7 +753,8 @@ fn register_device_conn(
                      updated_at = CURRENT_TIMESTAMP
                  WHERE id = ?1",
                 rusqlite::params![device_id, license_id, host_name, os_name],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         None => {
             ensure_local_device_quota(&tx, &school, max_devices, None)?;
@@ -322,8 +773,14 @@ fn register_device_conn(
 }
 
 #[tauri::command]
-pub fn register_device(state: State<'_, DbState>, school_id: Option<String>) -> Result<String, String> {
-    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn register_device(
+    state: State<'_, DbState>,
+    school_id: Option<String>,
+) -> Result<String, String> {
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     let uid = current_device_identifier()?;
     let host_name = System::host_name().unwrap_or_else(|| "Unknown PC".to_string());
     let os_name = System::name().unwrap_or_else(|| "Unknown OS".to_string());
@@ -334,8 +791,16 @@ pub fn register_device(state: State<'_, DbState>, school_id: Option<String>) -> 
 // COMMANDE : Vérification du rôle utilisateur (RBAC)
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn check_user_role(state: State<'_, DbState>, user_id: String, school_id: String, required_role: String) -> Result<bool, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn check_user_role(
+    state: State<'_, DbState>,
+    user_id: String,
+    school_id: String,
+    required_role: String,
+) -> Result<bool, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     check_user_role_conn(&conn, &user_id, &school_id, &required_role)
 }
 
@@ -424,8 +889,15 @@ pub fn check_user_role_conn(
 }
 
 #[tauri::command]
-pub fn get_current_user_roles(state: State<'_, DbState>, user_id: String, school_id: String) -> Result<Vec<String>, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn get_current_user_roles(
+    state: State<'_, DbState>,
+    user_id: String,
+    school_id: String,
+) -> Result<Vec<String>, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     get_current_user_roles_conn(&conn, &user_id, &school_id)
 }
 
@@ -452,19 +924,23 @@ pub fn get_current_user_roles_conn(
         ));
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT r.name FROM user_roles ur
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.name FROM user_roles ur
          JOIN roles r ON ur.role_id = r.id
          WHERE ur.user_id = ?1 AND ur.school_id = ?2
          UNION
          SELECT r.name FROM user_roles ur
          JOIN roles r ON ur.role_id = r.id
-         WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'"
-    ).map_err(|e| e.to_string())?;
+         WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map(rusqlite::params![user_id, school_id], |row| {
-        row.get::<_, String>(0)
-    }).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![user_id, school_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut roles = Vec::new();
     for r in rows {
@@ -481,8 +957,16 @@ pub fn get_current_user_roles_conn(
 /// - Pour les autres rôles, l'appelant doit être SUPER_ADMIN ou DIRECTION de l'établissement cible.
 /// - Les rôles inconnus ne peuvent pas être créés dynamiquement : ils doivent préexister dans `roles`.
 #[tauri::command]
-pub fn set_local_user_role(user_id: String, school_id: String, role_name: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn set_local_user_role(
+    user_id: String,
+    school_id: String,
+    role_name: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     set_local_user_role_conn(&conn, &user_id, &school_id, &role_name)
 }
 
@@ -507,12 +991,16 @@ pub fn set_local_user_role_conn(
     if is_target_super_admin {
         // Seul un Super Administrateur authentifié peut attribuer le rôle SUPER_ADMIN
         if !caller.is_super_admin {
-            return Err("Action refusée : seul un Super Administrateur peut attribuer le rôle SUPER_ADMIN.".to_string());
+            return Err(
+                "Action refusée : seul un Super Administrateur peut attribuer le rôle SUPER_ADMIN."
+                    .to_string(),
+            );
         }
     } else {
         // Pour les autres rôles (DIRECTION, SECRETAIRE, PROFESSEUR, etc.) :
         // L'appelant doit être SUPER_ADMIN (global) ou DIRECTION sur l'établissement cible school_id
-        let is_direction_for_school = caller.roles.iter().any(|r| r == "DIRECTION") && caller.school_id == school_id;
+        let is_direction_for_school =
+            caller.roles.iter().any(|r| r == "DIRECTION") && caller.school_id == school_id;
         if !caller.is_super_admin && !is_direction_for_school {
             return Err("Action refusée : vous n'avez pas l'autorité nécessaire pour attribuer des rôles dans cet établissement.".to_string());
         }
@@ -537,7 +1025,12 @@ pub fn set_local_user_role_conn(
             rusqlite::params![trimmed_role],
             |row| row.get(0),
         )
-        .map_err(|_| format!("Rôle invalide ou inexistant : '{}'. L'attribution est refusée.", trimmed_role))?;
+        .map_err(|_| {
+            format!(
+                "Rôle invalide ou inexistant : '{}'. L'attribution est refusée.",
+                trimmed_role
+            )
+        })?;
 
     // École : réutilise si déjà connue, sinon crée un libellé par défaut
     conn.execute(
@@ -592,7 +1085,10 @@ pub fn bootstrap_initial_super_admin_conn(
         .unwrap_or(0);
 
     if existing_sa > 0 {
-        return Err("Amorçage refusé : un Super Administrateur existe déjà dans la base locale.".to_string());
+        return Err(
+            "Amorçage refusé : un Super Administrateur existe déjà dans la base locale."
+                .to_string(),
+        );
     }
 
     // 2. Vérification de l'utilisateur actif
@@ -634,7 +1130,8 @@ pub fn bootstrap_initial_super_admin_conn(
     .map_err(|e| format!("Erreur attribution amorçage SUPER_ADMIN: {}", e))?;
 
     // 6. Validation atomique de la transaction
-    tx.commit().map_err(|e| format!("Erreur validation transaction amorçage: {}", e))?;
+    tx.commit()
+        .map_err(|e| format!("Erreur validation transaction amorçage: {}", e))?;
 
     Ok(())
 }
@@ -659,7 +1156,8 @@ pub fn bootstrap_super_admin_with_verified_user(
         "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?2, 'ACTIVE')
          ON CONFLICT(id) DO UPDATE SET email = excluded.email, status = 'ACTIVE'",
         rusqlite::params![verified_user.id, email],
-    ).map_err(|e| format!("Erreur création utilisateur local : {}", e))?;
+    )
+    .map_err(|e| format!("Erreur création utilisateur local : {}", e))?;
 
     bootstrap_initial_super_admin_conn(conn, &verified_user.id, school_id)?;
 
@@ -689,15 +1187,21 @@ pub async fn bootstrap_initial_super_admin(
     // 1. Validation de l'identité et des privilèges auprès du cloud (sans secret maître)
     let auth_user = crate::auth_guard::verify_cloud_super_admin_credentials(&token).await?;
 
-    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données locale".to_string())?;
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données locale".to_string())?;
 
     // L'identifiant local provient OBLIGATOIREMENT de l'identité validée par le cloud
-    let email = auth_user.email.unwrap_or_else(|| format!("{}@orion.app", &auth_user.id));
+    let email = auth_user
+        .email
+        .unwrap_or_else(|| format!("{}@orion.app", &auth_user.id));
     conn.execute(
         "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?2, 'ACTIVE')
          ON CONFLICT(id) DO UPDATE SET email = excluded.email, status = 'ACTIVE'",
         rusqlite::params![auth_user.id, email],
-    ).map_err(|e| format!("Erreur initialisation utilisateur local : {}", e))?;
+    )
+    .map_err(|e| format!("Erreur initialisation utilisateur local : {}", e))?;
 
     // 2. Amorçage atomique immédiat dans la base SQLite locale
     bootstrap_initial_super_admin_conn(&mut *conn, &auth_user.id, &effective_school_id)?;
@@ -738,14 +1242,36 @@ pub async fn establish_online_session(
         .map_err(|e| format!("Erreur création client HTTP : {}", e))?;
 
     // 2. Vérification d'authenticité et extraction d'identité certifiée par Supabase Auth
-    let auth_user = crate::auth_guard::verify_supabase_user_token(&supabase_url, &supabase_anon_key, &token, &client).await?;
+    let auth_user = crate::auth_guard::verify_supabase_user_token(
+        &supabase_url,
+        &supabase_anon_key,
+        &token,
+        &client,
+    )
+    .await?;
 
     // 3. Extraction des autorisations réelles sous contrôle RLS
-    let cloud_roles = crate::auth_guard::fetch_cloud_user_roles(&supabase_url, &supabase_anon_key, &auth_user.id, &token, &client).await?;
+    let cloud_roles = crate::auth_guard::fetch_cloud_user_roles(
+        &supabase_url,
+        &supabase_anon_key,
+        &auth_user.id,
+        &token,
+        &client,
+    )
+    .await?;
 
-    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données locale".to_string())?;
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données locale".to_string())?;
 
-    establish_online_session_conn(&mut conn, &auth_user, &cloud_roles, school_id.as_deref(), &token)
+    establish_online_session_conn(
+        &mut conn,
+        &auth_user,
+        &cloud_roles,
+        school_id.as_deref(),
+        &token,
+    )
 }
 
 /// Implémentation isolée testable de l'établissement de session en ligne sur une connexion SQLite.
@@ -781,7 +1307,9 @@ pub fn establish_online_session_conn(
 
     // Déterminer si l'utilisateur est SUPER_ADMIN — exclusivement d'après les rôles cloud
     // (SEC-VERIFY3-01 : un reliquat SQLite local ne peut pas accorder ce privilège en connexion en ligne)
-    let is_super_admin = cloud_roles.iter().any(|r| r.role_name.eq_ignore_ascii_case("SUPER_ADMIN"));
+    let is_super_admin = cloud_roles
+        .iter()
+        .any(|r| r.role_name.eq_ignore_ascii_case("SUPER_ADMIN"));
 
     // Déterminer les écoles autorisées — exclusivement d'après les rôles cloud
     // (SEC-VERIFY3-02 : les écoles révoquées dans Supabase ne sont pas réintroduites depuis SQLite)
@@ -801,7 +1329,10 @@ pub fn establish_online_session_conn(
             return Err("Aucun établissement autorisé n'est associé à ce compte.".to_string());
         }
 
-        if let Some(req) = requested_school_id.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Some(req) = requested_school_id
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             if authorized_schools.iter().any(|s| s == req) {
                 req.to_string()
             } else {
@@ -824,19 +1355,22 @@ pub fn establish_online_session_conn(
         "INSERT INTO users (id, email, username, status) VALUES (?1, ?2, ?2, 'ACTIVE')
          ON CONFLICT(id) DO UPDATE SET email = excluded.email, status = 'ACTIVE'",
         rusqlite::params![user_id, email],
-    ).map_err(|e| format!("Erreur synchronisation utilisateur : {}", e))?;
+    )
+    .map_err(|e| format!("Erreur synchronisation utilisateur : {}", e))?;
 
     tx.execute(
         "INSERT INTO schools (id, name) VALUES (?1, 'École') ON CONFLICT(id) DO NOTHING",
         rusqlite::params![effective_school_id],
-    ).map_err(|e| format!("Erreur synchronisation école : {}", e))?;
+    )
+    .map_err(|e| format!("Erreur synchronisation école : {}", e))?;
 
     // SEC-VERIFY3-03 : Purger les rôles locaux obsolètes avant réinsertion depuis cloud_roles.
     // Garantit qu'aucun rôle révoqué côté Supabase ne persiste dans SQLite après reconnexion.
     tx.execute(
         "DELETE FROM user_roles WHERE user_id = ?1",
         rusqlite::params![user_id],
-    ).map_err(|e| format!("Erreur purge des anciens rôles locaux : {}", e))?;
+    )
+    .map_err(|e| format!("Erreur purge des anciens rôles locaux : {}", e))?;
 
     for crole in cloud_roles {
         let target_school = crole.school_id.as_deref().unwrap_or(&effective_school_id);
@@ -864,7 +1398,8 @@ pub fn establish_online_session_conn(
         }
     }
 
-    tx.commit().map_err(|e| format!("Erreur validation transaction locale : {}", e))?;
+    tx.commit()
+        .map_err(|e| format!("Erreur validation transaction locale : {}", e))?;
 
     // Établir la session locale en mémoire Rust
     crate::sync::set_sync_access_token(Some(token.to_string()));
@@ -891,35 +1426,44 @@ pub fn establish_online_session_conn(
         username: Some(email.to_string()),
         first_name,
         last_name,
-        role_name: if session.is_super_admin { Some("SUPER_ADMIN".to_string()) } else { role_name },
+        role_name: if session.is_super_admin {
+            Some("SUPER_ADMIN".to_string())
+        } else {
+            role_name
+        },
         school_id: effective_school_id,
         session_token: issued.token,
         session_expires_at: issued.expires_at,
     })
 }
 
-
 fn current_staff_id_conn(conn: &Connection, user_id: &str, school_id: &str) -> Option<String> {
-    let linked_staff_id: Option<String> = conn.query_row(
-        "SELECT p.staff_id
+    let linked_staff_id: Option<String> = conn
+        .query_row(
+            "SELECT p.staff_id
            FROM profiles p
            JOIN staff s ON s.id = p.staff_id AND s.school_id = p.school_id
           WHERE p.user_id = ?1 AND p.school_id = ?2 AND p.deleted_at IS NULL
           LIMIT 1",
-        rusqlite::params![user_id, school_id],
-        |row| row.get::<_, Option<String>>(0),
-    ).unwrap_or(None);
+            rusqlite::params![user_id, school_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None);
 
     if linked_staff_id.is_some() {
         return linked_staff_id;
     }
 
-    let email: Option<String> = conn.query_row(
-        "SELECT email FROM users WHERE id = ?1",
-        rusqlite::params![user_id],
-        |row| row.get::<_, Option<String>>(0),
-    ).unwrap_or(None);
-    let Some(email) = email else { return None; };
+    let email: Option<String> = conn
+        .query_row(
+            "SELECT email FROM users WHERE id = ?1",
+            rusqlite::params![user_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None);
+    let Some(email) = email else {
+        return None;
+    };
     if email.trim().is_empty() {
         return None;
     }
@@ -930,7 +1474,8 @@ fn current_staff_id_conn(conn: &Connection, user_id: &str, school_id: &str) -> O
           LIMIT 1",
         rusqlite::params![school_id, email],
         |row| row.get::<_, String>(0),
-    ).ok()
+    )
+    .ok()
 }
 
 /// Résout l'identifiant professeur autorisé pour une lecture pédagogique.
@@ -952,11 +1497,14 @@ fn scoped_pedagogical_teacher_id(
         return Ok(requested_teacher_id.map(str::to_string));
     }
 
-    let staff_id = current_staff_id_conn(conn, &session.user_id, school_id)
-        .ok_or_else(|| "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string())?;
+    let staff_id = current_staff_id_conn(conn, &session.user_id, school_id).ok_or_else(|| {
+        "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string()
+    })?;
     if let Some(requested) = requested_teacher_id {
         if requested != staff_id && requested != session.user_id {
-            return Err("Accès refusé : vous ne pouvez consulter que vos propres affectations.".to_string());
+            return Err(
+                "Accès refusé : vous ne pouvez consulter que vos propres affectations.".to_string(),
+            );
         }
     }
     Ok(Some(staff_id))
@@ -967,8 +1515,15 @@ fn scoped_pedagogical_teacher_id(
 /// retombe sur le rapprochement par email (users.email == staff.email).
 /// Un professeur ne peut ainsi accéder qu'à ses propres affectations.
 #[tauri::command]
-pub fn get_current_staff_id(state: State<'_, DbState>, user_id: String, school_id: String) -> Result<Option<String>, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn get_current_staff_id(
+    state: State<'_, DbState>,
+    user_id: String,
+    school_id: String,
+) -> Result<Option<String>, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     Ok(current_staff_id_conn(&conn, &user_id, &school_id))
 }
 
@@ -987,7 +1542,10 @@ pub fn write_audit_log(
     old_data: Option<String>,
     new_data: Option<String>,
 ) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     let id = uuid::Uuid::new_v4().to_string();
 
     conn.execute(
@@ -1006,7 +1564,9 @@ pub fn write_audit_log(
 pub fn get_sync_status(app: tauri::AppHandle) -> Result<SyncStatus, String> {
     // Même source de vérité que `trigger_sync` : la commandelit la base via
     // son propre chemin, sinon l'affichage pouvait diverger du moteur.
-    let db_path = app.path().app_data_dir()
+    let db_path = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
 
@@ -1018,7 +1578,9 @@ pub fn get_sync_status(app: tauri::AppHandle) -> Result<SyncStatus, String> {
 // ──────────────────────────────────────────────
 #[tauri::command]
 pub fn retry_failed_mutations(app: tauri::AppHandle) -> Result<usize, String> {
-    let db_path = app.path().app_data_dir()
+    let db_path = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
 
@@ -1065,7 +1627,11 @@ pub(crate) fn purge_invalid_mutations_conn(
     conn: &Connection,
     school_id: Option<&str>,
 ) -> Result<usize, String> {
-    let placeholders = VALID_SYNC_ENTITY_TYPES.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let placeholders = VALID_SYNC_ENTITY_TYPES
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
     if let Some(sch) = school_id {
         let sql = format!(
             "DELETE FROM pending_mutations WHERE entity_type NOT IN ({}) AND school_id = ?",
@@ -1076,7 +1642,8 @@ pub(crate) fn purge_invalid_mutations_conn(
             .map(|t| t as &dyn rusqlite::ToSql)
             .collect();
         params.push(&sch);
-        conn.execute(&sql, params.as_slice()).map_err(|e| e.to_string())
+        conn.execute(&sql, params.as_slice())
+            .map_err(|e| e.to_string())
     } else {
         let sql = format!(
             "DELETE FROM pending_mutations WHERE entity_type NOT IN ({})",
@@ -1086,7 +1653,8 @@ pub(crate) fn purge_invalid_mutations_conn(
             .iter()
             .map(|t| t as &dyn rusqlite::ToSql)
             .collect();
-        conn.execute(&sql, params.as_slice()).map_err(|e| e.to_string())
+        conn.execute(&sql, params.as_slice())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -1098,7 +1666,10 @@ pub fn purge_invalid_mutations(
     school_id: Option<String>,
     state: State<'_, DbState>,
 ) -> Result<usize, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::require_super_admin(&conn)?;
     purge_invalid_mutations_conn(&conn, school_id.as_deref())
 }
@@ -1110,7 +1681,10 @@ pub fn purge_invalid_mutations(
 // ──────────────────────────────────────────────
 #[tauri::command]
 pub fn enqueue_full_resync(school_id: String, state: State<'_, DbState>) -> Result<usize, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SUPER_ADMIN"])?;
 
     let mut enqueued = 0usize;
@@ -1149,9 +1723,12 @@ async fn accept_sync_token_for_session(user_id: &str, token: &str) -> Result<(),
         &supabase_anon_key,
         token,
         &client,
-    ).await?;
+    )
+    .await?;
     if auth_user.id != user_id {
-        return Err("Le jeton de synchronisation ne correspond pas à la session active.".to_string());
+        return Err(
+            "Le jeton de synchronisation ne correspond pas à la session active.".to_string(),
+        );
     }
     crate::sync::set_sync_access_token(Some(token.to_string()));
     Ok(())
@@ -1171,7 +1748,9 @@ pub async fn trigger_sync(
         accept_sync_token_for_session(&user_id, token).await?;
     }
 
-    let db_path = app.path().app_data_dir()
+    let db_path = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
 
@@ -1180,7 +1759,10 @@ pub async fn trigger_sync(
 
 /// Enregistre le JWT utilisateur pour la synchronisation (jamais une clé service_role).
 #[tauri::command]
-pub async fn set_sync_access_token(token: Option<String>, state: State<'_, DbState>) -> Result<(), String> {
+pub async fn set_sync_access_token(
+    token: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let user_id = {
         let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
         crate::auth_guard::require_authenticated(&conn)?.user_id
@@ -1197,7 +1779,9 @@ pub async fn set_sync_access_token(token: Option<String>, state: State<'_, DbSta
 // ──────────────────────────────────────────────
 #[tauri::command]
 pub fn get_pending_mutations(app: tauri::AppHandle) -> Result<Vec<PendingMutation>, String> {
-    let db_path = app.path().app_data_dir()
+    let db_path = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
 
@@ -1209,7 +1793,9 @@ pub fn get_pending_mutations(app: tauri::AppHandle) -> Result<Vec<PendingMutatio
 // ──────────────────────────────────────────────
 #[tauri::command]
 pub fn get_sync_conflicts(app: tauri::AppHandle) -> Result<Vec<InboxConflict>, String> {
-    let db_path = app.path().app_data_dir()
+    let db_path = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
 
@@ -1220,10 +1806,18 @@ pub fn get_sync_conflicts(app: tauri::AppHandle) -> Result<Vec<InboxConflict>, S
 // COMMANDE : Supprimer TOUS les conflits en attente
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn purge_all_sync_conflicts(app: tauri::AppHandle, state: State<'_, DbState>) -> Result<usize, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn purge_all_sync_conflicts(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+) -> Result<usize, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::require_super_admin(&conn)?;
-    let db_path = app.path().app_data_dir()
+    let db_path = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
 
@@ -1236,16 +1830,21 @@ pub fn purge_all_sync_conflicts(app: tauri::AppHandle, state: State<'_, DbState>
 #[tauri::command]
 pub fn resolve_sync_conflict(
     inbox_id: String,
-    choice: String,   // "LOCAL" ou "REMOTE"
+    choice: String, // "LOCAL" ou "REMOTE"
     app: tauri::AppHandle,
     state: State<'_, DbState>,
 ) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     let session = crate::auth_guard::require_authenticated(&conn)?;
     crate::auth_guard::authorize(&conn, &session.school_id, &["DIRECTION"])?;
     drop(conn);
 
-    let db_path = app.path().app_data_dir()
+    let db_path = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Impossible de trouver le dossier de données : {}", e))?
         .join("orion.sqlite");
 
@@ -1256,8 +1855,15 @@ pub fn resolve_sync_conflict(
 // COMMANDE : Enregistrer les paramètres de l'établissement (Offline-First)
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn save_school_settings(payload: String, school_id: Option<String>, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données")?;
+pub fn save_school_settings(
+    payload: String,
+    school_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données")?;
 
     let s: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let get = |key: &str| s.get(key).and_then(|v| v.as_str());
@@ -1267,8 +1873,12 @@ pub fn save_school_settings(payload: String, school_id: Option<String>, state: S
     let school_id: String = school_id
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
-            conn.query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
-                .unwrap_or_else(|_| "school-1".to_string())
+            conn.query_row(
+                "SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "school-1".to_string())
         });
 
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SUPER_ADMIN"])?;
@@ -1277,7 +1887,8 @@ pub fn save_school_settings(payload: String, school_id: Option<String>, state: S
     conn.execute(
         "INSERT INTO schools (id, name) VALUES (?1, ?2) ON CONFLICT(id) DO NOTHING",
         rusqlite::params![school_id, get("name").unwrap_or("")],
-    ).map_err(|e| format!("Erreur SQLite INSERT schools: {}", e))?;
+    )
+    .map_err(|e| format!("Erreur SQLite INSERT schools: {}", e))?;
 
     conn.execute(
         "UPDATE schools SET 
@@ -1290,19 +1901,32 @@ pub fn save_school_settings(payload: String, school_id: Option<String>, state: S
          WHERE id = ?20",
         rusqlite::params![
             get("name").unwrap_or(""),
-            get("short_name"), get("address"), get("city"), get("country"),
-            get("phone"), get("phone_secondary"), get("email"), get("website"),
-            get("currency"), get("timezone"),
-            get("logo_url"), get("stamp_url"), get("signature_url"),
-            get("ministry_name"), get("head_title"), get("head_name"),
-            get("slogan"), get("registration_number"),
+            get("short_name"),
+            get("address"),
+            get("city"),
+            get("country"),
+            get("phone"),
+            get("phone_secondary"),
+            get("email"),
+            get("website"),
+            get("currency"),
+            get("timezone"),
+            get("logo_url"),
+            get("stamp_url"),
+            get("signature_url"),
+            get("ministry_name"),
+            get("head_title"),
+            get("head_name"),
+            get("slogan"),
+            get("registration_number"),
             school_id
-        ]
-    ).map_err(|e| format!("Erreur SQLite UPDATE schools: {}", e))?;
+        ],
+    )
+    .map_err(|e| format!("Erreur SQLite UPDATE schools: {}", e))?;
 
     // Note : les paramètres de l'école sont locaux uniquement.
     // La table 'schools' n'est pas synchronisée via l'outbox.
-    
+
     conn.execute(
         "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, "UPDATE_SETTINGS", "schools", &payload]
@@ -1312,8 +1936,14 @@ pub fn save_school_settings(payload: String, school_id: Option<String>, state: S
 }
 
 #[tauri::command(async)]
-pub fn get_school_settings(school_id: Option<String>, state: State<'_, DbState>) -> Result<serde_json::Value, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données")?;
+pub fn get_school_settings(
+    school_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<serde_json::Value, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données")?;
 
     // Établissement courant : l'identifiant transmis par le front (école de
     // l'utilisateur connecté) est prioritaire ; à défaut, on retombe sur la
@@ -1322,8 +1952,12 @@ pub fn get_school_settings(school_id: Option<String>, state: State<'_, DbState>)
     let school_id: String = school_id
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
-            conn.query_row("SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1", [], |r| r.get(0))
-                .unwrap_or_else(|_| "school-1".to_string())
+            conn.query_row(
+                "SELECT id FROM schools ORDER BY (id = 'school-1') ASC, created_at ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "school-1".to_string())
         });
 
     let mut stmt = conn.prepare(
@@ -1331,9 +1965,11 @@ pub fn get_school_settings(school_id: Option<String>, state: State<'_, DbState>)
                 logo_url, stamp_url, signature_url, ministry_name, head_title, head_name, slogan, registration_number
          FROM schools WHERE id = ?1"
     ).map_err(|e| e.to_string())?;
-    
+
     let settings = stmt.query_row(rusqlite::params![school_id], |row| {
-        let g = |i: usize| -> rusqlite::Result<String> { Ok(row.get::<_, Option<String>>(i)?.unwrap_or_default()) };
+        let g = |i: usize| -> rusqlite::Result<String> {
+            Ok(row.get::<_, Option<String>>(i)?.unwrap_or_default())
+        };
         Ok(serde_json::json!({
             "name": g(0)?,
             "short_name": g(1)?,
@@ -1374,28 +2010,40 @@ pub fn get_school_settings(school_id: Option<String>, state: State<'_, DbState>)
 // COMMANDE : Récupérer les années académiques
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn get_academic_years(school_id: String, state: State<'_, DbState>) -> Result<Vec<AcademicYear>, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+pub fn get_academic_years(
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<AcademicYear>, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+    )?;
 
     let mut stmt = conn.prepare("SELECT id, school_id, name, start_date, end_date, status, is_current FROM academic_years WHERE school_id = ?1 ORDER BY start_date DESC").map_err(|e| e.to_string())?;
-    let year_iter = stmt.query_map(rusqlite::params![school_id], |row| {
-        Ok(AcademicYear {
-            id: row.get(0)?,
-            school_id: row.get(1)?,
-            name: row.get(2)?,
-            start_date: row.get(3)?,
-            end_date: row.get(4)?,
-            status: row.get(5)?,
-            is_current: row.get::<_, i32>(6)? == 1,
+    let year_iter = stmt
+        .query_map(rusqlite::params![school_id], |row| {
+            Ok(AcademicYear {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                name: row.get(2)?,
+                start_date: row.get(3)?,
+                end_date: row.get(4)?,
+                status: row.get(5)?,
+                is_current: row.get::<_, i32>(6)? == 1,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut years = Vec::new();
     for year in year_iter {
         years.push(year.map_err(|e| e.to_string())?);
     }
-    
+
     Ok(years)
 }
 
@@ -1403,23 +2051,35 @@ pub fn get_academic_years(school_id: String, state: State<'_, DbState>) -> Resul
 // COMMANDE : Créer une année académique
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn create_academic_year(school_id: String, name: String, start_date: String, end_date: String, user_id: String, state: State<'_, DbState>) -> Result<AcademicYear, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn create_academic_year(
+    school_id: String,
+    name: String,
+    start_date: String,
+    end_date: String,
+    user_id: String,
+    state: State<'_, DbState>,
+) -> Result<AcademicYear, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
     // Check if PLANNED exists
-    let planned_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM academic_years WHERE school_id = ?1 AND status = 'PLANNED'",
-        rusqlite::params![school_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
-    
+    let planned_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM academic_years WHERE school_id = ?1 AND status = 'PLANNED'",
+            rusqlite::params![school_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
     if planned_count > 0 {
         return Err("Une année PLANNED existe déjà pour cet établissement.".to_string());
     }
-    
+
     let id = uuid::Uuid::new_v4().to_string();
-    
+
     conn.execute(
         "INSERT INTO academic_years (id, school_id, name, start_date, end_date, status, is_current, created_by)
          VALUES (?1, ?2, ?3, ?4, ?5, 'PLANNED', 0, ?6)",
@@ -1432,7 +2092,13 @@ pub fn create_academic_year(school_id: String, name: String, start_date: String,
     enqueue_entity(&conn, "academic_years", &school_id, &id);
 
     Ok(AcademicYear {
-        id, school_id, name, start_date: Some(start_date), end_date: Some(end_date), status: "PLANNED".to_string(), is_current: false
+        id,
+        school_id,
+        name,
+        start_date: Some(start_date),
+        end_date: Some(end_date),
+        status: "PLANNED".to_string(),
+        is_current: false,
     })
 }
 
@@ -1440,15 +2106,25 @@ pub fn create_academic_year(school_id: String, name: String, start_date: String,
 // COMMANDE : Modifier une année académique
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn update_academic_year(id: String, school_id: String, name: String, start_date: String, end_date: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn update_academic_year(
+    id: String,
+    school_id: String,
+    name: String,
+    start_date: String,
+    end_date: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
     conn.execute(
         "UPDATE academic_years SET name = ?1, start_date = ?2, end_date = ?3, updated_at = CURRENT_TIMESTAMP WHERE id = ?4 AND school_id = ?5",
         rusqlite::params![name, start_date, end_date, id, school_id],
     ).map_err(|e| e.to_string())?;
-    
+
     Ok(())
 }
 
@@ -1456,26 +2132,35 @@ pub fn update_academic_year(id: String, school_id: String, name: String, start_d
 // COMMANDE : Ouvrir une année académique (ACTIVE)
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn open_academic_year(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn open_academic_year(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
     // Check if ACTIVE exists
-    let active_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM academic_years WHERE school_id = ?1 AND status = 'ACTIVE'",
-        rusqlite::params![school_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
-    
+    let active_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM academic_years WHERE school_id = ?1 AND status = 'ACTIVE'",
+            rusqlite::params![school_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
     if active_count > 0 {
         return Err("Une année ACTIVE existe déjà. Veuillez la clôturer d'abord.".to_string());
     }
-    
+
     conn.execute(
         "UPDATE academic_years SET status = 'ACTIVE', is_current = 1 WHERE id = ?1 AND school_id = ?2",
         rusqlite::params![id, school_id],
     ).map_err(|e| e.to_string())?;
-    
+
     Ok(())
 }
 
@@ -1483,15 +2168,24 @@ pub fn open_academic_year(id: String, school_id: String, state: State<'_, DbStat
 // COMMANDE : Clôturer une année académique
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn close_academic_year(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn close_academic_year(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
-    let status: String = conn.query_row(
-        "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
-        rusqlite::params![id, school_id],
-        |row| row.get(0),
-    ).map_err(|_| "Année introuvable.".to_string())?;
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
+            rusqlite::params![id, school_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Année introuvable.".to_string())?;
 
     if status != "ACTIVE" {
         return Err("Seule une année ACTIVE peut être clôturée.".to_string());
@@ -1501,7 +2195,7 @@ pub fn close_academic_year(id: String, school_id: String, state: State<'_, DbSta
         "UPDATE academic_years SET status = 'CLOSED', is_current = 0, closed_at = CURRENT_TIMESTAMP WHERE id = ?1 AND school_id = ?2",
         rusqlite::params![id, school_id],
     ).map_err(|e| e.to_string())?;
-    
+
     Ok(())
 }
 
@@ -1509,24 +2203,36 @@ pub fn close_academic_year(id: String, school_id: String, state: State<'_, DbSta
 // COMMANDE : Archiver une année académique
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn archive_academic_year(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn archive_academic_year(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
-    let status: String = conn.query_row(
-        "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
-        rusqlite::params![id, school_id],
-        |row| row.get(0),
-    ).map_err(|_| "Année introuvable.".to_string())?;
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
+            rusqlite::params![id, school_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Année introuvable.".to_string())?;
 
     if status != "CLOSED" {
-        return Err("Seule une année CLOSED peut être archivée. Clôturez l'année d'abord.".to_string());
+        return Err(
+            "Seule une année CLOSED peut être archivée. Clôturez l'année d'abord.".to_string(),
+        );
     }
 
     conn.execute(
         "UPDATE academic_years SET status = 'ARCHIVED' WHERE id = ?1 AND school_id = ?2",
         rusqlite::params![id, school_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -1535,38 +2241,51 @@ pub fn archive_academic_year(id: String, school_id: String, state: State<'_, DbS
 // COMMANDE : Supprimer une année académique
 // ──────────────────────────────────────────────
 #[tauri::command]
-pub fn delete_academic_year(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
-    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn delete_academic_year(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
 
     // On refuse de supprimer l'année active
-    let status: String = conn.query_row(
-        "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
-        rusqlite::params![id, school_id],
-        |row| row.get(0),
-    ).map_err(|_| "Année introuvable.".to_string())?;
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
+            rusqlite::params![id, school_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Année introuvable.".to_string())?;
 
     if status == "ACTIVE" {
-        return Err("Impossible de supprimer l'année active. Veuillez d'abord la clôturer.".to_string());
+        return Err(
+            "Impossible de supprimer l'année active. Veuillez d'abord la clôturer.".to_string(),
+        );
     }
 
     // Collecter les IDs des entités enfants AVANT de les supprimer,
     // pour pouvoir enregistrer des mutations DELETE pour chaque.
     let enrollment_ids: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM enrollments WHERE academic_year_id = ?1"
-        ).map_err(|e| e.to_string())?;
-        let result = stmt.query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
+        let mut stmt = conn
+            .prepare("SELECT id FROM enrollments WHERE academic_year_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
             .collect();
         result
     };
     let class_ids: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM classes WHERE academic_year_id = ?1"
-        ).map_err(|e| e.to_string())?;
-        let result = stmt.query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
+        let mut stmt = conn
+            .prepare("SELECT id FROM classes WHERE academic_year_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
             .collect();
@@ -1579,22 +2298,26 @@ pub fn delete_academic_year(id: String, school_id: String, state: State<'_, DbSt
     tx.execute(
         "DELETE FROM enrollment_history WHERE academic_year_id = ?1",
         rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     tx.execute(
         "DELETE FROM enrollments WHERE academic_year_id = ?1",
         rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     tx.execute(
         "DELETE FROM classes WHERE academic_year_id = ?1",
         rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     tx.execute(
         "DELETE FROM academic_years WHERE id = ?1 AND school_id = ?2",
         rusqlite::params![id, school_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     // Enregistrer les mutations DELETE pour la sync (enfants d'abord, puis parent)
     for eid in &enrollment_ids {
@@ -1699,7 +2422,7 @@ pub fn transfer_class_within_year(
     transfer_class_within_year_conn(&mut conn, &enrollment_id, new_class_id.as_deref())
 }
 
-fn transfer_class_within_year_conn(
+pub(crate) fn transfer_class_within_year_conn(
     conn: &mut Connection,
     enrollment_id: &str,
     new_class_id: Option<&str>,
@@ -1760,6 +2483,18 @@ fn transfer_class_within_year_conn(
 
     if !has_pedagogical_role {
         let err = "Action refusée : rôle(s) requis — DIRECTION, SECRETAIRE.".to_string();
+        return Err(deny_transfer(
+            conn,
+            &school_id,
+            Some(&session.user_id),
+            enrollment_id,
+            old_class_id.as_deref(),
+            new_class_id,
+            &err,
+        ));
+    }
+
+    if let Err(err) = crate::auth_guard::require_active_license_for_session(conn, &session) {
         return Err(deny_transfer(
             conn,
             &school_id,
@@ -1908,7 +2643,10 @@ fn sync_local_user_conn(
     }
 
     let provided_school_id = input.school_id.trim();
-    if !session.is_super_admin && !provided_school_id.is_empty() && provided_school_id != session.school_id {
+    if !session.is_super_admin
+        && !provided_school_id.is_empty()
+        && provided_school_id != session.school_id
+    {
         return Err(
             "Accès refusé : l'établissement fourni ne correspond pas à la session vérifiée."
                 .to_string(),
@@ -2041,7 +2779,13 @@ fn sync_local_user_conn(
                         deleted_at = NULL,
                         updated_at = CURRENT_TIMESTAMP
                   WHERE id = ?5",
-                rusqlite::params![effective_school_id, f_name, l_name, resolved_staff_id, profile_id],
+                rusqlite::params![
+                    effective_school_id,
+                    f_name,
+                    l_name,
+                    resolved_staff_id,
+                    profile_id
+                ],
             )
             .map_err(|e| format!("Erreur sync profil: {}", e))?;
         }
@@ -2128,26 +2872,46 @@ pub fn sync_local_user(
 // ──────────────────────────────────────────────
 use crate::models::{Class, StudentEnrollment};
 
-fn ensure_year_is_open(conn: &rusqlite::Connection, school_id: &str, year_id: &str) -> Result<(), String> {
-    let status: String = conn.query_row(
-        "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
-        rusqlite::params![year_id, school_id],
-        |row| row.get(0),
-    ).map_err(|_| "Année introuvable.".to_string())?;
+fn ensure_year_is_open(
+    conn: &rusqlite::Connection,
+    school_id: &str,
+    year_id: &str,
+) -> Result<(), String> {
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM academic_years WHERE id = ?1 AND school_id = ?2",
+            rusqlite::params![year_id, school_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Année introuvable.".to_string())?;
 
     if status == "CLOSED" || status == "ARCHIVED" {
-        return Err("L'année sélectionnée est clôturée ou archivée. Modification impossible.".to_string());
+        return Err(
+            "L'année sélectionnée est clôturée ou archivée. Modification impossible.".to_string(),
+        );
     }
     Ok(())
 }
 
-
 // `async` : exécuté sur un thread séparé pour ne jamais bloquer l'interface.
 #[tauri::command(async)]
-pub fn get_classes(school_id: String, academic_year_id: String, state: State<'_, DbState>) -> Result<Vec<Class>, String> {
-    let conn = state.0.lock().map_err(|_ | "Impossible de verrouiller la base de données".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
-    let mut stmt = conn.prepare("
+pub fn get_classes(
+    school_id: String,
+    academic_year_id: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<Class>, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+    )?;
+    let mut stmt = conn
+        .prepare(
+            "
         SELECT c.id, c.school_id, c.academic_year_id, c.name, c.level,
                (SELECT COUNT(*) FROM enrollments e
                  WHERE e.class_id = c.id
@@ -2160,27 +2924,31 @@ pub fn get_classes(school_id: String, academic_year_id: String, state: State<'_,
         LEFT JOIN staff st ON c.homeroom_teacher_id = st.id
         WHERE c.school_id = ?1 AND c.academic_year_id = ?2
         ORDER BY c.name ASC
-    ").map_err(|e| e.to_string())?;
-    let classes_iter = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
-        Ok(Class {
-            id: row.get(0)?,
-            school_id: row.get(1)?,
-            academic_year_id: row.get(2)?,
-            name: row.get(3)?,
-            level: row.get(4)?,
-            student_count: row.get(5)?,
-            level_id: row.get(6)?,
-            series_id: row.get(7)?,
-            homeroom_teacher_id: row.get(8)?,
-            homeroom_teacher_name: row.get(9)?,
+    ",
+        )
+        .map_err(|e| e.to_string())?;
+    let classes_iter = stmt
+        .query_map(rusqlite::params![school_id, academic_year_id], |row| {
+            Ok(Class {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                academic_year_id: row.get(2)?,
+                name: row.get(3)?,
+                level: row.get(4)?,
+                student_count: row.get(5)?,
+                level_id: row.get(6)?,
+                series_id: row.get(7)?,
+                homeroom_teacher_id: row.get(8)?,
+                homeroom_teacher_name: row.get(9)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut classes = Vec::new();
     for class in classes_iter {
         classes.push(class.map_err(|e| e.to_string())?);
     }
-    
+
     Ok(classes)
 }
 
@@ -2193,13 +2961,16 @@ pub fn create_class(
     level_id: Option<String>,
     series_id: Option<String>,
     homeroom_teacher_id: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Class, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
     let id = uuid::Uuid::new_v4().to_string();
-    
+
     conn.execute(
         "INSERT INTO classes (id, school_id, academic_year_id, name, level, level_id, series_id, homeroom_teacher_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![id, school_id, academic_year_id, name, level, level_id, series_id, homeroom_teacher_id],
@@ -2208,8 +2979,16 @@ pub fn create_class(
     enqueue_entity(&conn, "classes", &school_id, &id);
 
     Ok(Class {
-        id, school_id, academic_year_id, name, level, student_count: 0,
-        level_id, series_id, homeroom_teacher_id, homeroom_teacher_name: None,
+        id,
+        school_id,
+        academic_year_id,
+        name,
+        level,
+        student_count: 0,
+        level_id,
+        series_id,
+        homeroom_teacher_id,
+        homeroom_teacher_name: None,
     })
 }
 
@@ -2221,15 +3000,20 @@ pub fn update_class(
     level_id: Option<String>,
     series_id: Option<String>,
     homeroom_teacher_id: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
 
-    let (school_id, academic_year_id): (String, String) = conn.query_row(
-        "SELECT school_id, academic_year_id FROM classes WHERE id = ?1",
-        rusqlite::params![id],
-        |row| Ok((row.get(0)?, row.get(1)?))
-    ).map_err(|_| "Classe introuvable".to_string())?;
+    let (school_id, academic_year_id): (String, String) = conn
+        .query_row(
+            "SELECT school_id, academic_year_id FROM classes WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "Classe introuvable".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
@@ -2244,13 +3028,18 @@ pub fn update_class(
 
 #[tauri::command]
 pub fn delete_class(id: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
 
-    let (school_id, academic_year_id): (String, String) = conn.query_row(
-        "SELECT school_id, academic_year_id FROM classes WHERE id = ?1",
-        rusqlite::params![id],
-        |row| Ok((row.get(0)?, row.get(1)?))
-    ).map_err(|_| "Classe introuvable".to_string())?;
+    let (school_id, academic_year_id): (String, String) = conn
+        .query_row(
+            "SELECT school_id, academic_year_id FROM classes WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "Classe introuvable".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
@@ -2258,12 +3047,11 @@ pub fn delete_class(id: String, state: State<'_, DbState>) -> Result<(), String>
     conn.execute(
         "UPDATE enrollments SET class_id = NULL WHERE class_id = ?1",
         rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
-    conn.execute(
-        "DELETE FROM classes WHERE id = ?1",
-        rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM classes WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
 
     // Enregistrer la mutation DELETE pour la sync Supabase
     let payload = serde_json::json!({ "id": id });
@@ -2281,21 +3069,27 @@ pub fn delete_class(id: String, state: State<'_, DbState>) -> Result<(), String>
 // ──────────────────────────────────────────────
 #[tauri::command]
 pub fn delete_enrollment(id: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    let (school_id, academic_year_id, student_id): (String, String, String) = conn.query_row(
-        "SELECT school_id, academic_year_id, student_id FROM enrollments WHERE id = ?1",
-        rusqlite::params![id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    ).map_err(|_| "Inscription introuvable".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let (school_id, academic_year_id, student_id): (String, String, String) = conn
+        .query_row(
+            "SELECT school_id, academic_year_id, student_id FROM enrollments WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|_| "Inscription introuvable".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     // Collecter les IDs d'historique liés avant suppression
     let history_ids: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM enrollment_history WHERE enrollment_id = ?1"
-        ).map_err(|e| e.to_string())?;
-        let result = stmt.query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
+        let mut stmt = conn
+            .prepare("SELECT id FROM enrollment_history WHERE enrollment_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
             .collect();
@@ -2303,18 +3097,32 @@ pub fn delete_enrollment(id: String, state: State<'_, DbState>) -> Result<(), St
     };
 
     // Supprimer d'abord l'historique lié (clé étrangère enrollment_id → enrollments.id)
-    conn.execute("DELETE FROM enrollment_history WHERE enrollment_id = ?1", rusqlite::params![id]).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM enrollments WHERE id = ?1", rusqlite::params![id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM enrollment_history WHERE enrollment_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM enrollments WHERE id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
 
     // Vérifier si cet étudiant a d'autres inscriptions. Si non, supprimer aussi l'étudiant.
-    let other_enrollments: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM enrollments WHERE student_id = ?1",
-        rusqlite::params![student_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+    let other_enrollments: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM enrollments WHERE student_id = ?1",
+            rusqlite::params![student_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     if other_enrollments == 0 {
-        conn.execute("DELETE FROM students WHERE id = ?1", rusqlite::params![student_id]).map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM students WHERE id = ?1",
+            rusqlite::params![student_id],
+        )
+        .map_err(|e| e.to_string())?;
         // Mutation DELETE pour l'étudiant
         let payload = serde_json::json!({ "id": student_id });
         let mid = uuid::Uuid::new_v4().to_string();
@@ -2353,8 +3161,15 @@ pub fn get_students(
     include_photos: Option<bool>,
     state: State<'_, DbState>,
 ) -> Result<Vec<StudentEnrollment>, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+    )?;
 
     let photo_field = if include_photos == Some(false) {
         "CAST(NULL AS TEXT) as photo_url"
@@ -2362,7 +3177,8 @@ pub fn get_students(
         "s.photo_url"
     };
 
-    let mut query = format!("
+    let mut query = format!(
+        "
         SELECT e.id, e.student_id, e.class_id, e.enrollment_type, e.status,
                s.first_name, s.last_name, s.matricule, {}, c.name as class_name,
                c.level as class_level, s.birth_date, s.birth_place, s.gender, s.address
@@ -2370,41 +3186,45 @@ pub fn get_students(
         JOIN students s ON e.student_id = s.id
         LEFT JOIN classes c ON e.class_id = c.id
         WHERE e.school_id = ?1 AND e.academic_year_id = ?2
-    ", photo_field);
-    
+    ",
+        photo_field
+    );
+
     if class_id.is_some() {
         query.push_str(" AND e.class_id = ?3");
     }
-    
+
     query.push_str(" ORDER BY s.last_name ASC, s.first_name ASC");
-    
+
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
-    
+
     let params: Vec<&dyn rusqlite::ToSql> = if let Some(ref cid) = class_id {
         vec![&school_id, &academic_year_id, cid]
     } else {
         vec![&school_id, &academic_year_id]
     };
 
-    let iter = stmt.query_map(params.as_slice(), |row| {
-        Ok(StudentEnrollment {
-            id: row.get(0)?,
-            student_id: row.get(1)?,
-            class_id: row.get(2)?,
-            enrollment_type: row.get(3)?,
-            status: row.get(4)?,
-            first_name: row.get(5)?,
-            last_name: row.get(6)?,
-            matricule: row.get(7)?,
-            photo_url: row.get(8)?,
-            class_name: row.get(9)?,
-            class_level: row.get(10)?,
-            birth_date: row.get(11)?,
-            birth_place: row.get(12)?,
-            gender: row.get(13)?,
-            address: row.get(14)?,
+    let iter = stmt
+        .query_map(params.as_slice(), |row| {
+            Ok(StudentEnrollment {
+                id: row.get(0)?,
+                student_id: row.get(1)?,
+                class_id: row.get(2)?,
+                enrollment_type: row.get(3)?,
+                status: row.get(4)?,
+                first_name: row.get(5)?,
+                last_name: row.get(6)?,
+                matricule: row.get(7)?,
+                photo_url: row.get(8)?,
+                class_name: row.get(9)?,
+                class_level: row.get(10)?,
+                birth_date: row.get(11)?,
+                birth_place: row.get(12)?,
+                gender: row.get(13)?,
+                address: row.get(14)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut students = Vec::new();
     for student in iter {
@@ -2415,14 +3235,33 @@ pub fn get_students(
 }
 
 #[tauri::command]
-pub fn create_student(school_id: String, academic_year_id: String, first_name: String, last_name: String, class_id: Option<String>, state: State<'_, DbState>) -> Result<StudentEnrollment, String> {
-    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn create_student(
+    school_id: String,
+    academic_year_id: String,
+    first_name: String,
+    last_name: String,
+    class_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<StudentEnrollment, String> {
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
     let student_id = uuid::Uuid::new_v4().to_string();
     let enrollment_id = uuid::Uuid::new_v4().to_string();
-    let matricule = format!("MAT-{}", uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect::<String>().to_uppercase());
+    let matricule = format!(
+        "MAT-{}",
+        uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect::<String>()
+            .to_uppercase()
+    );
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute(
@@ -2436,7 +3275,9 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
         rusqlite::params![enrollment_id, school_id, academic_year_id, student_id, class_id],
     ).map_err(|e| e.to_string())?;
 
-    let (class_name, class_level): (Option<String>, Option<String>) = if let Some(ref cid) = class_id {
+    let (class_name, class_level): (Option<String>, Option<String>) = if let Some(ref cid) =
+        class_id
+    {
         tx.query_row(
             "SELECT name, level FROM classes WHERE id = ?1 AND school_id = ?2 AND academic_year_id = ?3",
             rusqlite::params![cid, school_id, academic_year_id],
@@ -2465,7 +3306,14 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
     });
 
     record_mutation(&tx, &school_id, "students", &student_id, "INSERT", &student)?;
-    record_mutation(&tx, &school_id, "enrollments", &enrollment_id, "INSERT", &enrollment)?;
+    record_mutation(
+        &tx,
+        &school_id,
+        "enrollments",
+        &enrollment_id,
+        "INSERT",
+        &enrollment,
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
 
     Ok(StudentEnrollment {
@@ -2488,57 +3336,83 @@ pub fn create_student(school_id: String, academic_year_id: String, first_name: S
 }
 
 #[tauri::command]
-pub fn get_student_details(student_id: String, state: State<'_, DbState>) -> Result<crate::models::Student, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn get_student_details(
+    student_id: String,
+    state: State<'_, DbState>,
+) -> Result<crate::models::Student, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
 
     // Résoudre le school_id depuis l'élève pour vérifier l'appartenance à l'établissement de la session
-    let school_id: String = conn.query_row(
-        "SELECT school_id FROM students WHERE id = ?1",
-        rusqlite::params![student_id],
-        |row| row.get(0),
-    ).map_err(|_| "Élève introuvable.".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+    let school_id: String = conn
+        .query_row(
+            "SELECT school_id FROM students WHERE id = ?1",
+            rusqlite::params![student_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Élève introuvable.".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+    )?;
 
-    let mut stmt = conn.prepare("
+    let mut stmt = conn
+        .prepare(
+            "
         SELECT id, first_name, last_name, birth_date, birth_place, gender, photo_url, matricule,
                address, phone, parent_name, parent_phone, parent_email, blood_type, medical_notes
         FROM students
         WHERE id = ?1
-    ").map_err(|e| e.to_string())?;
-    
-    let student = stmt.query_row(rusqlite::params![student_id], |row| {
-        Ok(crate::models::Student {
-            id: row.get(0)?,
-            first_name: row.get(1)?,
-            last_name: row.get(2)?,
-            birth_date: row.get(3)?,
-            birth_place: row.get(4)?,
-            gender: row.get(5)?,
-            photo_url: row.get(6)?,
-            matricule: row.get(7)?,
-            address: row.get(8)?,
-            phone: row.get(9)?,
-            parent_name: row.get(10)?,
-            parent_phone: row.get(11)?,
-            parent_email: row.get(12)?,
-            blood_type: row.get(13)?,
-            medical_notes: row.get(14)?,
+    ",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let student = stmt
+        .query_row(rusqlite::params![student_id], |row| {
+            Ok(crate::models::Student {
+                id: row.get(0)?,
+                first_name: row.get(1)?,
+                last_name: row.get(2)?,
+                birth_date: row.get(3)?,
+                birth_place: row.get(4)?,
+                gender: row.get(5)?,
+                photo_url: row.get(6)?,
+                matricule: row.get(7)?,
+                address: row.get(8)?,
+                phone: row.get(9)?,
+                parent_name: row.get(10)?,
+                parent_phone: row.get(11)?,
+                parent_email: row.get(12)?,
+                blood_type: row.get(13)?,
+                medical_notes: row.get(14)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
-    
+        .map_err(|e| e.to_string())?;
+
     Ok(student)
 }
 
 #[tauri::command]
-pub fn update_student(student: crate::models::Student, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+pub fn update_student(
+    student: crate::models::Student,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
 
     // Résoudre le school_id depuis l'élève pour vérifier l'appartenance
-    let school_id: String = conn.query_row(
-        "SELECT school_id FROM students WHERE id = ?1",
-        rusqlite::params![student.id],
-        |row| row.get(0),
-    ).map_err(|_| "Élève introuvable.".to_string())?;
+    let school_id: String = conn
+        .query_row(
+            "SELECT school_id FROM students WHERE id = ?1",
+            rusqlite::params![student.id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Élève introuvable.".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
 
     conn.execute(
@@ -2549,13 +3423,25 @@ pub fn update_student(student: crate::models::Student, state: State<'_, DbState>
             blood_type = ?13, medical_notes = ?14
          WHERE id = ?15",
         rusqlite::params![
-            student.first_name, student.last_name, student.birth_date, student.birth_place, student.gender,
-            student.photo_url, student.matricule, student.address, student.phone,
-            student.parent_name, student.parent_phone, student.parent_email,
-            student.blood_type, student.medical_notes, student.id
+            student.first_name,
+            student.last_name,
+            student.birth_date,
+            student.birth_place,
+            student.gender,
+            student.photo_url,
+            student.matricule,
+            student.address,
+            student.phone,
+            student.parent_name,
+            student.parent_phone,
+            student.parent_email,
+            student.blood_type,
+            student.medical_notes,
+            student.id
         ],
-    ).map_err(|e| e.to_string())?;
-    
+    )
+    .map_err(|e| e.to_string())?;
+
     // Ajout d'une entrée dans pending_mutations
     let mutation_id = uuid::Uuid::new_v4().to_string();
     let payload = serde_json::to_string(&student).map_err(|e| e.to_string())?;
@@ -2563,36 +3449,44 @@ pub fn update_student(student: crate::models::Student, state: State<'_, DbState>
         "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![mutation_id, "students", student.id, "UPDATE", payload]
     ).map_err(|e| e.to_string())?;
-        
+
     Ok(())
 }
 
 #[tauri::command]
 pub fn migrate_student(
-    school_id: String, 
-    student_id: String, 
-    target_academic_year_id: String, 
-    target_class_id: Option<String>, 
-    enrollment_type: String, 
-    state: State<'_, DbState>
+    school_id: String,
+    student_id: String,
+    target_academic_year_id: String,
+    target_class_id: Option<String>,
+    enrollment_type: String,
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
-    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
-    let student_in_school: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM students WHERE id = ?1 AND school_id = ?2",
-        rusqlite::params![student_id, school_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+    let student_in_school: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM students WHERE id = ?1 AND school_id = ?2",
+            rusqlite::params![student_id, school_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
     if student_in_school == 0 {
         return Err("Élève introuvable dans cet établissement.".to_string());
     }
     ensure_year_is_open(&conn, &school_id, &target_academic_year_id)?;
-    
-    let exists: bool = conn.query_row(
-        "SELECT COUNT(*) FROM enrollments WHERE academic_year_id = ?1 AND student_id = ?2",
-        rusqlite::params![target_academic_year_id, student_id],
-        |row| row.get::<_, i64>(0)
-    ).unwrap_or(0) > 0;
+
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM enrollments WHERE academic_year_id = ?1 AND student_id = ?2",
+            rusqlite::params![target_academic_year_id, student_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
 
     if exists {
         return Err("Cet élève est déjà inscrit dans l'année cible.".to_string());
@@ -2600,7 +3494,7 @@ pub fn migrate_student(
 
     let enrollment_id = uuid::Uuid::new_v4().to_string();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    
+
     tx.execute(
         "INSERT INTO enrollments (id, school_id, academic_year_id, student_id, class_id, enrollment_type, status)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'ACTIVE')",
@@ -2611,11 +3505,18 @@ pub fn migrate_student(
     tx.execute(
         "INSERT INTO enrollment_history (id, enrollment_id, student_id, academic_year_id, reason)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![history_id, enrollment_id, student_id, target_academic_year_id, enrollment_type]
-    ).map_err(|e| e.to_string())?;
-    
+        rusqlite::params![
+            history_id,
+            enrollment_id,
+            student_id,
+            target_academic_year_id,
+            enrollment_type
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
     tx.commit().map_err(|e| e.to_string())?;
-    
+
     Ok(())
 }
 
@@ -2632,36 +3533,44 @@ pub fn bulk_migrate_students(
     target_academic_year_id: String,
     _source_academic_year_id: String,
     students: Vec<BulkMigrationItem>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
-    let mut conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
+    let mut conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base de données".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
     ensure_year_is_open(&conn, &school_id, &target_academic_year_id)?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    
+
     for item in students {
-        let student_in_school: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM students WHERE id = ?1 AND school_id = ?2",
-            rusqlite::params![item.student_id, school_id],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let student_in_school: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM students WHERE id = ?1 AND school_id = ?2",
+                rusqlite::params![item.student_id, school_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         if student_in_school == 0 {
             return Err("Élève introuvable dans cet établissement.".to_string());
         }
 
-        let exists: bool = tx.query_row(
-            "SELECT COUNT(*) FROM enrollments WHERE academic_year_id = ?1 AND student_id = ?2",
-            rusqlite::params![target_academic_year_id, item.student_id],
-            |row| row.get::<_, i64>(0)
-        ).unwrap_or(0) > 0;
+        let exists: bool = tx
+            .query_row(
+                "SELECT COUNT(*) FROM enrollments WHERE academic_year_id = ?1 AND student_id = ?2",
+                rusqlite::params![target_academic_year_id, item.student_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
 
         if exists {
             continue; // Skip already migrated students silently
         }
 
         let enrollment_id = uuid::Uuid::new_v4().to_string();
-        
+
         tx.execute(
             "INSERT INTO enrollments (id, school_id, academic_year_id, student_id, class_id, enrollment_type, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'ACTIVE')",
@@ -2675,7 +3584,7 @@ pub fn bulk_migrate_students(
             rusqlite::params![history_id, enrollment_id, item.student_id, target_academic_year_id, item.enrollment_type]
         ).map_err(|e| e.to_string())?;
     }
-    
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -2688,36 +3597,40 @@ pub fn bulk_migrate_students(
 pub fn get_fee_structures(
     school_id: String,
     academic_year_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::FeeStructure>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE"])?;
-    let mut stmt = conn.prepare(
-        "SELECT f.id, f.school_id, f.academic_year_id, f.name, f.amount, f.fee_type,
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.id, f.school_id, f.academic_year_id, f.name, f.amount, f.fee_type,
                 f.applies_to, f.class_id, f.level, f.due_date, f.is_mandatory,
                 c.name as class_name
          FROM fee_structures f
          LEFT JOIN classes c ON f.class_id = c.id
          WHERE f.school_id = ?1 AND f.academic_year_id = ?2
-         ORDER BY f.created_at DESC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY f.created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let iter = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
-        Ok(crate::models::FeeStructure {
-            id: row.get(0)?,
-            school_id: row.get(1)?,
-            academic_year_id: row.get(2)?,
-            name: row.get(3)?,
-            amount: row.get(4)?,
-            fee_type: row.get(5)?,
-            applies_to: row.get(6)?,
-            class_id: row.get(7)?,
-            level: row.get(8)?,
-            due_date: row.get(9)?,
-            is_mandatory: row.get(10)?,
-            class_name: row.get(11)?,
+    let iter = stmt
+        .query_map(rusqlite::params![school_id, academic_year_id], |row| {
+            Ok(crate::models::FeeStructure {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                academic_year_id: row.get(2)?,
+                name: row.get(3)?,
+                amount: row.get(4)?,
+                fee_type: row.get(5)?,
+                applies_to: row.get(6)?,
+                class_id: row.get(7)?,
+                level: row.get(8)?,
+                due_date: row.get(9)?,
+                is_mandatory: row.get(10)?,
+                class_name: row.get(11)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut res = Vec::new();
     for item in iter {
@@ -2740,7 +3653,7 @@ pub fn create_fee_structure(
     level: Option<String>,
     due_date: Option<String>,
     is_mandatory: bool,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::FeeStructure, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
@@ -2772,7 +3685,7 @@ pub fn create_fee_structure(
         "created_at": now,
         "updated_at": now
     });
-    
+
     let mutation_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, 'fee_structures', ?2, 'INSERT', ?3)",
@@ -2785,30 +3698,57 @@ pub fn create_fee_structure(
     ).unwrap_or(0);
 
     let class_name = if let Some(cid) = &class_id {
-        conn.query_row("SELECT name FROM classes WHERE id = ?1", rusqlite::params![cid], |r| r.get(0)).unwrap_or(None)
-    } else { None };
+        conn.query_row(
+            "SELECT name FROM classes WHERE id = ?1",
+            rusqlite::params![cid],
+            |r| r.get(0),
+        )
+        .unwrap_or(None)
+    } else {
+        None
+    };
 
     Ok(crate::models::FeeStructure {
-        id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, class_name
+        id,
+        school_id,
+        academic_year_id,
+        name,
+        amount,
+        fee_type,
+        applies_to,
+        class_id,
+        level,
+        due_date,
+        is_mandatory,
+        class_name,
     })
 }
 
 #[tauri::command]
-pub fn delete_fee_structure(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_fee_structure(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
 
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM payments WHERE fee_structure_id = ?1 AND status = 'VALID'",
-        rusqlite::params![id],
-        |r| r.get(0)
-    ).unwrap_or(0);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM payments WHERE fee_structure_id = ?1 AND status = 'VALID'",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     if count > 0 {
         return Err("Impossible de supprimer : des paiements valides y sont attachés.".into());
     }
 
-    conn.execute("DELETE FROM fee_structures WHERE id = ?1 AND school_id = ?2", rusqlite::params![id, school_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM fee_structures WHERE id = ?1 AND school_id = ?2",
+        rusqlite::params![id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
 
     let payload = serde_json::json!({ "id": id });
     let mutation_id = uuid::Uuid::new_v4().to_string();
@@ -2828,7 +3768,7 @@ pub fn update_fee_structure(
     amount: i64,
     due_date: Option<String>,
     is_mandatory: bool,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
@@ -2865,42 +3805,49 @@ pub fn get_student_payments(
     school_id: String,
     academic_year_id: String,
     student_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::Payment>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE"])?;
-    let mut stmt = conn.prepare(
-        "SELECT p.id, p.school_id, p.academic_year_id, p.enrollment_id, p.student_id,
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.school_id, p.academic_year_id, p.enrollment_id, p.student_id,
                 p.fee_structure_id, p.amount, p.payment_date, p.payment_method, p.reference,
                 p.receipt_number, p.notes, p.recorded_by, p.status, p.cancelled_at, p.cancel_reason,
                 f.name as fee_name
          FROM payments p
          LEFT JOIN fee_structures f ON p.fee_structure_id = f.id
          WHERE p.school_id = ?1 AND p.academic_year_id = ?2 AND p.student_id = ?3
-         ORDER BY p.payment_date DESC, p.created_at DESC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY p.payment_date DESC, p.created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let iter = stmt.query_map(rusqlite::params![school_id, academic_year_id, student_id], |row| {
-        Ok(crate::models::Payment {
-            id: row.get(0)?,
-            school_id: row.get(1)?,
-            academic_year_id: row.get(2)?,
-            enrollment_id: row.get(3)?,
-            student_id: row.get(4)?,
-            fee_structure_id: row.get(5)?,
-            amount: row.get(6)?,
-            payment_date: row.get(7)?,
-            payment_method: row.get(8)?,
-            reference: row.get(9)?,
-            receipt_number: row.get(10)?,
-            notes: row.get(11)?,
-            recorded_by: row.get(12)?,
-            status: row.get(13)?,
-            cancelled_at: row.get(14)?,
-            cancel_reason: row.get(15)?,
-            fee_name: row.get(16)?,
-        })
-    }).map_err(|e| e.to_string())?;
+    let iter = stmt
+        .query_map(
+            rusqlite::params![school_id, academic_year_id, student_id],
+            |row| {
+                Ok(crate::models::Payment {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    academic_year_id: row.get(2)?,
+                    enrollment_id: row.get(3)?,
+                    student_id: row.get(4)?,
+                    fee_structure_id: row.get(5)?,
+                    amount: row.get(6)?,
+                    payment_date: row.get(7)?,
+                    payment_method: row.get(8)?,
+                    reference: row.get(9)?,
+                    receipt_number: row.get(10)?,
+                    notes: row.get(11)?,
+                    recorded_by: row.get(12)?,
+                    status: row.get(13)?,
+                    cancelled_at: row.get(14)?,
+                    cancel_reason: row.get(15)?,
+                    fee_name: row.get(16)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
 
     let mut res = Vec::new();
     for item in iter {
@@ -2916,7 +3863,7 @@ pub fn get_student_financial_summary(
     school_id: String,
     academic_year_id: String,
     student_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::StudentFinancialSummary, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE"])?;
@@ -2938,13 +3885,15 @@ pub fn get_student_financial_summary(
     ).map_err(|_| "Inscription active introuvable pour cet élève dans cette année scolaire.".to_string())?;
 
     // 2. Calculate Total Due
-    let total_due: i64 = conn.query_row(
-        "SELECT SUM(amount) FROM fee_structures 
+    let total_due: i64 = conn
+        .query_row(
+            "SELECT SUM(amount) FROM fee_structures 
          WHERE school_id = ?1 AND academic_year_id = ?2 
          AND (applies_to = 'ALL' OR (applies_to = 'CLASS' AND class_id = ?3))",
-        rusqlite::params![school_id, academic_year_id, class_id],
-        |row| row.get(0)
-    ).unwrap_or(0);
+            rusqlite::params![school_id, academic_year_id, class_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // 3. Calculate Total Paid
     let total_paid: i64 = conn.query_row(
@@ -2988,10 +3937,11 @@ pub fn create_payment(
     reference: Option<String>,
     notes: Option<String>,
     _recorded_by: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::Payment, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE", "SECRETAIRE"])?;
+    let sess =
+        crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE", "SECRETAIRE"])?;
     let recorded_by = sess.user_id;
     ensure_year_is_open(&conn, &school_id, &academic_year_id)?;
 
@@ -3000,7 +3950,11 @@ pub fn create_payment(
     let payment_date = chrono::Utc::now().naive_local().date().to_string();
 
     // Generate receipt number (basic version: RECU-YYYYMMDD-ID)
-    let receipt_number = format!("RECU-{}-{}", chrono::Utc::now().format("%Y%m%d"), &id[..6].to_uppercase());
+    let receipt_number = format!(
+        "RECU-{}-{}",
+        chrono::Utc::now().format("%Y%m%d"),
+        &id[..6].to_uppercase()
+    );
 
     conn.execute(
         "INSERT INTO payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status, created_at, updated_at)
@@ -3028,7 +3982,7 @@ pub fn create_payment(
         "created_at": now,
         "updated_at": now
     });
-    
+
     let mutation_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, 'payments', ?2, 'INSERT', ?3)",
@@ -3041,11 +3995,34 @@ pub fn create_payment(
     ).unwrap_or(0);
 
     let fee_name = if let Some(fid) = &fee_structure_id {
-        conn.query_row("SELECT name FROM fee_structures WHERE id = ?1", rusqlite::params![fid], |r| r.get(0)).unwrap_or(None)
-    } else { None };
+        conn.query_row(
+            "SELECT name FROM fee_structures WHERE id = ?1",
+            rusqlite::params![fid],
+            |r| r.get(0),
+        )
+        .unwrap_or(None)
+    } else {
+        None
+    };
 
     Ok(crate::models::Payment {
-        id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, reference, receipt_number, notes, recorded_by, status: "VALID".to_string(), cancelled_at: None, cancel_reason: None, fee_name
+        id,
+        school_id,
+        academic_year_id,
+        enrollment_id,
+        student_id,
+        fee_structure_id,
+        amount,
+        payment_date,
+        payment_method,
+        reference,
+        receipt_number,
+        notes,
+        recorded_by,
+        status: "VALID".to_string(),
+        cancelled_at: None,
+        cancel_reason: None,
+        fee_name,
     })
 }
 
@@ -3053,7 +4030,7 @@ pub fn create_payment(
 pub fn get_financial_dashboard(
     school_id: String,
     academic_year_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::FinancialDashboard, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
@@ -3063,7 +4040,7 @@ pub fn get_financial_dashboard(
 fn build_financial_dashboard(
     conn: &rusqlite::Connection,
     school_id: &str,
-    academic_year_id: &str
+    academic_year_id: &str,
 ) -> Result<crate::models::FinancialDashboard, String> {
     // Solde de chaque inscription active : dû (frais globaux + frais de sa classe)
     // moins encaissé (paiements VALID rattachés à l'inscription).
@@ -3119,75 +4096,99 @@ fn build_financial_dashboard(
     ).map_err(|e| e.to_string())?;
 
     // 2. Répartition par classe
-    let mut stmt = conn.prepare(&format!("{} \
+    let mut stmt = conn
+        .prepare(&format!(
+            "{} \
         SELECT class_id, class_name, COUNT(*), \
                COALESCE(SUM(total_due), 0), COALESCE(SUM(total_paid), 0), \
                COALESCE(SUM(total_due - total_paid), 0) \
         FROM balances GROUP BY class_id, class_name \
-        ORDER BY class_name ASC", BALANCES_CTE)).map_err(|e| e.to_string())?;
+        ORDER BY class_name ASC",
+            BALANCES_CTE
+        ))
+        .map_err(|e| e.to_string())?;
 
     let mut by_class = Vec::new();
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
-        Ok(crate::models::ClassFinancialStat {
-            class_id: row.get(0)?,
-            class_name: row.get(1)?,
-            student_count: row.get(2)?,
-            total_due: row.get(3)?,
-            total_paid: row.get(4)?,
-            remaining_balance: row.get(5)?,
+    let rows = stmt
+        .query_map(rusqlite::params![school_id, academic_year_id], |row| {
+            Ok(crate::models::ClassFinancialStat {
+                class_id: row.get(0)?,
+                class_name: row.get(1)?,
+                student_count: row.get(2)?,
+                total_due: row.get(3)?,
+                total_paid: row.get(4)?,
+                remaining_balance: row.get(5)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     for r in rows {
-        if let Ok(item) = r { by_class.push(item); }
+        if let Ok(item) = r {
+            by_class.push(item);
+        }
     }
     drop(stmt);
 
     // 3. Élèves avec reliquat (les plus endettés d'abord)
-    let mut stmt = conn.prepare(&format!("{} \
+    let mut stmt = conn
+        .prepare(&format!(
+            "{} \
         SELECT student_id, enrollment_id, first_name, last_name, class_name, \
                total_due, total_paid, total_due - total_paid, \
                CASE WHEN total_due - total_paid <= 0 THEN 'SOLDE' \
                     WHEN total_paid > 0 THEN 'PARTIEL' ELSE 'IMPAYE' END \
         FROM balances WHERE total_due - total_paid > 0 \
         ORDER BY (total_due - total_paid) DESC, last_name ASC \
-        LIMIT 100", BALANCES_CTE)).map_err(|e| e.to_string())?;
+        LIMIT 100",
+            BALANCES_CTE
+        ))
+        .map_err(|e| e.to_string())?;
 
     let mut debtors = Vec::new();
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
-        Ok(crate::models::StudentBalance {
-            student_id: row.get(0)?,
-            enrollment_id: row.get(1)?,
-            first_name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-            last_name: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-            class_name: row.get(4)?,
-            total_due: row.get(5)?,
-            total_paid: row.get(6)?,
-            remaining_balance: row.get(7)?,
-            status: row.get(8)?,
+    let rows = stmt
+        .query_map(rusqlite::params![school_id, academic_year_id], |row| {
+            Ok(crate::models::StudentBalance {
+                student_id: row.get(0)?,
+                enrollment_id: row.get(1)?,
+                first_name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                last_name: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                class_name: row.get(4)?,
+                total_due: row.get(5)?,
+                total_paid: row.get(6)?,
+                remaining_balance: row.get(7)?,
+                status: row.get(8)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     for r in rows {
-        if let Ok(item) = r { debtors.push(item); }
+        if let Ok(item) = r {
+            debtors.push(item);
+        }
     }
     drop(stmt);
 
     // 4. Répartition des encaissements par mode de paiement
-    let mut stmt = conn.prepare(
-        "SELECT payment_method, COALESCE(SUM(amount), 0), COUNT(*) FROM payments \
+    let mut stmt = conn
+        .prepare(
+            "SELECT payment_method, COALESCE(SUM(amount), 0), COUNT(*) FROM payments \
          WHERE school_id = ?1 AND academic_year_id = ?2 AND status = 'VALID' \
-         GROUP BY payment_method ORDER BY SUM(amount) DESC"
-    ).map_err(|e| e.to_string())?;
+         GROUP BY payment_method ORDER BY SUM(amount) DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
     let mut by_method = Vec::new();
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id], |row| {
-        Ok(crate::models::MethodStat {
-            method: row.get(0)?,
-            amount: row.get(1)?,
-            payment_count: row.get(2)?,
+    let rows = stmt
+        .query_map(rusqlite::params![school_id, academic_year_id], |row| {
+            Ok(crate::models::MethodStat {
+                method: row.get(0)?,
+                amount: row.get(1)?,
+                payment_count: row.get(2)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     for r in rows {
-        if let Ok(item) = r { by_method.push(item); }
+        if let Ok(item) = r {
+            by_method.push(item);
+        }
     }
     drop(stmt);
 
@@ -3200,7 +4201,9 @@ fn build_financial_dashboard(
 
     let recovery_rate = if total_due > 0 {
         (total_paid as f64 / total_due as f64) * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     Ok(crate::models::FinancialDashboard {
         total_due,
@@ -3219,7 +4222,12 @@ fn build_financial_dashboard(
 }
 
 #[tauri::command]
-pub fn cancel_payment(id: String, school_id: String, cancel_reason: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn cancel_payment(
+    id: String,
+    school_id: String,
+    cancel_reason: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "COMPTABLE"])?;
 
@@ -3242,7 +4250,7 @@ pub fn cancel_payment(id: String, school_id: String, cancel_reason: String, stat
         "cancel_reason": cancel_reason,
         "updated_at": now
     });
-    
+
     let mutation_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO pending_mutations (id, entity_type, entity_id, operation, payload) VALUES (?1, 'payments', ?2, 'UPDATE', ?3)",
@@ -3257,7 +4265,6 @@ pub fn cancel_payment(id: String, school_id: String, cancel_reason: String, stat
     Ok(())
 }
 
-
 // ============================================================
 // SESSION 5 : MODULE PÉDAGOGIQUE (Notes & Résultats)
 // ============================================================
@@ -3271,12 +4278,16 @@ fn appreciation(avg: f64) -> String {
         15..=17 => "Bien".into(),
         12..=14 => "Assez Bien".into(),
         10..=11 => "Passable".into(),
-        _        => "Insuffisant".into(),
+        _ => "Insuffisant".into(),
     }
 }
 
 pub(crate) fn normalized_grade_score(score: f64, is_absent: bool) -> f64 {
-    if is_absent { 0.0 } else { score }
+    if is_absent {
+        0.0
+    } else {
+        score
+    }
 }
 
 const RANK_EPSILON: f64 = 1e-9;
@@ -3332,23 +4343,36 @@ fn grade_evaluable_sql(alias: &str) -> String {
 // ── SUBJECTS ────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_subjects(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::Subject>, String> {
+pub fn get_subjects(
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<crate::models::Subject>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+    )?;
     let mut stmt = conn.prepare(
         "SELECT id, school_id, name, code, color FROM subjects WHERE school_id = ?1 ORDER BY name"
     ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
-        Ok(crate::models::Subject {
-            id: row.get(0)?,
-            school_id: row.get(1)?,
-            name: row.get(2)?,
-            code: row.get(3)?,
-            color: row.get(4)?,
+    let rows = stmt
+        .query_map(rusqlite::params![school_id], |row| {
+            Ok(crate::models::Subject {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                name: row.get(2)?,
+                code: row.get(3)?,
+                color: row.get(4)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
-    for r in rows { if let Ok(s) = r { res.push(s); } }
+    for r in rows {
+        if let Ok(s) = r {
+            res.push(s);
+        }
+    }
     Ok(res)
 }
 
@@ -3358,7 +4382,7 @@ pub fn create_subject(
     name: String,
     code: String,
     color: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::Subject, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
@@ -3374,7 +4398,13 @@ pub fn create_subject(
         "INSERT INTO audit_logs (id, school_id, action, entity_type, new_data) VALUES (?1,?2,'CREATE_SUBJECT','subjects',?3)",
         rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, payload.to_string()]
     ).unwrap_or(0);
-    Ok(crate::models::Subject { id, school_id, name, code, color })
+    Ok(crate::models::Subject {
+        id,
+        school_id,
+        name,
+        code,
+        color,
+    })
 }
 
 #[tauri::command]
@@ -3384,7 +4414,7 @@ pub fn update_subject(
     name: String,
     code: String,
     color: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
@@ -3398,7 +4428,11 @@ pub fn update_subject(
 }
 
 #[tauri::command]
-pub fn delete_subject(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_subject(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let count: i64 = conn.query_row(
@@ -3408,8 +4442,11 @@ pub fn delete_subject(id: String, school_id: String, state: State<'_, DbState>) 
     if count > 0 {
         return Err("Impossible de supprimer : des notes existent pour cette matière.".into());
     }
-    conn.execute("DELETE FROM subjects WHERE id=?1 AND school_id=?2", rusqlite::params![id, school_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM subjects WHERE id=?1 AND school_id=?2",
+        rusqlite::params![id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -3420,12 +4457,17 @@ pub fn get_class_subjects(
     school_id: String,
     academic_year_id: String,
     class_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::ClassSubject>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-    let mut stmt = conn.prepare(
-        "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
                 cs.teacher_id, cs.coefficient,
                 s.name, s.code, c.name,
                 (st.prenoms || ' ' || st.nom),
@@ -3435,23 +4477,35 @@ pub fn get_class_subjects(
          JOIN classes c ON cs.class_id = c.id
          LEFT JOIN staff st ON cs.teacher_id = st.id AND st.school_id = cs.school_id
          WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3
-         ORDER BY s.name"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, class_id], |row| {
-        let is_mandatory_int: Option<i64> = row.get(13)?;
-        Ok(crate::models::ClassSubject {
-            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
-            class_id: row.get(3)?, subject_id: row.get(4)?, teacher_id: row.get(5)?,
-            coefficient: row.get(6)?,
-            subject_name: row.get(7)?, subject_code: row.get(8)?,
-            class_name: row.get(9)?, teacher_name: row.get(10)?,
-            weekly_hours: row.get(11)?,
-            subject_type: row.get(12)?,
-            is_mandatory: is_mandatory_int.map(|v| v != 0),
-            order_index: row.get(14)?,
-            color_icon: row.get(15)?,
-        })
-    }).map_err(|e| e.to_string())?;
+         ORDER BY s.name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![school_id, academic_year_id, class_id],
+            |row| {
+                let is_mandatory_int: Option<i64> = row.get(13)?;
+                Ok(crate::models::ClassSubject {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    academic_year_id: row.get(2)?,
+                    class_id: row.get(3)?,
+                    subject_id: row.get(4)?,
+                    teacher_id: row.get(5)?,
+                    coefficient: row.get(6)?,
+                    subject_name: row.get(7)?,
+                    subject_code: row.get(8)?,
+                    class_name: row.get(9)?,
+                    teacher_name: row.get(10)?,
+                    weekly_hours: row.get(11)?,
+                    subject_type: row.get(12)?,
+                    is_mandatory: is_mandatory_int.map(|v| v != 0),
+                    order_index: row.get(14)?,
+                    color_icon: row.get(15)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
     for r in rows {
         match r {
@@ -3470,14 +4524,21 @@ pub fn get_teacher_class_subjects(
     school_id: String,
     academic_year_id: String,
     teacher_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::ClassSubject>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    let sess = crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
     let teacher_id = scoped_pedagogical_teacher_id(&conn, &sess, &school_id, Some(&teacher_id))?
-        .ok_or_else(|| "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
+        .ok_or_else(|| {
+            "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string()
+        })?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT cs.id, cs.school_id, cs.academic_year_id, cs.class_id, cs.subject_id,
                 cs.teacher_id, cs.coefficient,
                 s.name, s.code, c.name,
                 (st.prenoms || ' ' || st.nom),
@@ -3487,23 +4548,35 @@ pub fn get_teacher_class_subjects(
          JOIN classes c ON cs.class_id = c.id
          LEFT JOIN staff st ON cs.teacher_id = st.id AND st.school_id = cs.school_id
          WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.teacher_id=?3
-         ORDER BY c.name, s.name"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, teacher_id], |row| {
-        let is_mandatory_int: Option<i64> = row.get(13)?;
-        Ok(crate::models::ClassSubject {
-            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
-            class_id: row.get(3)?, subject_id: row.get(4)?, teacher_id: row.get(5)?,
-            coefficient: row.get(6)?,
-            subject_name: row.get(7)?, subject_code: row.get(8)?,
-            class_name: row.get(9)?, teacher_name: row.get(10)?,
-            weekly_hours: row.get(11)?,
-            subject_type: row.get(12)?,
-            is_mandatory: is_mandatory_int.map(|v| v != 0),
-            order_index: row.get(14)?,
-            color_icon: row.get(15)?,
-        })
-    }).map_err(|e| e.to_string())?;
+         ORDER BY c.name, s.name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![school_id, academic_year_id, teacher_id],
+            |row| {
+                let is_mandatory_int: Option<i64> = row.get(13)?;
+                Ok(crate::models::ClassSubject {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    academic_year_id: row.get(2)?,
+                    class_id: row.get(3)?,
+                    subject_id: row.get(4)?,
+                    teacher_id: row.get(5)?,
+                    coefficient: row.get(6)?,
+                    subject_name: row.get(7)?,
+                    subject_code: row.get(8)?,
+                    class_name: row.get(9)?,
+                    teacher_name: row.get(10)?,
+                    weekly_hours: row.get(11)?,
+                    subject_type: row.get(12)?,
+                    is_mandatory: is_mandatory_int.map(|v| v != 0),
+                    order_index: row.get(14)?,
+                    color_icon: row.get(15)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
     for r in rows {
         match r {
@@ -3527,7 +4600,7 @@ pub fn assign_subject_to_class(
     is_mandatory: Option<bool>,
     order_index: Option<i64>,
     color_icon: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::ClassSubject, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
@@ -3537,7 +4610,7 @@ pub fn assign_subject_to_class(
     let existing: Result<String, _> = conn.query_row(
         "SELECT id FROM class_subjects WHERE academic_year_id=?1 AND class_id=?2 AND subject_id=?3",
         rusqlite::params![academic_year_id, class_id, subject_id],
-        |row| row.get(0)
+        |row| row.get(0),
     );
     if existing.is_ok() {
         return Err("Cette matière est déjà affectée à cette classe.".to_string());
@@ -3551,13 +4624,44 @@ pub fn assign_subject_to_class(
         rusqlite::params![id, school_id, academic_year_id, class_id, subject_id, teacher_id, coefficient, weekly_hours, subject_type, is_mandatory.map(|v| if v { 1 } else { 0 }), order_index, color_icon, now]
     ).map_err(|e| format!("Erreur SQL: {}", e))?;
     enqueue_entity(&conn, "class_subjects", &school_id, &id);
-    let subject_name: Option<String> = conn.query_row("SELECT name FROM subjects WHERE id=?1", rusqlite::params![subject_id], |r| r.get(0)).unwrap_or(None);
-    let subject_code: Option<String> = conn.query_row("SELECT code FROM subjects WHERE id=?1", rusqlite::params![subject_id], |r| r.get(0)).unwrap_or(None);
-    let class_name: Option<String> = conn.query_row("SELECT name FROM classes WHERE id=?1", rusqlite::params![class_id], |r| r.get(0)).unwrap_or(None);
+    let subject_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM subjects WHERE id=?1",
+            rusqlite::params![subject_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
+    let subject_code: Option<String> = conn
+        .query_row(
+            "SELECT code FROM subjects WHERE id=?1",
+            rusqlite::params![subject_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
+    let class_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM classes WHERE id=?1",
+            rusqlite::params![class_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
     Ok(crate::models::ClassSubject {
-        id, school_id, academic_year_id, class_id, subject_id, teacher_id, coefficient,
-        weekly_hours, subject_type, is_mandatory, order_index, color_icon,
-        subject_name, subject_code, class_name, teacher_name: None,
+        id,
+        school_id,
+        academic_year_id,
+        class_id,
+        subject_id,
+        teacher_id,
+        coefficient,
+        weekly_hours,
+        subject_type,
+        is_mandatory,
+        order_index,
+        color_icon,
+        subject_name,
+        subject_code,
+        class_name,
+        teacher_name: None,
     })
 }
 
@@ -3572,7 +4676,7 @@ pub fn update_class_subject(
     is_mandatory: Option<bool>,
     order_index: Option<i64>,
     color_icon: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
@@ -3586,18 +4690,28 @@ pub fn update_class_subject(
 }
 
 #[tauri::command]
-pub fn remove_class_subject(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn remove_class_subject(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM grades WHERE class_subject_id=?1",
-        rusqlite::params![id], |r| r.get(0)
-    ).unwrap_or(0);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM grades WHERE class_subject_id=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     if count > 0 {
         return Err("Impossible de retirer cette matière : des notes y sont attachées.".into());
     }
-    conn.execute("DELETE FROM class_subjects WHERE id=?1 AND school_id=?2", rusqlite::params![id, school_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM class_subjects WHERE id=?1 AND school_id=?2",
+        rusqlite::params![id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "class_subjects", &school_id, &id);
     Ok(())
 }
@@ -3609,10 +4723,14 @@ pub fn get_grading_periods(
     school_id: String,
     academic_year_id: String,
     class_id: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::GradingPeriod>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
 
     let mut query = "SELECT id, school_id, academic_year_id, class_id, name, period_order, start_date, end_date, is_active
          FROM grading_periods WHERE school_id=?1 AND academic_year_id=?2".to_string();
@@ -3630,19 +4748,27 @@ pub fn get_grading_periods(
         vec![&school_id, &academic_year_id]
     };
 
-    let rows = stmt.query_map(params.as_slice(), |row| {
-        Ok(crate::models::GradingPeriod {
-            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
-            class_id: row.get(3)?,
-            name: row.get(4)?, period_order: row.get(5)?,
-            start_date: row.get(6)?, end_date: row.get(7)?,
-            is_active: row.get::<_, i64>(8)? != 0,
+    let rows = stmt
+        .query_map(params.as_slice(), |row| {
+            Ok(crate::models::GradingPeriod {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                academic_year_id: row.get(2)?,
+                class_id: row.get(3)?,
+                name: row.get(4)?,
+                period_order: row.get(5)?,
+                start_date: row.get(6)?,
+                end_date: row.get(7)?,
+                is_active: row.get::<_, i64>(8)? != 0,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut res = Vec::new();
     for r in rows {
-        if let Ok(p) = r { res.push(p); }
+        if let Ok(p) = r {
+            res.push(p);
+        }
     }
     Ok(res)
 }
@@ -3656,7 +4782,7 @@ pub fn create_grading_period(
     period_order: i64,
     start_date: Option<String>,
     end_date: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::GradingPeriod, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
@@ -3669,7 +4795,17 @@ pub fn create_grading_period(
         rusqlite::params![id, school_id, academic_year_id, class_id, name, period_order, start_date, end_date, now]
     ).map_err(|e| format!("Erreur SQL: {}", e))?;
     enqueue_entity(&conn, "grading_periods", &school_id, &id);
-    Ok(crate::models::GradingPeriod { id, school_id, academic_year_id, class_id, name, period_order, start_date, end_date, is_active: true })
+    Ok(crate::models::GradingPeriod {
+        id,
+        school_id,
+        academic_year_id,
+        class_id,
+        name,
+        period_order,
+        start_date,
+        end_date,
+        is_active: true,
+    })
 }
 
 #[tauri::command]
@@ -3682,7 +4818,7 @@ pub fn update_grading_period(
     start_date: Option<String>,
     end_date: Option<String>,
     is_active: bool,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
@@ -3699,42 +4835,65 @@ pub fn update_grading_period(
 pub fn delete_grading_period(
     id: String,
     school_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute(
         "DELETE FROM grading_periods WHERE id=?1 AND school_id=?2",
-        rusqlite::params![id, school_id]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 // Activation de toutes les périodes existantes (fix de migration is_active=0)
 #[tauri::command]
-pub fn activate_all_grading_periods(school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn activate_all_grading_periods(
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute(
         "UPDATE grading_periods SET is_active=1 WHERE school_id=?1",
-        rusqlite::params![school_id]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![school_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 // ── GRADE TYPES ──────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_grade_types(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::GradeType>, String> {
+pub fn get_grade_types(
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<crate::models::GradeType>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
     let mut stmt = conn.prepare(
         "SELECT id, school_id, name, max_score FROM grade_types WHERE school_id=?1 ORDER BY name"
     ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
-        Ok(crate::models::GradeType { id: row.get(0)?, school_id: row.get(1)?, name: row.get(2)?, max_score: row.get(3)? })
-    }).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![school_id], |row| {
+            Ok(crate::models::GradeType {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                name: row.get(2)?,
+                max_score: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
-    for r in rows { if let Ok(g) = r { res.push(g); } }
+    for r in rows {
+        if let Ok(g) = r {
+            res.push(g);
+        }
+    }
     Ok(res)
 }
 
@@ -3743,7 +4902,7 @@ pub fn create_grade_type(
     school_id: String,
     name: String,
     max_score: f64,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::GradeType, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
@@ -3754,7 +4913,12 @@ pub fn create_grade_type(
         rusqlite::params![id, school_id, name, max_score, now]
     ).map_err(|e| format!("Erreur SQL: {}", e))?;
     enqueue_entity(&conn, "grade_types", &school_id, &id);
-    Ok(crate::models::GradeType { id, school_id, name, max_score })
+    Ok(crate::models::GradeType {
+        id,
+        school_id,
+        name,
+        max_score,
+    })
 }
 
 #[tauri::command]
@@ -3763,15 +4927,16 @@ pub fn update_grade_type(
     school_id: String,
     name: String,
     max_score: f64,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE grade_types SET name=?1, max_score=?2, updated_at=?3 WHERE id=?4 AND school_id=?5",
-        rusqlite::params![name, max_score, now, id, school_id]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![name, max_score, now, id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "grade_types", &school_id, &id);
     Ok(())
 }
@@ -3784,12 +4949,17 @@ pub fn get_grades_by_class(
     academic_year_id: String,
     class_subject_id: String,
     grading_period_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::Grade>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-    let mut stmt = conn.prepare(
-        "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
                 g.class_subject_id, g.grading_period_id, g.grade_type_id,
                 CASE WHEN g.is_absent = 1 THEN 0.0 ELSE g.score END AS score,
                 g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
@@ -3801,20 +4971,41 @@ pub fn get_grades_by_class(
          JOIN grade_types gt ON g.grade_type_id = gt.id
          WHERE g.school_id=?1 AND g.academic_year_id=?2
            AND g.class_subject_id=?3 AND g.grading_period_id=?4
-         ORDER BY st.last_name, st.first_name, g.evaluation_date"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, class_subject_id, grading_period_id], |row| {
-        Ok(crate::models::Grade {
-            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
-            enrollment_id: row.get(3)?, student_id: row.get(4)?, class_subject_id: row.get(5)?,
-            grading_period_id: row.get(6)?, grade_type_id: row.get(7)?,
-            score: row.get(8)?, max_score: row.get(9)?,
-            evaluation_date: row.get(10)?, notes: row.get(11)?,
-            recorded_by: row.get(12)?, is_absent: row.get::<_, i64>(13)? != 0,
-            student_first_name: row.get(14)?, student_last_name: row.get(15)?,
-            subject_name: row.get(16)?, grade_type_name: row.get(17)?,
-        })
-    }).map_err(|e| e.to_string())?;
+         ORDER BY st.last_name, st.first_name, g.evaluation_date",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![
+                school_id,
+                academic_year_id,
+                class_subject_id,
+                grading_period_id
+            ],
+            |row| {
+                Ok(crate::models::Grade {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    academic_year_id: row.get(2)?,
+                    enrollment_id: row.get(3)?,
+                    student_id: row.get(4)?,
+                    class_subject_id: row.get(5)?,
+                    grading_period_id: row.get(6)?,
+                    grade_type_id: row.get(7)?,
+                    score: row.get(8)?,
+                    max_score: row.get(9)?,
+                    evaluation_date: row.get(10)?,
+                    notes: row.get(11)?,
+                    recorded_by: row.get(12)?,
+                    is_absent: row.get::<_, i64>(13)? != 0,
+                    student_first_name: row.get(14)?,
+                    student_last_name: row.get(15)?,
+                    subject_name: row.get(16)?,
+                    grade_type_name: row.get(17)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
     for r in rows {
         match r {
@@ -3830,17 +5021,23 @@ pub fn get_grades_by_student(
     school_id: String,
     academic_year_id: String,
     student_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::Grade>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    let sess = crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
 
     // Vérifier que l'élève appartient bien à cet établissement
-    let student_school: String = conn.query_row(
-        "SELECT school_id FROM students WHERE id = ?1",
-        rusqlite::params![student_id],
-        |row| row.get(0),
-    ).map_err(|_| "Élève introuvable.".to_string())?;
+    let student_school: String = conn
+        .query_row(
+            "SELECT school_id FROM students WHERE id = ?1",
+            rusqlite::params![student_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Élève introuvable.".to_string())?;
     if !sess.is_super_admin && student_school != sess.school_id {
         return Err("Accès refusé : cet élève n'appartient pas à votre établissement.".to_string());
     }
@@ -3848,8 +5045,9 @@ pub fn get_grades_by_student(
         return Err("Cet élève n'appartient pas à cet établissement.".to_string());
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
+    let mut stmt = conn
+        .prepare(
+            "SELECT g.id, g.school_id, g.academic_year_id, g.enrollment_id, g.student_id,
                 g.class_subject_id, g.grading_period_id, g.grade_type_id,
                 CASE WHEN g.is_absent = 1 THEN 0.0 ELSE g.score END AS score,
                 g.max_score, g.evaluation_date, g.notes, g.recorded_by, g.is_absent,
@@ -3860,22 +5058,42 @@ pub fn get_grades_by_student(
          JOIN subjects s ON cs.subject_id = s.id
          JOIN grade_types gt ON g.grade_type_id = gt.id
          WHERE g.school_id=?1 AND g.academic_year_id=?2 AND g.student_id=?3
-         ORDER BY g.grading_period_id, s.name, g.evaluation_date"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, student_id], |row| {
-        Ok(crate::models::Grade {
-            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
-            enrollment_id: row.get(3)?, student_id: row.get(4)?, class_subject_id: row.get(5)?,
-            grading_period_id: row.get(6)?, grade_type_id: row.get(7)?,
-            score: row.get(8)?, max_score: row.get(9)?,
-            evaluation_date: row.get(10)?, notes: row.get(11)?,
-            recorded_by: row.get(12)?, is_absent: row.get::<_, i64>(13)? != 0,
-            student_first_name: row.get(14)?, student_last_name: row.get(15)?,
-            subject_name: row.get(16)?, grade_type_name: row.get(17)?,
-        })
-    }).map_err(|e| e.to_string())?;
+         ORDER BY g.grading_period_id, s.name, g.evaluation_date",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![school_id, academic_year_id, student_id],
+            |row| {
+                Ok(crate::models::Grade {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    academic_year_id: row.get(2)?,
+                    enrollment_id: row.get(3)?,
+                    student_id: row.get(4)?,
+                    class_subject_id: row.get(5)?,
+                    grading_period_id: row.get(6)?,
+                    grade_type_id: row.get(7)?,
+                    score: row.get(8)?,
+                    max_score: row.get(9)?,
+                    evaluation_date: row.get(10)?,
+                    notes: row.get(11)?,
+                    recorded_by: row.get(12)?,
+                    is_absent: row.get::<_, i64>(13)? != 0,
+                    student_first_name: row.get(14)?,
+                    student_last_name: row.get(15)?,
+                    subject_name: row.get(16)?,
+                    grade_type_name: row.get(17)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
-    for r in rows { if let Ok(g) = r { res.push(g); } }
+    for r in rows {
+        if let Ok(g) = r {
+            res.push(g);
+        }
+    }
     Ok(res)
 }
 
@@ -3904,21 +5122,40 @@ fn upsert_grade_conn(
     }
     let score = normalized_grade_score(score, is_absent);
     if score < 0.0 || score > max_score {
-        return Err(format!("La note doit être comprise entre 0 et {}.", max_score));
+        return Err(format!(
+            "La note doit être comprise entre 0 et {}.",
+            max_score
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
     let is_admin = actor_roles.iter().any(|r| r == "DIRECTION");
-    let tx = conn.unchecked_transaction()
+    let tx = conn
+        .unchecked_transaction()
         .map_err(|e| format!("Impossible de démarrer la transaction : {}", e))?;
 
     let relation: Option<(
-        String, String, String, String, String,
-        String, String, String, String, Option<String>,
-        String, String, Option<String>, i64,
-        String, f64, String, String,
-    )> = tx.query_row(
-        "SELECT e.student_id, e.school_id, e.academic_year_id, e.class_id, e.status,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        i64,
+        String,
+        f64,
+        String,
+        String,
+    )> = tx
+        .query_row(
+            "SELECT e.student_id, e.school_id, e.academic_year_id, e.class_id, e.status,
                 st.school_id,
                 cs.school_id, cs.academic_year_id, cs.class_id, cs.teacher_id,
                 gp.school_id, gp.academic_year_id, gp.class_id, gp.is_active,
@@ -3931,15 +5168,39 @@ fn upsert_grade_conn(
            JOIN grade_types gt ON gt.id = ?6
            JOIN academic_years ay ON ay.id = ?2
           WHERE e.id = ?3",
-        rusqlite::params![school_id, academic_year_id, enrollment_id, class_subject_id, grading_period_id, grade_type_id],
-        |row| Ok((
-            row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-            row.get(5)?,
-            row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?,
-            row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?,
-            row.get(14)?, row.get(15)?, row.get(16)?, row.get(17)?,
-        )),
-    ).optional().map_err(|e| e.to_string())?;
+            rusqlite::params![
+                school_id,
+                academic_year_id,
+                enrollment_id,
+                class_subject_id,
+                grading_period_id,
+                grade_type_id
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                    row.get(15)?,
+                    row.get(16)?,
+                    row.get(17)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
 
     let relation = relation.ok_or_else(|| {
         "Inscription, élève, matière, période ou type d'évaluation introuvable.".to_string()
@@ -3948,13 +5209,26 @@ fn upsert_grade_conn(
     if relation.0 != student_id {
         return Err("L'élève ne correspond pas à l'inscription sélectionnée.".into());
     }
-    if [relation.1.as_str(), relation.5.as_str(), relation.6.as_str(), relation.10.as_str(), relation.14.as_str(), relation.16.as_str()]
-        .iter().any(|s| *s != school_id)
+    if [
+        relation.1.as_str(),
+        relation.5.as_str(),
+        relation.6.as_str(),
+        relation.10.as_str(),
+        relation.14.as_str(),
+        relation.16.as_str(),
+    ]
+    .iter()
+    .any(|s| *s != school_id)
     {
         return Err("Les données de la note n'appartiennent pas à cet établissement.".into());
     }
-    if [relation.2.as_str(), relation.7.as_str(), relation.11.as_str()]
-        .iter().any(|s| *s != academic_year_id)
+    if [
+        relation.2.as_str(),
+        relation.7.as_str(),
+        relation.11.as_str(),
+    ]
+    .iter()
+    .any(|s| *s != academic_year_id)
     {
         return Err("Les données de la note n'appartiennent pas à cette année scolaire.".into());
     }
@@ -3990,8 +5264,9 @@ fn upsert_grade_conn(
             return Err("Accès refusé : la période n'est pas ouverte à la saisie.".into());
         }
         let staff_id = current_staff_id_conn(&tx, recorded_by, school_id);
-        let assigned: Option<i64> = tx.query_row(
-            "SELECT 1 FROM class_subjects
+        let assigned: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM class_subjects
               WHERE id=?1 AND school_id=?2 AND academic_year_id=?3
                 AND (teacher_id=?4 OR teacher_id=?5)
              UNION ALL
@@ -3999,9 +5274,17 @@ fn upsert_grade_conn(
               WHERE class_subject_id=?1 AND school_id=?2 AND academic_year_id=?3
                 AND (teacher_id=?5 OR teacher_id=?4)
              LIMIT 1",
-            rusqlite::params![class_subject_id, school_id, academic_year_id, staff_id.as_deref(), recorded_by],
-            |row| row.get(0),
-        ).optional().map_err(|e| e.to_string())?;
+                rusqlite::params![
+                    class_subject_id,
+                    school_id,
+                    academic_year_id,
+                    staff_id.as_deref(),
+                    recorded_by
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
         if assigned.is_none() {
             return Err("Accès refusé : cette matière ne vous est pas attribuée.".into());
         }
@@ -4055,15 +5338,39 @@ fn upsert_grade_conn(
         payload["old_is_absent"] = serde_json::json!(*old_is_absent != 0);
     }
 
-    let remote_payload = remote_payload(&tx, "grades", &grade_id)
-        .map_err(|e| format!("Impossible de préparer la synchronisation de la note : {}", e))?;
-    record_mutation(&tx, school_id, "grades", &grade_id, "UPSERT", &remote_payload)?;
+    let remote_payload = remote_payload(&tx, "grades", &grade_id).map_err(|e| {
+        format!(
+            "Impossible de préparer la synchronisation de la note : {}",
+            e
+        )
+    })?;
+    record_mutation(
+        &tx,
+        school_id,
+        "grades",
+        &grade_id,
+        "UPSERT",
+        &remote_payload,
+    )?;
     tx.execute(
         "INSERT INTO audit_logs (id, school_id, user_id, action, entity_type, entity_id, new_data)
          VALUES (?1,?2,?3,'UPSERT_GRADE','grades',?4,?5)",
-        rusqlite::params![uuid::Uuid::new_v4().to_string(), school_id, recorded_by, grade_id, payload.to_string()]
-    ).map_err(|e| format!("Impossible de journaliser la modification de la note : {}", e))?;
-    tx.commit().map_err(|e| format!("Impossible d'enregistrer la note : {}", e))?;
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            school_id,
+            recorded_by,
+            grade_id,
+            payload.to_string()
+        ],
+    )
+    .map_err(|e| {
+        format!(
+            "Impossible de journaliser la modification de la note : {}",
+            e
+        )
+    })?;
+    tx.commit()
+        .map_err(|e| format!("Impossible d'enregistrer la note : {}", e))?;
 
     Ok(grade_id)
 }
@@ -4084,7 +5391,7 @@ pub fn upsert_grade(
     notes: Option<String>,
     _recorded_by: Option<String>,
     is_absent: bool,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<String, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "PROFESSEUR"])?;
@@ -4125,17 +5432,26 @@ fn get_student_averages_conn(
         return Err("Cette inscription n'appartient pas à cet établissement.".to_string());
     }
 
-    let class_id: String = conn.query_row(
-        "SELECT class_id FROM enrollments WHERE id=?1", rusqlite::params![enrollment_id], |r| r.get(0)
-    ).map_err(|e| e.to_string())?;
+    let class_id: String = conn
+        .query_row(
+            "SELECT class_id FROM enrollments WHERE id=?1",
+            rusqlite::params![enrollment_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
 
     let mut stmt = conn.prepare(
         "SELECT cs.id, s.name, s.code, cs.coefficient FROM class_subjects cs JOIN subjects s ON cs.subject_id=s.id
          WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3 ORDER BY s.name"
     ).map_err(|e| e.to_string())?;
-    let class_subjects: Vec<(String, String, String, f64)> = stmt.query_map(
-        rusqlite::params![school_id, academic_year_id, class_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-    ).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let class_subjects: Vec<(String, String, String, f64)> = stmt
+        .query_map(
+            rusqlite::params![school_id, academic_year_id, class_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     let on20 = grade_on20_sql("g");
     let evaluable = grade_evaluable_sql("g");
@@ -4150,10 +5466,20 @@ fn get_student_averages_conn(
                AND g.school_id=?4 AND g.academic_year_id=?5 AND {evaluable}"
         );
         let mut g_stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let grade_values: Vec<f64> = g_stmt.query_map(
-            rusqlite::params![enrollment_id, cs_id, grading_period_id, school_id, academic_year_id],
-            |r| r.get(0)
-        ).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        let grade_values: Vec<f64> = g_stmt
+            .query_map(
+                rusqlite::params![
+                    enrollment_id,
+                    cs_id,
+                    grading_period_id,
+                    school_id,
+                    academic_year_id
+                ],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
 
         let grade_count = grade_values.len() as i64;
         let avg: Option<f64> = if grade_count == 0 {
@@ -4171,11 +5497,19 @@ fn get_student_averages_conn(
                AND cs.class_id=?5 AND cs.school_id=?3 AND cs.academic_year_id=?4
                AND {evaluable}"
         );
-        let class_avg: Option<f64> = conn.query_row(
-            &class_sql,
-            rusqlite::params![cs_id, grading_period_id, school_id, academic_year_id, class_id],
-            |r| r.get(0)
-        ).unwrap_or(None);
+        let class_avg: Option<f64> = conn
+            .query_row(
+                &class_sql,
+                rusqlite::params![
+                    cs_id,
+                    grading_period_id,
+                    school_id,
+                    academic_year_id,
+                    class_id
+                ],
+                |r| r.get(0),
+            )
+            .unwrap_or(None);
 
         let appr = avg.map(|a| appreciation(a)).unwrap_or_else(|| "—".into());
 
@@ -4185,16 +5519,32 @@ fn get_student_averages_conn(
         }
 
         subject_avgs.push(crate::models::SubjectAverage {
-            class_subject_id: cs_id.clone(), subject_name: s_name.clone(), subject_code: s_code.clone(),
-            coefficient: *coeff, average: avg, class_average: class_avg, appreciation: appr, grade_count,
+            class_subject_id: cs_id.clone(),
+            subject_name: s_name.clone(),
+            subject_code: s_code.clone(),
+            coefficient: *coeff,
+            average: avg,
+            class_average: class_avg,
+            appreciation: appr,
+            grade_count,
         });
     }
 
-    let general_average = if coeff_sum > 0.0 { Some(weighted_sum / coeff_sum) } else { None };
-    let rank = get_class_rankings_conn(conn, school_id, academic_year_id, &class_id, grading_period_id)?
-        .into_iter()
-        .find(|r| r.enrollment_id == enrollment_id)
-        .map(|r| r.rank);
+    let general_average = if coeff_sum > 0.0 {
+        Some(weighted_sum / coeff_sum)
+    } else {
+        None
+    };
+    let rank = get_class_rankings_conn(
+        conn,
+        school_id,
+        academic_year_id,
+        &class_id,
+        grading_period_id,
+    )?
+    .into_iter()
+    .find(|r| r.enrollment_id == enrollment_id)
+    .map(|r| r.rank);
 
     let class_size: i64 = conn.query_row(
         "SELECT COUNT(*) FROM enrollments WHERE class_id=?1 AND academic_year_id=?2 AND status='ACTIVE' AND school_id=?3",
@@ -4202,8 +5552,14 @@ fn get_student_averages_conn(
     ).unwrap_or(0);
 
     Ok(crate::models::StudentAverages {
-        student_id, enrollment_id: enrollment_id.to_string(), first_name, last_name,
-        grading_period_id: grading_period_id.to_string(), general_average, rank, class_size,
+        student_id,
+        enrollment_id: enrollment_id.to_string(),
+        first_name,
+        last_name,
+        grading_period_id: grading_period_id.to_string(),
+        general_average,
+        rank,
+        class_size,
         subjects: subject_avgs,
     })
 }
@@ -4215,11 +5571,21 @@ pub fn get_student_averages(
     academic_year_id: String,
     enrollment_id: String,
     grading_period_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::StudentAverages, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-    get_student_averages_conn(&conn, &school_id, &academic_year_id, &enrollment_id, &grading_period_id)
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
+    get_student_averages_conn(
+        &conn,
+        &school_id,
+        &academic_year_id,
+        &enrollment_id,
+        &grading_period_id,
+    )
 }
 
 fn get_class_rankings_conn(
@@ -4256,20 +5622,24 @@ fn get_class_rankings_conn(
          ORDER BY gavg DESC NULLS LAST, s.last_name"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(
-        rusqlite::params![class_id, academic_year_id, grading_period_id, school_id],
-        |row| {
-            let avg: Option<f64> = row.get(4)?;
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                avg,
-            ))
-        },
-    ).map_err(|e| e.to_string())?;
-    let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![class_id, academic_year_id, grading_period_id, school_id],
+            |row| {
+                let avg: Option<f64> = row.get(4)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    avg,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     let averages: Vec<Option<f64>> = rows.iter().map(|r| r.4).collect();
     let ranks = competition_ranks(&averages);
@@ -4298,11 +5668,21 @@ pub fn get_class_rankings(
     academic_year_id: String,
     class_id: String,
     grading_period_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::ClassRankingEntry>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-    get_class_rankings_conn(&conn, &school_id, &academic_year_id, &class_id, &grading_period_id)
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
+    get_class_rankings_conn(
+        &conn,
+        &school_id,
+        &academic_year_id,
+        &class_id,
+        &grading_period_id,
+    )
 }
 
 /// Statistiques par matière pour une classe et une période.
@@ -4471,42 +5851,76 @@ fn get_class_notes_recap_conn(
              WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3 AND cs.teacher_id=?4
              ORDER BY s.name"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, class_id, tid], |row| {
-            Ok(RecapSubjectColumn {
-                class_subject_id: row.get(0)?, subject_name: row.get(1)?,
-                subject_code: row.get(2)?, coefficient: row.get(3)?,
-            })
-        }).map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        let rows = stmt
+            .query_map(
+                rusqlite::params![school_id, academic_year_id, class_id, tid],
+                |row| {
+                    Ok(RecapSubjectColumn {
+                        class_subject_id: row.get(0)?,
+                        subject_name: row.get(1)?,
+                        subject_code: row.get(2)?,
+                        coefficient: row.get(3)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
     } else {
-        let mut stmt = conn.prepare(
-            "SELECT cs.id, s.name, s.code, cs.coefficient
+        let mut stmt = conn
+            .prepare(
+                "SELECT cs.id, s.name, s.code, cs.coefficient
              FROM class_subjects cs JOIN subjects s ON cs.subject_id = s.id
              WHERE cs.school_id=?1 AND cs.academic_year_id=?2 AND cs.class_id=?3
-             ORDER BY s.name"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, class_id], |row| {
-            Ok(RecapSubjectColumn {
-                class_subject_id: row.get(0)?, subject_name: row.get(1)?,
-                subject_code: row.get(2)?, coefficient: row.get(3)?,
-            })
-        }).map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+             ORDER BY s.name",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![school_id, academic_year_id, class_id],
+                |row| {
+                    Ok(RecapSubjectColumn {
+                        class_subject_id: row.get(0)?,
+                        subject_name: row.get(1)?,
+                        subject_code: row.get(2)?,
+                        coefficient: row.get(3)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
     };
 
-    let allowed: std::collections::HashSet<String> =
-        subjects.iter().map(|s| s.class_subject_id.clone()).collect();
+    let allowed: std::collections::HashSet<String> = subjects
+        .iter()
+        .map(|s| s.class_subject_id.clone())
+        .collect();
 
-    let mut stmt = conn.prepare(
-        "SELECT e.id, e.student_id, s.first_name, s.last_name, s.matricule
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.id, e.student_id, s.first_name, s.last_name, s.matricule
          FROM enrollments e JOIN students s ON e.student_id = s.id
          WHERE e.class_id=?1 AND e.academic_year_id=?2 AND e.status='ACTIVE' AND e.school_id=?3
-         ORDER BY s.last_name, s.first_name"
-    ).map_err(|e| e.to_string())?;
-    let students_raw: Vec<(String, String, String, String, Option<String>)> = stmt.query_map(
-        rusqlite::params![class_id, academic_year_id, school_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-    ).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+         ORDER BY s.last_name, s.first_name",
+        )
+        .map_err(|e| e.to_string())?;
+    let students_raw: Vec<(String, String, String, String, Option<String>)> = stmt
+        .query_map(
+            rusqlite::params![class_id, academic_year_id, school_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     let evaluable = grade_evaluable_sql("g");
     let sql = format!(
@@ -4517,24 +5931,36 @@ fn get_class_notes_recap_conn(
            AND cs.class_id=?4 AND cs.school_id=?1 AND cs.academic_year_id=?2
            AND {evaluable}"
     );
-    let mut acc: std::collections::HashMap<(String, String), (f64, f64)> = std::collections::HashMap::new();
+    let mut acc: std::collections::HashMap<(String, String), (f64, f64)> =
+        std::collections::HashMap::new();
     {
         let mut g_stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = g_stmt.query_map(
-            rusqlite::params![school_id, academic_year_id, grading_period_id, class_id],
-            |row| Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, f64>(2)?,
-                row.get::<_, f64>(3)?,
-                row.get::<_, i64>(4)?,
-            )),
-        ).map_err(|e| e.to_string())?;
-        for (eid, csid, score, max_score, is_absent) in
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        let rows = g_stmt
+            .query_map(
+                rusqlite::params![school_id, academic_year_id, grading_period_id, class_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, f64>(2)?,
+                        row.get::<_, f64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        for (eid, csid, score, max_score, is_absent) in rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
         {
-            if !allowed.contains(&csid) { continue; }
-            let on20 = if is_absent != 0 { 0.0 } else { score / max_score * 20.0 };
+            if !allowed.contains(&csid) {
+                continue;
+            }
+            let on20 = if is_absent != 0 {
+                0.0
+            } else {
+                score / max_score * 20.0
+            };
             let entry = acc.entry((eid, csid)).or_insert((0.0, 0.0));
             entry.0 += on20;
             entry.1 += 1.0;
@@ -4543,11 +5969,13 @@ fn get_class_notes_recap_conn(
 
     let mut rows_out: Vec<RecapStudentRow> = Vec::new();
     for (en_id, student_id, first_name, last_name, matricule) in students_raw {
-        let mut averages: std::collections::HashMap<String, Option<f64>> = std::collections::HashMap::new();
+        let mut averages: std::collections::HashMap<String, Option<f64>> =
+            std::collections::HashMap::new();
         let mut weighted_sum = 0.0_f64;
         let mut coeff_sum = 0.0_f64;
         for s in &subjects {
-            let avg = acc.get(&(en_id.clone(), s.class_subject_id.clone()))
+            let avg = acc
+                .get(&(en_id.clone(), s.class_subject_id.clone()))
                 .map(|(sum, count)| if *count > 0.0 { sum / count } else { 0.0 });
             if let Some(a) = avg {
                 weighted_sum += a * s.coefficient;
@@ -4555,10 +5983,20 @@ fn get_class_notes_recap_conn(
             }
             averages.insert(s.class_subject_id.clone(), avg);
         }
-        let general_average = if coeff_sum > 0.0 { Some(weighted_sum / coeff_sum) } else { None };
+        let general_average = if coeff_sum > 0.0 {
+            Some(weighted_sum / coeff_sum)
+        } else {
+            None
+        };
         rows_out.push(RecapStudentRow {
-            enrollment_id: en_id, student_id, first_name, last_name, matricule,
-            averages, general_average, rank: 0,
+            enrollment_id: en_id,
+            student_id,
+            first_name,
+            last_name,
+            matricule,
+            averages,
+            general_average,
+            rank: 0,
         });
     }
 
@@ -4567,7 +6005,10 @@ fn get_class_notes_recap_conn(
         row.rank = rank;
     }
 
-    Ok(ClassNotesRecap { subjects, students: rows_out })
+    Ok(ClassNotesRecap {
+        subjects,
+        students: rows_out,
+    })
 }
 
 #[tauri::command]
@@ -4581,7 +6022,8 @@ pub fn get_class_notes_recap(
 ) -> Result<ClassNotesRecap, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "PROFESSEUR"])?;
-    let teacher_id = scoped_pedagogical_teacher_id(&conn, &sess, &school_id, teacher_id.as_deref())?;
+    let teacher_id =
+        scoped_pedagogical_teacher_id(&conn, &sess, &school_id, teacher_id.as_deref())?;
     get_class_notes_recap_conn(
         &conn,
         &school_id,
@@ -4613,15 +6055,29 @@ fn get_teacher_assignments_conn(
           WHERE ta.school_id=?1 AND ta.academic_year_id=?2 AND (ta.teacher_id=?3 OR stf.id=?3)
           ORDER BY c.name, s.name"
     ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id, academic_year_id, teacher_id], |row| {
-        Ok(crate::models::TeacherAssignment {
-            id: row.get(0)?, school_id: row.get(1)?, academic_year_id: row.get(2)?,
-            teacher_id: row.get(3)?, class_subject_id: row.get(4)?,
-            teacher_name: row.get(5)?, subject_name: row.get(6)?, class_name: row.get(7)?,
-        })
-    }).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![school_id, academic_year_id, teacher_id],
+            |row| {
+                Ok(crate::models::TeacherAssignment {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    academic_year_id: row.get(2)?,
+                    teacher_id: row.get(3)?,
+                    class_subject_id: row.get(4)?,
+                    teacher_name: row.get(5)?,
+                    subject_name: row.get(6)?,
+                    class_name: row.get(7)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
-    for r in rows { if let Ok(ta) = r { res.push(ta); } }
+    for r in rows {
+        if let Ok(ta) = r {
+            res.push(ta);
+        }
+    }
     Ok(res)
 }
 
@@ -4630,15 +6086,20 @@ pub fn get_teacher_assignments(
     school_id: String,
     academic_year_id: String,
     teacher_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<Vec<crate::models::TeacherAssignment>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let sess = crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    let sess = crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
     let teacher_id = scoped_pedagogical_teacher_id(&conn, &sess, &school_id, Some(&teacher_id))?
-        .ok_or_else(|| "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string())?;
+        .ok_or_else(|| {
+            "Accès refusé : aucune fiche professeur n'est liée à ce compte.".to_string()
+        })?;
     get_teacher_assignments_conn(&conn, &school_id, &academic_year_id, &teacher_id)
 }
-
 
 #[tauri::command]
 pub fn assign_teacher_to_class_subject(
@@ -4646,7 +6107,7 @@ pub fn assign_teacher_to_class_subject(
     academic_year_id: String,
     teacher_id: String,
     class_subject_id: String,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::TeacherAssignment, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
@@ -4659,28 +6120,58 @@ pub fn assign_teacher_to_class_subject(
         rusqlite::params![id, school_id, academic_year_id, teacher_id, class_subject_id, now]
     ).map_err(|e| format!("Erreur SQL: {}", e))?;
     enqueue_entity(&conn, "teacher_assignments", &school_id, &id);
-    Ok(crate::models::TeacherAssignment { id, school_id, academic_year_id, teacher_id, class_subject_id, teacher_name: None, subject_name: None, class_name: None })
+    Ok(crate::models::TeacherAssignment {
+        id,
+        school_id,
+        academic_year_id,
+        teacher_id,
+        class_subject_id,
+        teacher_name: None,
+        subject_name: None,
+        class_name: None,
+    })
 }
 
 // ── STRUCTURE PÉDAGOGIQUE (Sections → Niveaux → Séries) ──────
 
 #[tauri::command(async)]
-pub fn get_sections(school_id: String, state: State<'_, DbState>) -> Result<Vec<crate::models::Section>, String> {
+pub fn get_sections(
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<crate::models::Section>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-    let mut stmt = conn.prepare("SELECT id, school_id, name FROM sections WHERE school_id = ? ORDER BY name").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([school_id], |row| {
-        Ok(crate::models::Section {
-            id: row.get(0)?, school_id: row.get(1)?, name: row.get(2)?,
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, school_id, name FROM sections WHERE school_id = ? ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([school_id], |row| {
+            Ok(crate::models::Section {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                name: row.get(2)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
-    for r in rows { if let Ok(s) = r { res.push(s); } }
+    for r in rows {
+        if let Ok(s) = r {
+            res.push(s);
+        }
+    }
     Ok(res)
 }
 
 #[tauri::command]
-pub fn create_section(school_id: String, name: String, state: State<'_, DbState>) -> Result<crate::models::Section, String> {
+pub fn create_section(
+    school_id: String,
+    name: String,
+    state: State<'_, DbState>,
+) -> Result<crate::models::Section, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let id = uuid::Uuid::new_v4().to_string();
@@ -4690,60 +6181,106 @@ pub fn create_section(school_id: String, name: String, state: State<'_, DbState>
         rusqlite::params![id, school_id, name, now]
     ).map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "sections", &school_id, &id);
-    Ok(crate::models::Section { id, school_id, name })
+    Ok(crate::models::Section {
+        id,
+        school_id,
+        name,
+    })
 }
 
 #[tauri::command]
-pub fn update_section(id: String, school_id: String, name: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn update_section(
+    id: String,
+    school_id: String,
+    name: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE sections SET name = ?1, updated_at = ?2 WHERE id = ?3 AND school_id = ?4",
-        rusqlite::params![name, now, id, school_id]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![name, now, id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "sections", &school_id, &id);
     Ok(())
 }
 
 #[tauri::command]
-pub fn delete_section(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_section(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
-    conn.execute("DELETE FROM sections WHERE id = ?1 AND school_id = ?2", rusqlite::params![id, school_id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM sections WHERE id = ?1 AND school_id = ?2",
+        rusqlite::params![id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "sections", &school_id, &id);
     Ok(())
 }
 
 #[tauri::command(async)]
-pub fn get_levels(school_id: String, section_id: Option<String>, state: State<'_, DbState>) -> Result<Vec<crate::models::Level>, String> {
+pub fn get_levels(
+    school_id: String,
+    section_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<Vec<crate::models::Level>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
     let mut levels = Vec::new();
     if let Some(sid) = section_id {
         let mut stmt = conn.prepare("SELECT id, school_id, section_id, name, level_order FROM levels WHERE school_id = ? AND section_id = ? ORDER BY level_order").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([school_id, sid], |row| {
-            Ok(crate::models::Level {
-                id: row.get(0)?, school_id: row.get(1)?, section_id: row.get(2)?,
-                name: row.get(3)?, level_order: row.get(4)?,
+        let rows = stmt
+            .query_map([school_id, sid], |row| {
+                Ok(crate::models::Level {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    section_id: row.get(2)?,
+                    name: row.get(3)?,
+                    level_order: row.get(4)?,
+                })
             })
-        }).map_err(|e| e.to_string())?;
-        for row in rows { levels.push(row.map_err(|e| e.to_string())?); }
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            levels.push(row.map_err(|e| e.to_string())?);
+        }
     } else {
         let mut stmt = conn.prepare("SELECT id, school_id, section_id, name, level_order FROM levels WHERE school_id = ? ORDER BY level_order").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([school_id], |row| {
-            Ok(crate::models::Level {
-                id: row.get(0)?, school_id: row.get(1)?, section_id: row.get(2)?,
-                name: row.get(3)?, level_order: row.get(4)?,
+        let rows = stmt
+            .query_map([school_id], |row| {
+                Ok(crate::models::Level {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    section_id: row.get(2)?,
+                    name: row.get(3)?,
+                    level_order: row.get(4)?,
+                })
             })
-        }).map_err(|e| e.to_string())?;
-        for row in rows { levels.push(row.map_err(|e| e.to_string())?); }
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            levels.push(row.map_err(|e| e.to_string())?);
+        }
     }
     Ok(levels)
 }
 
 #[tauri::command]
-pub fn create_level(school_id: String, section_id: String, name: String, level_order: i64, state: State<'_, DbState>) -> Result<crate::models::Level, String> {
+pub fn create_level(
+    school_id: String,
+    section_id: String,
+    name: String,
+    level_order: i64,
+    state: State<'_, DbState>,
+) -> Result<crate::models::Level, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let id = uuid::Uuid::new_v4().to_string();
@@ -4753,11 +6290,23 @@ pub fn create_level(school_id: String, section_id: String, name: String, level_o
         rusqlite::params![id, school_id, section_id, name, level_order, now]
     ).map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "levels", &school_id, &id);
-    Ok(crate::models::Level { id, school_id, section_id, name, level_order })
+    Ok(crate::models::Level {
+        id,
+        school_id,
+        section_id,
+        name,
+        level_order,
+    })
 }
 
 #[tauri::command]
-pub fn update_level(id: String, school_id: String, name: String, level_order: i64, state: State<'_, DbState>) -> Result<(), String> {
+pub fn update_level(
+    id: String,
+    school_id: String,
+    name: String,
+    level_order: i64,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -4770,41 +6319,78 @@ pub fn update_level(id: String, school_id: String, name: String, level_order: i6
 }
 
 #[tauri::command]
-pub fn delete_level(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_level(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
-    conn.execute("DELETE FROM levels WHERE id = ?1 AND school_id = ?2", rusqlite::params![id, school_id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM levels WHERE id = ?1 AND school_id = ?2",
+        rusqlite::params![id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "levels", &school_id, &id);
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_series(school_id: String, level_id: Option<String>, state: State<'_, DbState>) -> Result<Vec<crate::models::Series>, String> {
+pub fn get_series(
+    school_id: String,
+    level_id: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<Vec<crate::models::Series>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
     let mut series = Vec::new();
     if let Some(lid) = level_id {
         let mut stmt = conn.prepare("SELECT id, school_id, level_id, name FROM series WHERE school_id = ? AND level_id = ?").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([school_id, lid], |row| {
-            Ok(crate::models::Series {
-                id: row.get(0)?, school_id: row.get(1)?, level_id: row.get(2)?, name: row.get(3)?,
+        let rows = stmt
+            .query_map([school_id, lid], |row| {
+                Ok(crate::models::Series {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    level_id: row.get(2)?,
+                    name: row.get(3)?,
+                })
             })
-        }).map_err(|e| e.to_string())?;
-        for row in rows { series.push(row.map_err(|e| e.to_string())?); }
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            series.push(row.map_err(|e| e.to_string())?);
+        }
     } else {
-        let mut stmt = conn.prepare("SELECT id, school_id, level_id, name FROM series WHERE school_id = ?").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([school_id], |row| {
-            Ok(crate::models::Series {
-                id: row.get(0)?, school_id: row.get(1)?, level_id: row.get(2)?, name: row.get(3)?,
+        let mut stmt = conn
+            .prepare("SELECT id, school_id, level_id, name FROM series WHERE school_id = ?")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([school_id], |row| {
+                Ok(crate::models::Series {
+                    id: row.get(0)?,
+                    school_id: row.get(1)?,
+                    level_id: row.get(2)?,
+                    name: row.get(3)?,
+                })
             })
-        }).map_err(|e| e.to_string())?;
-        for row in rows { series.push(row.map_err(|e| e.to_string())?); }
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            series.push(row.map_err(|e| e.to_string())?);
+        }
     }
     Ok(series)
 }
 
 #[tauri::command]
-pub fn create_series(school_id: String, level_id: String, name: String, state: State<'_, DbState>) -> Result<crate::models::Series, String> {
+pub fn create_series(
+    school_id: String,
+    level_id: String,
+    name: String,
+    state: State<'_, DbState>,
+) -> Result<crate::models::Series, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let id = uuid::Uuid::new_v4().to_string();
@@ -4814,27 +6400,46 @@ pub fn create_series(school_id: String, level_id: String, name: String, state: S
         rusqlite::params![id, school_id, level_id, name, now]
     ).map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "series", &school_id, &id);
-    Ok(crate::models::Series { id, school_id, level_id, name })
+    Ok(crate::models::Series {
+        id,
+        school_id,
+        level_id,
+        name,
+    })
 }
 
 #[tauri::command]
-pub fn update_series(id: String, school_id: String, name: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn update_series(
+    id: String,
+    school_id: String,
+    name: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE series SET name = ?1, updated_at = ?2 WHERE id = ?3 AND school_id = ?4",
-        rusqlite::params![name, now, id, school_id]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![name, now, id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "series", &school_id, &id);
     Ok(())
 }
 
 #[tauri::command]
-pub fn delete_series(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_series(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
-    conn.execute("DELETE FROM series WHERE id = ?1 AND school_id = ?2", rusqlite::params![id, school_id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM series WHERE id = ?1 AND school_id = ?2",
+        rusqlite::params![id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
     enqueue_entity(&conn, "series", &school_id, &id);
     Ok(())
 }
@@ -4941,9 +6546,17 @@ const STAFF_SELECT: &str = "
 /// `include_photos = false` écarte les photos en base64 (plusieurs Mo) quand l'appelant
 /// ne les affiche pas — c'est le cas des Archives.
 #[tauri::command(async)]
-pub fn get_staff(school_id: String, include_photos: Option<bool>, state: State<'_, DbState>) -> Result<Vec<crate::models::Staff>, String> {
+pub fn get_staff(
+    school_id: String,
+    include_photos: Option<bool>,
+    state: State<'_, DbState>,
+) -> Result<Vec<crate::models::Staff>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+    )?;
     let select_clause = if include_photos == Some(false) {
         STAFF_SELECT.replace("staff.photo_url,", "CAST(NULL AS TEXT) as photo_url,")
     } else {
@@ -4951,28 +6564,45 @@ pub fn get_staff(school_id: String, include_photos: Option<bool>, state: State<'
     };
     let query = format!("{} WHERE school_id=?1 ORDER BY nom, prenoms", select_clause);
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![school_id], row_to_staff).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![school_id], row_to_staff)
+        .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
-    for r in rows { match r { Ok(s) => res.push(s), Err(e) => return Err(format!("Erreur lecture personnel: {:?}", e)) } }
+    for r in rows {
+        match r {
+            Ok(s) => res.push(s),
+            Err(e) => return Err(format!("Erreur lecture personnel: {:?}", e)),
+        }
+    }
     Ok(res)
 }
 
 /// Photo d'un seul membre du personnel, chargée à la demande (fiche d'édition).
 #[tauri::command(async)]
-pub fn get_staff_photo(staff_id: String, state: State<'_, DbState>) -> Result<Option<String>, String> {
+pub fn get_staff_photo(
+    staff_id: String,
+    state: State<'_, DbState>,
+) -> Result<Option<String>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let school_id: String = conn.query_row(
-        "SELECT school_id FROM staff WHERE id = ?1",
-        rusqlite::params![staff_id],
-        |row| row.get(0),
-    ).map_err(|_| "Membre du personnel introuvable.".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+    let school_id: String = conn
+        .query_row(
+            "SELECT school_id FROM staff WHERE id = ?1",
+            rusqlite::params![staff_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Membre du personnel introuvable.".to_string())?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+    )?;
 
     conn.query_row(
         "SELECT photo_url FROM staff WHERE id = ?1",
         rusqlite::params![staff_id],
         |row| row.get::<_, Option<String>>(0),
-    ).map_err(|e| format!("Erreur lecture photo du personnel: {}", e))
+    )
+    .map_err(|e| format!("Erreur lecture photo du personnel: {}", e))
 }
 
 /// Crée un nouveau membre du personnel
@@ -4986,7 +6616,7 @@ pub fn create_staff(
     type_personnel: Option<String>,
     fonction: Option<String>,
     statut_administratif: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<crate::models::Staff, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
@@ -5000,7 +6630,9 @@ pub fn create_staff(
     ).map_err(|e| format!("Erreur SQL: {}", e))?;
     enqueue_entity(&conn, "staff", &school_id, &id);
     let query = format!("{} WHERE id=?1", STAFF_SELECT);
-    let staff = conn.query_row(&query, rusqlite::params![id], row_to_staff).map_err(|e| e.to_string())?;
+    let staff = conn
+        .query_row(&query, rusqlite::params![id], row_to_staff)
+        .map_err(|e| e.to_string())?;
     Ok(staff)
 }
 
@@ -5034,46 +6666,98 @@ pub fn update_staff(staff: crate::models::Staff, state: State<'_, DbState>) -> R
             est_actif=?63, updated_by=?64, updated_at=?65
          WHERE id=?66 AND school_id=?67",
         rusqlite::params![
-            staff.matricule, staff.nom, staff.prenoms, staff.sexe,
-            staff.date_naissance, staff.lieu_naissance, staff.nationalite, staff.photo_url,
-            staff.situation_matrimoniale, staff.nombre_enfants,
-            staff.telephone_principal, staff.telephone_secondaire, staff.email, staff.adresse,
-            staff.region, staff.prefecture, staff.commune, staff.quartier,
-            staff.urgence_nom, staff.urgence_telephone,
-            staff.type_personnel, staff.fonction, staff.statut_professionnel,
-            staff.matricule_professionnel, staff.categorie, staff.grade, staff.classe_grade,
-            staff.echelon, staff.indice, staff.diplome_academique, staff.diplome_professionnel,
-            staff.specialite, staff.date_recrutement, staff.date_entree_fonction_pub,
-            staff.etablissement, staff.annee_scolaire_id, staff.fonction_etablissement,
-            staff.decision_affectation_num, staff.date_affectation, staff.date_prise_service,
-            staff.date_arrivee_region, staff.date_arrivee_etablissement,
-            staff.ancien_etablissement, staff.service_direction,
-            staff.matiere_principale, staff.matieres_secondaires, staff.classes_principales,
+            staff.matricule,
+            staff.nom,
+            staff.prenoms,
+            staff.sexe,
+            staff.date_naissance,
+            staff.lieu_naissance,
+            staff.nationalite,
+            staff.photo_url,
+            staff.situation_matrimoniale,
+            staff.nombre_enfants,
+            staff.telephone_principal,
+            staff.telephone_secondaire,
+            staff.email,
+            staff.adresse,
+            staff.region,
+            staff.prefecture,
+            staff.commune,
+            staff.quartier,
+            staff.urgence_nom,
+            staff.urgence_telephone,
+            staff.type_personnel,
+            staff.fonction,
+            staff.statut_professionnel,
+            staff.matricule_professionnel,
+            staff.categorie,
+            staff.grade,
+            staff.classe_grade,
+            staff.echelon,
+            staff.indice,
+            staff.diplome_academique,
+            staff.diplome_professionnel,
+            staff.specialite,
+            staff.date_recrutement,
+            staff.date_entree_fonction_pub,
+            staff.etablissement,
+            staff.annee_scolaire_id,
+            staff.fonction_etablissement,
+            staff.decision_affectation_num,
+            staff.date_affectation,
+            staff.date_prise_service,
+            staff.date_arrivee_region,
+            staff.date_arrivee_etablissement,
+            staff.ancien_etablissement,
+            staff.service_direction,
+            staff.matiere_principale,
+            staff.matieres_secondaires,
+            staff.classes_principales,
             staff.volume_horaire_hebdo,
             if staff.est_prof_principal { 1i64 } else { 0i64 },
-            if staff.est_responsable_classe { 1i64 } else { 0i64 },
-            staff.heures_prevues, staff.heures_effectuees,
-            staff.statut_administratif, staff.date_debut_conge, staff.date_fin_conge,
-            staff.date_disponibilite, staff.date_mutation, staff.date_suspension,
-            staff.date_retraite, staff.date_depart, staff.motif_depart, staff.observations,
+            if staff.est_responsable_classe {
+                1i64
+            } else {
+                0i64
+            },
+            staff.heures_prevues,
+            staff.heures_effectuees,
+            staff.statut_administratif,
+            staff.date_debut_conge,
+            staff.date_fin_conge,
+            staff.date_disponibilite,
+            staff.date_mutation,
+            staff.date_suspension,
+            staff.date_retraite,
+            staff.date_depart,
+            staff.motif_depart,
+            staff.observations,
             if staff.est_actif { 1i64 } else { 0i64 },
-            staff.updated_by, now,
-            staff.id, staff.school_id
-        ]
-    ).map_err(|e| format!("Erreur SQL update_staff: {}", e))?;
+            staff.updated_by,
+            now,
+            staff.id,
+            staff.school_id
+        ],
+    )
+    .map_err(|e| format!("Erreur SQL update_staff: {}", e))?;
     enqueue_entity(&conn, "staff", &staff.school_id, &staff.id);
     Ok(())
 }
 
 /// Supprime un membre du personnel
 #[tauri::command]
-pub fn delete_staff(id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_staff(
+    id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
     conn.execute(
         "DELETE FROM staff WHERE id=?1 AND school_id=?2",
-        rusqlite::params![id, school_id]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
 
     // Enregistrer la mutation DELETE pour la sync Supabase
     let payload = serde_json::json!({ "id": id });
@@ -5088,47 +6772,56 @@ pub fn delete_staff(id: String, school_id: String, state: State<'_, DbState>) ->
 
 /// Met à jour la colonne `classes_principales` du staff en fonction de ses affectations de cours
 #[tauri::command]
-pub fn update_staff_classes(staff_id: String, school_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn update_staff_classes(
+    staff_id: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE"])?;
-    
-    let mut stmt = conn.prepare("
+
+    let mut stmt = conn
+        .prepare(
+            "
         SELECT DISTINCT c.name 
         FROM class_subjects cs
         JOIN classes c ON cs.class_id = c.id
         WHERE cs.teacher_id = ?1 AND cs.school_id = ?2
         ORDER BY c.name ASC
-    ").map_err(|e| e.to_string())?;
-    
-    let class_iter = stmt.query_map(rusqlite::params![staff_id, school_id], |row| {
-        row.get::<_, String>(0)
-    }).map_err(|e| e.to_string())?;
-    
+    ",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let class_iter = stmt
+        .query_map(rusqlite::params![staff_id, school_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| e.to_string())?;
+
     let mut classes: Vec<String> = Vec::new();
     for name in class_iter {
         if let Ok(n) = name {
             classes.push(n);
         }
     }
-    
+
     let classes_str = if classes.is_empty() {
         None
     } else {
         Some(classes.join(", "))
     };
-    
+
     let now = chrono::Utc::now().to_rfc3339();
-    
+
     conn.execute(
         "UPDATE staff SET classes_principales=?1, updated_at=?2 WHERE id=?3 AND school_id=?4",
-        rusqlite::params![classes_str, now, staff_id, school_id]
-    ).map_err(|e| e.to_string())?;
-    
+        rusqlite::params![classes_str, now, staff_id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
+
     enqueue_entity(&conn, "staff", &school_id, &staff_id);
     Ok(())
 }
-
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Emploi du temps
@@ -5153,28 +6846,38 @@ pub fn get_timetable(
     state: State<'_, DbState>,
 ) -> Result<Vec<TimetableSlot>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "PROFESSEUR"])?;
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.class_id, t.day_of_week, t.slot_index, t.subject_id,
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "PROFESSEUR"],
+    )?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.class_id, t.day_of_week, t.slot_index, t.subject_id,
                 s.code, s.name
          FROM timetable_slots t
          LEFT JOIN subjects s ON s.id = t.subject_id
          WHERE t.school_id=?1 AND t.academic_year_id=?2 AND t.class_id=?3
-         ORDER BY t.day_of_week, t.slot_index"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY t.day_of_week, t.slot_index",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map(
-        rusqlite::params![school_id, academic_year_id, class_id],
-        |row| Ok(TimetableSlot {
-            id: row.get(0)?,
-            class_id: row.get(1)?,
-            day_of_week: row.get(2)?,
-            slot_index: row.get(3)?,
-            subject_id: row.get(4)?,
-            subject_code: row.get(5)?,
-            subject_name: row.get(6)?,
-        }),
-    ).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![school_id, academic_year_id, class_id],
+            |row| {
+                Ok(TimetableSlot {
+                    id: row.get(0)?,
+                    class_id: row.get(1)?,
+                    day_of_week: row.get(2)?,
+                    slot_index: row.get(3)?,
+                    subject_id: row.get(4)?,
+                    subject_code: row.get(5)?,
+                    subject_name: row.get(6)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
 
     rows.map(|r| r.map_err(|e| e.to_string())).collect()
 }
@@ -5212,7 +6915,11 @@ pub fn save_timetable_slot(
 use bcrypt::{hash, DEFAULT_COST};
 
 #[tauri::command]
-pub async fn store_offline_credentials(token: String, password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+pub async fn store_offline_credentials(
+    token: String,
+    password: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
     if password.chars().count() < 6 {
         return Err("Le mot de passe doit contenir au moins 6 caractères.".to_string());
     }
@@ -5227,15 +6934,20 @@ pub async fn store_offline_credentials(token: String, password: String, state: t
         &supabase_anon_key,
         &token,
         &client,
-    ).await?;
-    let email = auth_user.email.ok_or_else(|| "Compte sans adresse e-mail.".to_string())?;
+    )
+    .await?;
+    let email = auth_user
+        .email
+        .ok_or_else(|| "Compte sans adresse e-mail.".to_string())?;
     let password_hash = hash(&password, DEFAULT_COST).map_err(|e| format!("Erreur hash: {}", e))?;
 
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let updated = conn.execute(
-        "UPDATE users SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-        rusqlite::params![password_hash, auth_user.id],
-    ).map_err(|e| e.to_string())?;
+    let updated = conn
+        .execute(
+            "UPDATE users SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+            rusqlite::params![password_hash, auth_user.id],
+        )
+        .map_err(|e| e.to_string())?;
     if updated == 0 {
         conn.execute(
             "INSERT INTO users (id, email, username, password_hash, status) VALUES (?1, ?2, ?2, ?3, 'ACTIVE')",
@@ -5290,9 +7002,13 @@ pub fn validate_school_id(school_id: &str) -> Result<&str, String> {
         return Err("L'identifiant d'établissement ne peut pas être vide.".to_string());
     }
     if trimmed.len() > 64 {
-        return Err("L'identifiant d'établissement est trop long (maximum 64 caractères).".to_string());
+        return Err(
+            "L'identifiant d'établissement est trop long (maximum 64 caractères).".to_string(),
+        );
     }
-    let is_valid = trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let is_valid = trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     if !is_valid {
         return Err(format!(
             "Format d'identifiant d'établissement invalide : caractères interdits détectés dans '{}'.",
@@ -5306,13 +7022,20 @@ pub fn validate_school_id(school_id: &str) -> Result<&str, String> {
 pub fn purge_school_data(conn: &mut rusqlite::Connection, school_id: &str) -> Result<(), String> {
     let valid_school_id = validate_school_id(school_id)?;
 
-    let tx = conn.transaction().map_err(|e| format!("Erreur ouverture transaction: {}", e))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Erreur ouverture transaction: {}", e))?;
 
     // 1. Module Bibliothèque (si tables présentes)
     let library_tables = [
-        "library_penalties", "library_loans", "library_reservations",
-        "library_copies", "library_readers", "library_books",
-        "library_categories", "library_settings"
+        "library_penalties",
+        "library_loans",
+        "library_reservations",
+        "library_copies",
+        "library_readers",
+        "library_books",
+        "library_categories",
+        "library_settings",
     ];
     for table in &library_tables {
         if PURGE_TABLES_WHITELIST.contains(table) {
@@ -5322,7 +7045,14 @@ pub fn purge_school_data(conn: &mut rusqlite::Connection, school_id: &str) -> Re
     }
 
     // 2. Module Pédagogique & Notes
-    for table in &["grades", "teacher_assignments", "class_subjects", "grading_periods", "grade_types", "subjects"] {
+    for table in &[
+        "grades",
+        "teacher_assignments",
+        "class_subjects",
+        "grading_periods",
+        "grade_types",
+        "subjects",
+    ] {
         if PURGE_TABLES_WHITELIST.contains(table) {
             let sql = format!("DELETE FROM {} WHERE school_id = ?1", table);
             let _ = tx.execute(&sql, rusqlite::params![valid_school_id]);
@@ -5343,7 +7073,14 @@ pub fn purge_school_data(conn: &mut rusqlite::Connection, school_id: &str) -> Re
         "DELETE FROM enrollment_history WHERE enrollment_id IN (SELECT id FROM enrollments WHERE school_id = ?1)",
         rusqlite::params![valid_school_id],
     );
-    for table in &["enrollments", "timetable_slots", "classes", "students", "academic_years", "staff"] {
+    for table in &[
+        "enrollments",
+        "timetable_slots",
+        "classes",
+        "students",
+        "academic_years",
+        "staff",
+    ] {
         if PURGE_TABLES_WHITELIST.contains(table) {
             let sql = format!("DELETE FROM {} WHERE school_id = ?1", table);
             let _ = tx.execute(&sql, rusqlite::params![valid_school_id]);
@@ -5351,7 +7088,13 @@ pub fn purge_school_data(conn: &mut rusqlite::Connection, school_id: &str) -> Re
     }
 
     // 5. Synchronisation, Devices, Licences
-    for table in &["pending_mutations", "sync_inbox", "audit_logs", "devices", "licenses"] {
+    for table in &[
+        "pending_mutations",
+        "sync_inbox",
+        "audit_logs",
+        "devices",
+        "licenses",
+    ] {
         if PURGE_TABLES_WHITELIST.contains(table) {
             let sql = format!("DELETE FROM {} WHERE school_id = ?1", table);
             let _ = tx.execute(&sql, rusqlite::params![valid_school_id]);
@@ -5373,15 +7116,28 @@ pub fn purge_school_data(conn: &mut rusqlite::Connection, school_id: &str) -> Re
     );
 
     // 7. Rôles et profils de l'école
-    let _ = tx.execute("DELETE FROM user_roles WHERE school_id = ?1", rusqlite::params![valid_school_id]);
-    let _ = tx.execute("DELETE FROM profiles WHERE school_id = ?1", rusqlite::params![valid_school_id]);
-    let _ = tx.execute("DELETE FROM local_session_tokens WHERE school_id = ?1", rusqlite::params![valid_school_id]);
+    let _ = tx.execute(
+        "DELETE FROM user_roles WHERE school_id = ?1",
+        rusqlite::params![valid_school_id],
+    );
+    let _ = tx.execute(
+        "DELETE FROM profiles WHERE school_id = ?1",
+        rusqlite::params![valid_school_id],
+    );
+    let _ = tx.execute(
+        "DELETE FROM local_session_tokens WHERE school_id = ?1",
+        rusqlite::params![valid_school_id],
+    );
 
     // 8. École elle-même
-    tx.execute("DELETE FROM schools WHERE id = ?1", rusqlite::params![valid_school_id])
-        .map_err(|e| format!("Erreur suppression école: {}", e))?;
+    tx.execute(
+        "DELETE FROM schools WHERE id = ?1",
+        rusqlite::params![valid_school_id],
+    )
+    .map_err(|e| format!("Erreur suppression école: {}", e))?;
 
-    tx.commit().map_err(|e| format!("Erreur validation transaction purge: {}", e))?;
+    tx.commit()
+        .map_err(|e| format!("Erreur validation transaction purge: {}", e))?;
 
     Ok(())
 }
@@ -5390,7 +7146,10 @@ pub fn purge_school_data(conn: &mut rusqlite::Connection, school_id: &str) -> Re
 /// (ORI-SEC-004) : Exécution sécurisée avec paramètres bindés rusqlite, validation
 /// du format de school_id et atomicité via transaction (rollback automatique en cas d'erreur).
 #[tauri::command]
-pub fn purge_local_school(school_id: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+pub fn purge_local_school(
+    school_id: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
 
     // (ORI-SEC-003) : Seul le Super Administrateur peut déclencher la purge locale
@@ -5403,13 +7162,18 @@ pub fn purge_local_school(school_id: String, state: tauri::State<'_, DbState>) -
 /// Vérifie si une école existe encore dans la base SQLite locale.
 /// Utilisé au démarrage pour invalider une session hors-ligne dont l'école a été supprimée.
 #[tauri::command]
-pub fn check_local_school_exists(school_id: String, state: tauri::State<'_, DbState>) -> Result<bool, String> {
+pub fn check_local_school_exists(
+    school_id: String,
+    state: tauri::State<'_, DbState>,
+) -> Result<bool, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM schools WHERE id = ?1",
-        rusqlite::params![school_id],
-        |row| row.get(0),
-    ).map_err(|e| e.to_string())?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM schools WHERE id = ?1",
+            rusqlite::params![school_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
     Ok(count > 0)
 }
 
@@ -5441,22 +7205,26 @@ pub struct DeviceRec {
 pub fn get_devices(school_id: String, state: State<'_, DbState>) -> Result<Vec<DeviceRec>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
-    let mut stmt = conn.prepare(
-        "SELECT id, school_id, device_identifier, device_name, platform, status, last_seen_at 
-         FROM devices WHERE school_id = ?1 ORDER BY last_seen_at DESC"
-    ).map_err(|e| e.to_string())?;
-    
-    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
-        Ok(DeviceRec {
-            id: row.get(0)?,
-            school_id: row.get(1)?,
-            device_identifier: row.get(2)?,
-            device_name: row.get(3)?,
-            platform: row.get(4)?,
-            status: row.get(5)?,
-            last_seen_at: row.get(6)?,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, school_id, device_identifier, device_name, platform, status, last_seen_at 
+         FROM devices WHERE school_id = ?1 ORDER BY last_seen_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![school_id], |row| {
+            Ok(DeviceRec {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                device_identifier: row.get(2)?,
+                device_name: row.get(3)?,
+                platform: row.get(4)?,
+                status: row.get(5)?,
+                last_seen_at: row.get(6)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut devices = Vec::new();
     for r in rows {
@@ -5481,26 +7249,31 @@ pub struct LicenseRec {
 }
 
 #[tauri::command]
-pub fn get_licenses(school_id: String, state: State<'_, DbState>) -> Result<Vec<LicenseRec>, String> {
+pub fn get_licenses(
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<LicenseRec>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION"])?;
+    crate::auth_guard::authorize_without_license_check(&conn, &school_id, &["DIRECTION"])?;
     let mut stmt = conn.prepare(
         "SELECT id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current
          FROM licenses WHERE school_id = ?1 ORDER BY created_at DESC"
     ).map_err(|e| e.to_string())?;
-    
-    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
-        Ok(LicenseRec {
-            id: row.get(0)?,
-            school_id: row.get(1)?,
-            license_key: row.get(2)?,
-            status: row.get(3)?,
-            starts_at: row.get(4)?,
-            expires_at: row.get(5)?,
-            max_devices: row.get(6)?,
-            is_current: row.get::<_, i64>(7)? != 0,
+
+    let rows = stmt
+        .query_map(rusqlite::params![school_id], |row| {
+            Ok(LicenseRec {
+                id: row.get(0)?,
+                school_id: row.get(1)?,
+                license_key: row.get(2)?,
+                status: row.get(3)?,
+                starts_at: row.get(4)?,
+                expires_at: row.get(5)?,
+                max_devices: row.get(6)?,
+                is_current: row.get::<_, i64>(7)? != 0,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut licenses = Vec::new();
     for r in rows {
@@ -5524,7 +7297,10 @@ pub fn validate_license_record(
         return Err("Une licence historique ne peut pas réautoriser l'accès".to_string());
     }
     if license.status != "ACTIVE" {
-        return Err(format!("Statut de licence non autorisé : {}", license.status));
+        return Err(format!(
+            "Statut de licence non autorisé : {}",
+            license.status
+        ));
     }
 
     if let Some(ref starts) = license.starts_at {
@@ -5552,7 +7328,7 @@ fn normalized_license_date(value: Option<&str>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn license_claims_match_record(
+pub(crate) fn license_claims_match_record(
     claims: &LicenseClaims,
     license: &LicenseRec,
     session_school_id: &str,
@@ -5595,10 +7371,18 @@ pub fn save_license(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let mut conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let session = crate::auth_guard::require_authenticated(&conn)?;
+    save_license_conn(&mut conn, &token, &license)
+}
+
+pub(crate) fn save_license_conn(
+    conn: &mut Connection,
+    token: &str,
+    license: &LicenseRec,
+) -> Result<(), String> {
+    let session = crate::auth_guard::require_authenticated(conn)?;
     let device_identifier = current_device_identifier()?;
     let verified = verify_license_token_internal(
-        &token,
+        token,
         &session.school_id,
         &device_identifier,
         &license_public_key_pem(),
@@ -5606,12 +7390,16 @@ pub fn save_license(
     if !verified.valid {
         return Err(format!(
             "Jeton de licence invalide : {}",
-            verified.reason.unwrap_or_else(|| "raison inconnue".to_string())
+            verified
+                .reason
+                .unwrap_or_else(|| "raison inconnue".to_string())
         ));
     }
-    let claims = verified.claims.ok_or_else(|| "Claims de licence absents".to_string())?;
-    license_claims_match_record(&claims, &license, &session.school_id)?;
-    validate_license_record(&license, &session.school_id, chrono::Utc::now())?;
+    let claims = verified
+        .claims
+        .ok_or_else(|| "Claims de licence absents".to_string())?;
+    license_claims_match_record(&claims, license, &session.school_id)?;
+    validate_license_record(license, &session.school_id, chrono::Utc::now())?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let existing_current: Option<i64> = tx
@@ -5630,6 +7418,7 @@ pub fn save_license(
                 "UPDATE licenses
                  SET school_id = ?2, license_key = ?3, status = ?4, starts_at = ?5,
                      expires_at = ?6, max_devices = ?7, is_current = 1,
+                     signed_token = ?8,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE id = ?1",
                 rusqlite::params![
@@ -5640,8 +7429,10 @@ pub fn save_license(
                     license.starts_at,
                     license.expires_at,
                     license.max_devices,
+                    token,
                 ],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
         Some(_) => {
             return Err("Cette licence historique ne peut plus être activée.".to_string());
@@ -5653,15 +7444,17 @@ pub fn save_license(
                 "UPDATE licenses
                  SET is_current = 0,
                      status = CASE WHEN status = 'ACTIVE' THEN 'SUPERSEDED' ELSE status END,
+                     signed_token = NULL,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE school_id = ?1 AND is_current = 1",
                 rusqlite::params![license.school_id],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
 
             tx.execute(
                 "INSERT INTO licenses
-                 (id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, CURRENT_TIMESTAMP)",
+                 (id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current, signed_token, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, CURRENT_TIMESTAMP)",
                 rusqlite::params![
                     license.id,
                     license.school_id,
@@ -5670,10 +7463,25 @@ pub fn save_license(
                     license.starts_at,
                     license.expires_at,
                     license.max_devices,
+                    token,
                 ],
             ).map_err(|e| e.to_string())?;
         }
     }
+
+    // [LIC-03] Maintenir la liaison locale de l'appareil courant lors d'un renouvellement
+    // ou d'un changement de licence, sans supprimer l'historique des appareils.
+    tx.execute(
+        "UPDATE devices
+         SET license_id = ?1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE school_id = ?2
+           AND device_identifier = ?3
+           AND status = 'ACTIVE'
+           AND (deleted_at IS NULL OR deleted_at = 0)",
+        rusqlite::params![license.id, license.school_id, device_identifier],
+    )
+    .map_err(|e| e.to_string())?;
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -5688,10 +7496,12 @@ pub fn delete_local_license(id: String, state: State<'_, DbState>) -> Result<(),
         "UPDATE licenses
          SET is_current = 0,
              status = CASE WHEN status IN ('ACTIVE', 'SUPERSEDED') THEN 'REVOKED' ELSE status END,
+             signed_token = NULL,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?1",
         rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -5704,10 +7514,12 @@ pub fn purge_local_licenses(school_id: String, state: State<'_, DbState>) -> Res
         "UPDATE licenses
          SET is_current = 0,
              status = CASE WHEN status = 'ACTIVE' THEN 'SUPERSEDED' ELSE status END,
+             signed_token = NULL,
              updated_at = CURRENT_TIMESTAMP
          WHERE school_id = ?1",
         rusqlite::params![school_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -5726,7 +7538,7 @@ const EMBEDDED_LICENSE_PUBLIC_KEY: &str = include_str!("../license_public_key.pe
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LicenseClaims {
     pub iss: String,
-    pub sub: String,          // license_id
+    pub sub: String, // license_id
     pub license_id: String,
     pub school_id: String,
     pub license_key: String,
@@ -5767,17 +7579,27 @@ fn parse_license_date(raw: &str) -> Result<chrono::DateTime<chrono::Utc>, String
         return Ok(dt.with_timezone(&chrono::Utc));
     }
     if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc));
+        return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+            naive,
+            chrono::Utc,
+        ));
     }
     if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
         if let Some(naive_dt) = naive_date.and_hms_opt(0, 0, 0) {
-            return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_dt, chrono::Utc));
+            return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                naive_dt,
+                chrono::Utc,
+            ));
         }
     }
     Err(format!("Date mal formée : {}", raw))
 }
 
-fn license_public_key_pem() -> String {
+pub(crate) fn license_public_key_pem() -> String {
+    #[cfg(test)]
+    if let Some(overridden) = TEST_LICENSE_PUBLIC_KEY_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return overridden;
+    }
     let _ = dotenvy::dotenv();
     std::env::var("ORION_LICENSE_PUBLIC_KEY_PEM")
         .ok()
@@ -5791,14 +7613,18 @@ pub fn verify_license_token_internal(
     expected_device_identifier: &str,
     public_key_pem: &str,
 ) -> VerifyTokenResult {
-    use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+    use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 
     if public_key_pem.trim().is_empty()
-        || (!public_key_pem.contains("BEGIN PUBLIC KEY") && !public_key_pem.contains("BEGIN RSA PUBLIC KEY"))
+        || (!public_key_pem.contains("BEGIN PUBLIC KEY")
+            && !public_key_pem.contains("BEGIN RSA PUBLIC KEY"))
         || public_key_pem.contains("Configurer ici")
         || public_key_pem.contains("YOUR_PUBLIC_KEY")
-        || public_key_pem.contains("PLACEHOLDER") {
-        return token_reject("Clé publique RSA Orion non configurée — vérification hors ligne impossible");
+        || public_key_pem.contains("PLACEHOLDER")
+    {
+        return token_reject(
+            "Clé publique RSA Orion non configurée — vérification hors ligne impossible",
+        );
     }
 
     let key = match DecodingKey::from_rsa_pem(public_key_pem.as_bytes()) {
@@ -5844,7 +7670,7 @@ pub fn verify_license_token_internal(
     // - Durée max autorisée du jeton : 7 jours (604 800 secondes)
     // - Tolérance de dérive d'horloge autorisée (clock skew RFC 7519) : 60 secondes
     const MAX_TOKEN_DURATION_SECS: i64 = 7 * 24 * 60 * 60; // 7 jours
-    const CLOCK_SKEW_TOLERANCE_SECS: i64 = 60;              // 60 secondes
+    const CLOCK_SKEW_TOLERANCE_SECS: i64 = 60; // 60 secondes
 
     // 1. Vérification d'un iat futur (au-delà de la tolérance de 60s pour dérive d'horloge)
     if claims.iat > now_ts + CLOCK_SKEW_TOLERANCE_SECS {
@@ -5879,7 +7705,10 @@ pub fn verify_license_token_internal(
 
     // Vérifier le statut
     if claims.status != "ACTIVE" {
-        return token_reject(&format!("Statut de licence non actif dans le jeton : {}", claims.status));
+        return token_reject(&format!(
+            "Statut de licence non actif dans le jeton : {}",
+            claims.status
+        ));
     }
 
     let now = chrono::Utc::now();
@@ -5981,7 +7810,7 @@ pub fn verify_license_token(
 mod license_tests {
     use super::*;
     use crate::test_keys::*;
-    use jsonwebtoken::{encode, EncodingKey, Header, Algorithm};
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     fn create_test_token(claims: &LicenseClaims, private_key_pem: &str) -> String {
         let key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
@@ -6016,8 +7845,17 @@ mod license_tests {
     fn test_valid_token_accepted() {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
-        assert!(res.valid, "Le jeton valide doit être accepté: {:?}", res.reason);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(
+            res.valid,
+            "Le jeton valide doit être accepté: {:?}",
+            res.reason
+        );
         assert_eq!(res.claims.unwrap().school_id, "school-abc");
     }
 
@@ -6026,8 +7864,16 @@ mod license_tests {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
         // Vérification avec une autre clé publique (Clé B)
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_B);
-        assert!(!res.valid, "Un jeton signé avec une autre clé doit être rejeté");
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_B,
+        );
+        assert!(
+            !res.valid,
+            "Un jeton signé avec une autre clé doit être rejeté"
+        );
     }
 
     #[test]
@@ -6040,7 +7886,12 @@ mod license_tests {
         } else {
             format!("{}A", &token[..token.len() - 1])
         };
-        let res = verify_license_token_internal(&tampered, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(
+            &tampered,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
         assert!(!res.valid, "Un jeton altéré doit être rejeté");
     }
 
@@ -6051,7 +7902,12 @@ mod license_tests {
         claims.iat = now - 7200;
         claims.exp = now - 3600; // expiré il y a 1 heure
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
         assert!(!res.valid, "Un jeton expiré doit être rejeté");
     }
 
@@ -6059,8 +7915,16 @@ mod license_tests {
     fn test_different_school_id_rejected() {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-pirate", "device-test", TEST_RSA_PUBLIC_KEY_A);
-        assert!(!res.valid, "Un jeton pour un autre établissement doit être rejeté");
+        let res = verify_license_token_internal(
+            &token,
+            "school-pirate",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(
+            !res.valid,
+            "Un jeton pour un autre établissement doit être rejeté"
+        );
         assert!(res.reason.unwrap().contains("autre établissement"));
     }
 
@@ -6074,7 +7938,10 @@ mod license_tests {
             "device-autre",
             TEST_RSA_PUBLIC_KEY_A,
         );
-        assert!(!res.valid, "Un jeton lié à un autre appareil doit être rejeté");
+        assert!(
+            !res.valid,
+            "Un jeton lié à un autre appareil doit être rejeté"
+        );
         assert!(res.reason.unwrap().contains("autre appareil"));
     }
 
@@ -6089,7 +7956,10 @@ mod license_tests {
             "device-test",
             TEST_RSA_PUBLIC_KEY_A,
         );
-        assert!(!res.valid, "Un jeton sans liaison appareil doit être rejeté");
+        assert!(
+            !res.valid,
+            "Un jeton sans liaison appareil doit être rejeté"
+        );
     }
 
     #[test]
@@ -6103,7 +7973,10 @@ mod license_tests {
             "device-test",
             TEST_RSA_PUBLIC_KEY_A,
         );
-        assert!(!res.valid, "Un quota invalide dans le jeton doit être rejeté");
+        assert!(
+            !res.valid,
+            "Un quota invalide dans le jeton doit être rejeté"
+        );
     }
 
     #[test]
@@ -6111,7 +7984,12 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.status = "SUSPENDED".to_string();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
         assert!(!res.valid, "Une licence suspendue doit être rejetée");
     }
 
@@ -6120,8 +7998,16 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.starts_at = Some("2035-01-01T00:00:00Z".to_string());
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
-        assert!(!res.valid, "Une licence dont la date de début est future doit être rejetée");
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(
+            !res.valid,
+            "Une licence dont la date de début est future doit être rejetée"
+        );
     }
 
     #[test]
@@ -6129,8 +8015,16 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.expires_at = Some("2020-01-01T00:00:00Z".to_string());
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
-        assert!(!res.valid, "Une licence dont expires_at est dépassé doit être rejetée");
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(
+            !res.valid,
+            "Une licence dont expires_at est dépassé doit être rejetée"
+        );
     }
 
     #[test]
@@ -6140,7 +8034,12 @@ mod license_tests {
         claims.iat = now + 3600;
         claims.exp = claims.iat + 5 * 86400;
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
         assert!(!res.valid, "Un jeton émis dans le futur doit être rejeté");
         assert!(res.reason.unwrap().contains("iat futur"));
     }
@@ -6152,7 +8051,12 @@ mod license_tests {
         claims.iat = now;
         claims.exp = now + 8 * 86400; // 8 jours > 7 jours
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
         assert!(!res.valid, "Un jeton de plus de 7 jours doit être rejeté");
         assert!(res.reason.unwrap().contains("supérieure à 7 jours"));
     }
@@ -6162,8 +8066,12 @@ mod license_tests {
         let claims = sample_valid_claims();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
         const PLACEHOLDER_KEY: &str = "-----BEGIN PUBLIC KEY-----\n# Configurer ici la cle publique RSA correspondant au secret Supabase ORION_LICENSE_PRIVATE_KEY_PEM\n-----END PUBLIC KEY-----";
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", PLACEHOLDER_KEY);
-        assert!(!res.valid, "Un placeholder de clé publique doit faire échouer la vérification");
+        let res =
+            verify_license_token_internal(&token, "school-abc", "device-test", PLACEHOLDER_KEY);
+        assert!(
+            !res.valid,
+            "Un placeholder de clé publique doit faire échouer la vérification"
+        );
         assert!(res.reason.unwrap().contains("non configurée"));
     }
 
@@ -6189,8 +8097,16 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.is_current = false;
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
-        assert!(!res.valid, "Une licence archivée ne doit jamais réautoriser l'accès");
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(
+            !res.valid,
+            "Une licence archivée ne doit jamais réautoriser l'accès"
+        );
         assert!(res.reason.unwrap().contains("remplacée"));
     }
 
@@ -6199,7 +8115,12 @@ mod license_tests {
         let mut claims = sample_valid_claims();
         claims.status = "REVOKED".to_string();
         let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
         assert!(!res.valid, "Une licence révoquée doit être refusée");
     }
 
@@ -6209,13 +8130,26 @@ mod license_tests {
         let mut future = sample_valid_claims();
         future.starts_at = Some((now_dt + chrono::Duration::hours(1)).to_rfc3339());
         let token = create_test_token(&future, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
-        assert!(!res.valid, "Une licence à starts_at futur doit être refusée");
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(
+            !res.valid,
+            "Une licence à starts_at futur doit être refusée"
+        );
 
         let mut expired = sample_valid_claims();
         expired.expires_at = Some((now_dt - chrono::Duration::seconds(1)).to_rfc3339());
         let token = create_test_token(&expired, TEST_RSA_PRIVATE_KEY_A);
-        let res = verify_license_token_internal(&token, "school-abc", "device-test", TEST_RSA_PUBLIC_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
         assert!(!res.valid, "Une licence expirée doit être refusée");
     }
 
@@ -6276,17 +8210,19 @@ pub struct RoleRec {
 #[tauri::command]
 pub fn get_roles(state: State<'_, DbState>) -> Result<Vec<RoleRec>, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT id, name, description FROM roles"
-    ).map_err(|e| e.to_string())?;
-    
-    let rows = stmt.query_map([], |row| {
-        Ok(RoleRec {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            description: row.get(2)?,
+    let mut stmt = conn
+        .prepare("SELECT id, name, description FROM roles")
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RoleRec {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut roles = Vec::new();
     for r in rows {
@@ -6319,8 +8255,14 @@ pub struct LocalUserInfo {
 }
 
 #[tauri::command]
-pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<Vec<LocalUserInfo>, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+pub fn get_school_users(
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<LocalUserInfo>, String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base".to_string())?;
     crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SUPER_ADMIN"])?;
 
     let mut stmt = conn.prepare(
@@ -6340,27 +8282,31 @@ pub fn get_school_users(school_id: String, state: State<'_, DbState>) -> Result<
          ORDER BY u.created_at DESC"
     ).map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map(rusqlite::params![school_id], |row| {
-        Ok(LocalUserInfo {
-            user_id: row.get(0)?,
-            email: row.get(1)?,
-            username: row.get(2)?,
-            status: row.get(3)?,
-            first_name: row.get(4)?,
-            last_name: row.get(5)?,
-            phone: row.get(6)?,
-            role_name: row.get(7)?,
-            role_id: row.get(8)?,
-            profile_id: row.get(9)?,
-            created_at: row.get(10)?,
-            staff_id: row.get(11)?,
-            staff_name: row.get(12)?,
+    let rows = stmt
+        .query_map(rusqlite::params![school_id], |row| {
+            Ok(LocalUserInfo {
+                user_id: row.get(0)?,
+                email: row.get(1)?,
+                username: row.get(2)?,
+                status: row.get(3)?,
+                first_name: row.get(4)?,
+                last_name: row.get(5)?,
+                phone: row.get(6)?,
+                role_name: row.get(7)?,
+                role_id: row.get(8)?,
+                profile_id: row.get(9)?,
+                created_at: row.get(10)?,
+                staff_id: row.get(11)?,
+                staff_name: row.get(12)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut users = Vec::new();
     for r in rows {
-        if let Ok(u) = r { users.push(u); }
+        if let Ok(u) = r {
+            users.push(u);
+        }
     }
     Ok(users)
 }
@@ -6376,11 +8322,13 @@ fn guard_super_admin_assignment(
     _actor_id: &str,
     role_id: &str,
 ) -> Result<(), String> {
-    let target_role: Option<String> = conn.query_row(
-        "SELECT name FROM roles WHERE id = ?1",
-        rusqlite::params![role_id],
-        |row| row.get(0),
-    ).ok();
+    let target_role: Option<String> = conn
+        .query_row(
+            "SELECT name FROM roles WHERE id = ?1",
+            rusqlite::params![role_id],
+            |row| row.get(0),
+        )
+        .ok();
 
     if target_role.as_deref() == Some("SUPER_ADMIN") {
         return Err(
@@ -6404,9 +8352,12 @@ pub fn create_local_user(
     role_id: String,
     _actor_id: String,
     staff_id: Option<String>,
-    state: State<'_, DbState>
+    state: State<'_, DbState>,
 ) -> Result<LocalUserInfo, String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base".to_string())?;
 
     // (ORI-SEC-003) : Exiger les droits de Direction sur school_id ou SUPER_ADMIN
     let caller = crate::auth_guard::require_direction_or_super_admin(&conn, Some(&school_id))?;
@@ -6422,25 +8373,35 @@ pub fn create_local_user(
     }
 
     // Vérifier si l'email existe déjà
-    let exists: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM users WHERE email = ?1",
-        rusqlite::params![email],
-        |row| row.get(0)
-    ).unwrap_or(0);
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM users WHERE email = ?1",
+            rusqlite::params![email],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     if exists > 0 {
-        return Err(format!("Un utilisateur avec l'email {} existe déjà.", email));
+        return Err(format!(
+            "Un utilisateur avec l'email {} existe déjà.",
+            email
+        ));
     }
 
     // Vérifier si le nom d'utilisateur est déjà pris (insensible à la casse)
-    let username_exists: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM users WHERE username = ?1 COLLATE NOCASE",
-        rusqlite::params![username],
-        |row| row.get(0)
-    ).unwrap_or(0);
+    let username_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM users WHERE username = ?1 COLLATE NOCASE",
+            rusqlite::params![username],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     if username_exists > 0 {
-        return Err(format!("Le nom d'utilisateur « {} » est déjà utilisé.", username));
+        return Err(format!(
+            "Le nom d'utilisateur « {} » est déjà utilisé.",
+            username
+        ));
     }
 
     let password_hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST)
@@ -6449,30 +8410,38 @@ pub fn create_local_user(
     // Résolution du lien avec le personnel : identifiant fourni par
     // l'interface, sinon rapprochement automatique par email.
     let mut resolved_staff_id: Option<String> = match staff_id {
-        Some(sid) if !sid.trim().is_empty() => conn.query_row(
-            "SELECT id FROM staff WHERE id = ?1 AND school_id = ?2 LIMIT 1",
-            rusqlite::params![sid, school_id],
-            |row| row.get::<_, String>(0),
-        ).ok(),
+        Some(sid) if !sid.trim().is_empty() => conn
+            .query_row(
+                "SELECT id FROM staff WHERE id = ?1 AND school_id = ?2 LIMIT 1",
+                rusqlite::params![sid, school_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok(),
         _ => None,
     };
     if resolved_staff_id.is_none() {
-        resolved_staff_id = conn.query_row(
-            "SELECT id FROM staff
+        resolved_staff_id = conn
+            .query_row(
+                "SELECT id FROM staff
               WHERE school_id = ?1 AND email IS NOT NULL AND lower(email) = lower(?2)
               LIMIT 1",
-            rusqlite::params![school_id, email],
-            |row| row.get::<_, String>(0),
-        ).ok();
+                rusqlite::params![school_id, email],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
     }
     if let Some(sid) = &resolved_staff_id {
-        let already_linked: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM profiles WHERE school_id = ?1 AND staff_id = ?2",
-            rusqlite::params![school_id, sid],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let already_linked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM profiles WHERE school_id = ?1 AND staff_id = ?2",
+                rusqlite::params![school_id, sid],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         if already_linked > 0 {
-            return Err("Ce membre du personnel est déjà rattaché à un compte utilisateur.".to_string());
+            return Err(
+                "Ce membre du personnel est déjà rattaché à un compte utilisateur.".to_string(),
+            );
         }
     }
 
@@ -6484,8 +8453,9 @@ pub fn create_local_user(
     conn.execute(
         "INSERT INTO users (id, email, username, password_hash, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5, ?5)",
-        rusqlite::params![user_id, email, username, password_hash, now]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![user_id, email, username, password_hash, now],
+    )
+    .map_err(|e| e.to_string())?;
 
     conn.execute(
         "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, phone, staff_id, created_at, updated_at)
@@ -6498,18 +8468,22 @@ pub fn create_local_user(
         rusqlite::params![role_assign_id, user_id, school_id, role_id, now]
     ).map_err(|e| e.to_string())?;
 
-    let role_name: Option<String> = conn.query_row(
-        "SELECT name FROM roles WHERE id = ?1",
-        rusqlite::params![role_id],
-        |row| row.get(0)
-    ).ok();
+    let role_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM roles WHERE id = ?1",
+            rusqlite::params![role_id],
+            |row| row.get(0),
+        )
+        .ok();
 
     let staff_name: Option<String> = resolved_staff_id.as_ref().and_then(|sid| {
         conn.query_row(
             "SELECT NULLIF(TRIM(nom || ' ' || prenoms), '') FROM staff WHERE id = ?1",
             rusqlite::params![sid],
             |row| row.get::<_, Option<String>>(0),
-        ).ok().flatten()
+        )
+        .ok()
+        .flatten()
     });
 
     Ok(LocalUserInfo {
@@ -6535,7 +8509,8 @@ fn uuid_v4() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
-    format!("{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
         nanos,
         nanos & 0xffff,
         (nanos >> 4) & 0xfff,
@@ -6545,26 +8520,38 @@ fn uuid_v4() -> String {
 }
 
 #[tauri::command]
-pub fn toggle_user_status(user_id: String, new_status: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+pub fn toggle_user_status(
+    user_id: String,
+    new_status: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base".to_string())?;
 
     // 1. Trouver l'établissement et les rôles de l'utilisateur cible
-    let target_school_id: Option<String> = conn.query_row(
-        "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).ok();
+    let target_school_id: Option<String> = conn
+        .query_row(
+            "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .ok();
 
-    let target_is_super: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM user_roles ur
+    let target_is_super: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_roles ur
          JOIN roles r ON r.id = ur.role_id
          WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // 2. Vérification des permissions de l'appelant
-    let caller = crate::auth_guard::require_direction_or_super_admin(&conn, target_school_id.as_deref())?;
+    let caller =
+        crate::auth_guard::require_direction_or_super_admin(&conn, target_school_id.as_deref())?;
 
     // 3. Un compte SUPER_ADMIN ne peut être modifié QUE par un SUPER_ADMIN
     if target_is_super > 0 && !caller.is_super_admin {
@@ -6588,8 +8575,9 @@ pub fn toggle_user_status(user_id: String, new_status: String, state: State<'_, 
 
     conn.execute(
         "UPDATE users SET status = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-        rusqlite::params![new_status, user_id]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![new_status, user_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -6601,27 +8589,36 @@ pub fn assign_user_role(
     _actor_id: String,
     state: State<'_, DbState>,
 ) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base".to_string())?;
 
     // (ORI-SEC-003) : Vérification d'autorisation centralisée
     let caller = crate::auth_guard::require_direction_or_super_admin(&conn, Some(&school_id))?;
 
-    let target_role_name: Option<String> = conn.query_row(
-        "SELECT name FROM roles WHERE id = ?1",
-        rusqlite::params![role_id],
-        |row| row.get(0),
-    ).ok();
+    let target_role_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM roles WHERE id = ?1",
+            rusqlite::params![role_id],
+            |row| row.get(0),
+        )
+        .ok();
 
     // Seul un SUPER_ADMIN peut attribuer le rôle SUPER_ADMIN
     if target_role_name.as_deref() == Some("SUPER_ADMIN") && !caller.is_super_admin {
-        return Err("Action refusée : seul un Super Administrateur peut attribuer le rôle SUPER_ADMIN.".to_string());
+        return Err(
+            "Action refusée : seul un Super Administrateur peut attribuer le rôle SUPER_ADMIN."
+                .to_string(),
+        );
     }
 
     // Supprimer l'ancien rôle pour cette école
     conn.execute(
         "DELETE FROM user_roles WHERE user_id = ?1 AND school_id = ?2",
-        rusqlite::params![user_id, school_id]
-    ).map_err(|e| e.to_string())?;
+        rusqlite::params![user_id, school_id],
+    )
+    .map_err(|e| e.to_string())?;
 
     // Attribuer le nouveau
     let id = format!("ur-{}-{}", user_id, role_id);
@@ -6634,43 +8631,69 @@ pub fn assign_user_role(
 
 #[tauri::command]
 pub fn delete_local_user(user_id: String, state: State<'_, DbState>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|_| "Impossible de verrouiller la base".to_string())?;
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| "Impossible de verrouiller la base".to_string())?;
 
-    let target_school_id: Option<String> = conn.query_row(
-        "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).ok();
+    let target_school_id: Option<String> = conn
+        .query_row(
+            "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .ok();
 
-    let target_is_super: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM user_roles ur
+    let target_is_super: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_roles ur
          JOIN roles r ON r.id = ur.role_id
          WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // (ORI-SEC-003) : Vérification d'autorisation centralisée
-    let caller = crate::auth_guard::require_direction_or_super_admin(&conn, target_school_id.as_deref())?;
+    let caller =
+        crate::auth_guard::require_direction_or_super_admin(&conn, target_school_id.as_deref())?;
 
     if target_is_super > 0 && !caller.is_super_admin {
-        return Err("Action refusée : seul un Super Administrateur peut supprimer un compte Super Admin.".to_string());
+        return Err(
+            "Action refusée : seul un Super Administrateur peut supprimer un compte Super Admin."
+                .to_string(),
+        );
     }
 
     // Empêcher l'auto-suppression de son propre compte connecté
     if caller.user_id == user_id {
-        return Err("Action refusée : vous ne pouvez pas supprimer votre propre compte connecté.".to_string());
+        return Err(
+            "Action refusée : vous ne pouvez pas supprimer votre propre compte connecté."
+                .to_string(),
+        );
     }
 
     // Supprimer les dépendances dans l'ordre (tokens, user_roles, profiles, users)
-    conn.execute("DELETE FROM local_session_tokens WHERE user_id = ?1", rusqlite::params![user_id])
-        .map_err(|e| format!("Erreur suppression sessions: {}", e))?;
-    conn.execute("DELETE FROM user_roles WHERE user_id = ?1", rusqlite::params![user_id])
-        .map_err(|e| format!("Erreur suppression rôles: {}", e))?;
-    conn.execute("DELETE FROM profiles WHERE user_id = ?1", rusqlite::params![user_id])
-        .map_err(|e| format!("Erreur suppression profil: {}", e))?;
-    conn.execute("DELETE FROM users WHERE id = ?1", rusqlite::params![user_id])
-        .map_err(|e| format!("Erreur suppression utilisateur: {}", e))?;
+    conn.execute(
+        "DELETE FROM local_session_tokens WHERE user_id = ?1",
+        rusqlite::params![user_id],
+    )
+    .map_err(|e| format!("Erreur suppression sessions: {}", e))?;
+    conn.execute(
+        "DELETE FROM user_roles WHERE user_id = ?1",
+        rusqlite::params![user_id],
+    )
+    .map_err(|e| format!("Erreur suppression rôles: {}", e))?;
+    conn.execute(
+        "DELETE FROM profiles WHERE user_id = ?1",
+        rusqlite::params![user_id],
+    )
+    .map_err(|e| format!("Erreur suppression profil: {}", e))?;
+    conn.execute(
+        "DELETE FROM users WHERE id = ?1",
+        rusqlite::params![user_id],
+    )
+    .map_err(|e| format!("Erreur suppression utilisateur: {}", e))?;
     Ok(())
 }
 
@@ -6694,7 +8717,11 @@ pub struct LoginProfile {
 
 /// Définit ou change le mot de passe d'un utilisateur (réservé à l'utilisateur lui-même, à sa Direction ou au Super Admin)
 #[tauri::command]
-pub fn set_user_password(user_id: String, password: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn set_user_password(
+    user_id: String,
+    password: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
     use bcrypt::{hash, DEFAULT_COST};
 
     if password.chars().count() < 6 {
@@ -6703,22 +8730,27 @@ pub fn set_user_password(user_id: String, password: String, state: State<'_, DbS
 
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
 
-    let target_school_id: Option<String> = conn.query_row(
-        "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).ok();
+    let target_school_id: Option<String> = conn
+        .query_row(
+            "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .ok();
 
-    let target_is_super: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM user_roles ur
+    let target_is_super: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_roles ur
          JOIN roles r ON r.id = ur.role_id
          WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // (ORI-SEC-003) : Soit l'utilisateur lui-même, soit la Direction de son école, soit le Super Admin
-    let caller = crate::auth_guard::require_self_or_direction(&conn, &user_id, target_school_id.as_deref())?;
+    let caller =
+        crate::auth_guard::require_self_or_direction(&conn, &user_id, target_school_id.as_deref())?;
 
     if target_is_super > 0 && !caller.is_super_admin && caller.user_id != user_id {
         return Err("Action refusée : seul un Super Administrateur peut modifier le mot de passe d'un Super Admin.".to_string());
@@ -6729,7 +8761,8 @@ pub fn set_user_password(user_id: String, password: String, state: State<'_, DbS
     conn.execute(
         "UPDATE users SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
         rusqlite::params![hashed, user_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     // Un changement de mot de passe invalide toutes les restaurations différées.
     crate::auth_guard::revoke_user_session_tokens(&conn, &user_id)?;
@@ -6751,21 +8784,45 @@ pub fn login_local_conn(
         return Err("Identifiant ou mot de passe incorrect.".to_string());
     }
 
-    let (user_id, email, username, status, hash_str): (String, String, Option<String>, String, Option<String>) = conn.query_row(
-        "SELECT id, email, username, status, password_hash FROM users
+    let (user_id, email, username, status, hash_str): (
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT id, email, username, status, password_hash FROM users
          WHERE username = ?1 COLLATE NOCASE OR email = ?1 COLLATE NOCASE
          LIMIT 1",
-        rusqlite::params![ident],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-    ).map_err(|_| "Identifiant ou mot de passe incorrect.".to_string())?;
+            rusqlite::params![ident],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|_| "Identifiant ou mot de passe incorrect.".to_string())?;
 
     if status != "ACTIVE" {
         return Err("Ce compte est suspendu. Contactez la direction.".to_string());
     }
 
     match hash_str {
-        None => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
-        Some(ref s) if s.is_empty() => return Err("Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string()),
+        None => {
+            return Err(
+                "Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string(),
+            )
+        }
+        Some(ref s) if s.is_empty() => {
+            return Err(
+                "Aucun mot de passe défini pour ce compte. Contactez la direction.".to_string(),
+            )
+        }
         Some(h) => {
             if !verify(password, &h).unwrap_or(false) {
                 return Err("Identifiant ou mot de passe incorrect.".to_string());
@@ -6773,13 +8830,15 @@ pub fn login_local_conn(
         }
     }
 
-    let is_super: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM user_roles ur
+    let is_super: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_roles ur
          JOIN roles r ON r.id = ur.role_id
          WHERE ur.user_id = ?1 AND r.name = 'SUPER_ADMIN'",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).unwrap_or(0);
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // L'établissement de session vient du rôle réel, pas d'un identifiant par défaut.
     let requested = school_id.trim();
@@ -6789,13 +8848,16 @@ pub fn login_local_conn(
                 "SELECT school_id FROM user_roles WHERE user_id = ?1 LIMIT 1",
                 rusqlite::params![user_id],
                 |row| row.get::<_, String>(0),
-            ).map_err(|_| "Aucun établissement n'est associé à ce compte.".to_string())?
+            )
+            .map_err(|_| "Aucun établissement n'est associé à ce compte.".to_string())?
         } else {
-            let school_exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM schools WHERE id = ?1",
-                rusqlite::params![requested],
-                |row| row.get(0),
-            ).unwrap_or(0);
+            let school_exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM schools WHERE id = ?1",
+                    rusqlite::params![requested],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
             if school_exists == 0 {
                 return Err("Établissement introuvable ou supprimé. Accès refusé.".to_string());
             }
@@ -6805,28 +8867,34 @@ pub fn login_local_conn(
         if requested.is_empty() {
             return Err("Établissement requis. Accès refusé.".to_string());
         }
-        let member: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM user_roles WHERE user_id = ?1 AND school_id = ?2",
-            rusqlite::params![user_id, requested],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let member: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_roles WHERE user_id = ?1 AND school_id = ?2",
+                rusqlite::params![user_id, requested],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         if member == 0 {
-            return Err("Ce compte n'appartient pas à cet établissement. Accès refusé.".to_string());
+            return Err(
+                "Ce compte n'appartient pas à cet établissement. Accès refusé.".to_string(),
+            );
         }
         requested.to_string()
     };
 
-    let (first_name, last_name, mut role_name): (Option<String>, Option<String>, Option<String>) = conn.query_row(
-        "SELECT p.first_name, p.last_name, r.name
+    let (first_name, last_name, mut role_name): (Option<String>, Option<String>, Option<String>) =
+        conn.query_row(
+            "SELECT p.first_name, p.last_name, r.name
          FROM users u
          LEFT JOIN profiles p ON p.user_id = u.id AND p.school_id = ?2
          LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ?2
          LEFT JOIN roles r ON r.id = ur.role_id
          WHERE u.id = ?1
          LIMIT 1",
-        rusqlite::params![user_id, target_school_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).unwrap_or((None, None, None));
+            rusqlite::params![user_id, target_school_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap_or((None, None, None));
 
     if is_super > 0 {
         role_name = Some("SUPER_ADMIN".to_string());
@@ -6850,7 +8918,12 @@ pub fn login_local_conn(
 
 /// Connexion locale par identifiant (nom d'utilisateur ou email) + mot de passe individuel
 #[tauri::command]
-pub fn login_local(identifier: String, password: String, school_id: String, state: State<'_, DbState>) -> Result<LoginProfile, String> {
+pub fn login_local(
+    identifier: String,
+    password: String,
+    school_id: String,
+    state: State<'_, DbState>,
+) -> Result<LoginProfile, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
     login_local_conn(&conn, &identifier, &password, &school_id)
 }
@@ -6878,11 +8951,14 @@ pub fn restore_local_session(
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).unwrap_or((None, None, None));
 
-    let username: Option<String> = conn.query_row(
-        "SELECT username FROM users WHERE id = ?1",
-        rusqlite::params![session.user_id],
-        |row| row.get(0),
-    ).ok().flatten();
+    let username: Option<String> = conn
+        .query_row(
+            "SELECT username FROM users WHERE id = ?1",
+            rusqlite::params![session.user_id],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
 
     Ok(LoginProfile {
         user_id: session.user_id,
@@ -6890,7 +8966,11 @@ pub fn restore_local_session(
         username,
         first_name,
         last_name,
-        role_name: if session.is_super_admin { Some("SUPER_ADMIN".to_string()) } else { role_name },
+        role_name: if session.is_super_admin {
+            Some("SUPER_ADMIN".to_string())
+        } else {
+            role_name
+        },
         school_id: session.school_id,
         session_token: token,
         session_expires_at,
@@ -6954,7 +9034,14 @@ mod finance_tests {
         conn
     }
 
-    fn insert_fee(conn: &Connection, id: &str, name: &str, amount: i64, applies_to: &str, class_id: Option<&str>) {
+    fn insert_fee(
+        conn: &Connection,
+        id: &str,
+        name: &str,
+        amount: i64,
+        applies_to: &str,
+        class_id: Option<&str>,
+    ) {
         conn.execute(
             "INSERT INTO fee_structures (id, school_id, academic_year_id, name, amount, fee_type, applies_to, class_id, level, due_date, is_mandatory, created_at, updated_at)
              VALUES (?1, 'school-1', 'y1', ?2, ?3, 'SCOLARITE', ?4, ?5, NULL, NULL, 1, '2026-01-01', '2026-01-01')",
@@ -6962,7 +9049,15 @@ mod finance_tests {
         ).unwrap();
     }
 
-    fn insert_payment(conn: &Connection, id: &str, enrollment_id: &str, student_id: &str, amount: i64, method: &str, status: &str) {
+    fn insert_payment(
+        conn: &Connection,
+        id: &str,
+        enrollment_id: &str,
+        student_id: &str,
+        amount: i64,
+        method: &str,
+        status: &str,
+    ) {
         conn.execute(
             "INSERT INTO payments (id, school_id, academic_year_id, enrollment_id, student_id, fee_structure_id, amount, payment_date, payment_method, receipt_number, recorded_by, status, created_at, updated_at)
              VALUES (?1, 'school-1', 'y1', ?2, ?3, NULL, ?4, '2026-03-01', ?5, ?6, 'system', ?7, '2026-03-01', '2026-03-01')",
@@ -6985,7 +9080,11 @@ mod finance_tests {
         assert_eq!(d.partial_count, 1);
         assert_eq!(d.unpaid_count, 1);
         assert_eq!(d.cancelled_payment_count, 1);
-        assert!((d.recovery_rate - 47.6).abs() < 0.05, "taux = {}", d.recovery_rate);
+        assert!(
+            (d.recovery_rate - 47.6).abs() < 0.05,
+            "taux = {}",
+            d.recovery_rate
+        );
     }
 
     #[test]
@@ -6994,10 +9093,34 @@ mod finance_tests {
         let d = build_financial_dashboard(&conn, "school-1", "y1").unwrap();
 
         assert_eq!(d.by_class.len(), 2);
-        let c1 = d.by_class.iter().find(|c| c.class_name == "6ème A").unwrap();
-        assert_eq!((c1.student_count, c1.total_due, c1.total_paid, c1.remaining_balance), (2, 30_000, 20_000, 10_000));
-        let c2 = d.by_class.iter().find(|c| c.class_name == "5ème B").unwrap();
-        assert_eq!((c2.student_count, c2.total_due, c2.total_paid, c2.remaining_balance), (1, 12_000, 0, 12_000));
+        let c1 = d
+            .by_class
+            .iter()
+            .find(|c| c.class_name == "6ème A")
+            .unwrap();
+        assert_eq!(
+            (
+                c1.student_count,
+                c1.total_due,
+                c1.total_paid,
+                c1.remaining_balance
+            ),
+            (2, 30_000, 20_000, 10_000)
+        );
+        let c2 = d
+            .by_class
+            .iter()
+            .find(|c| c.class_name == "5ème B")
+            .unwrap();
+        assert_eq!(
+            (
+                c2.student_count,
+                c2.total_due,
+                c2.total_paid,
+                c2.remaining_balance
+            ),
+            (1, 12_000, 0, 12_000)
+        );
 
         // Trie des reliquats : le plus gros d'abord (5ème B 120,00 puis 6ème A 100,00)
         assert_eq!(d.debtors.len(), 2);
@@ -7006,14 +9129,22 @@ mod finance_tests {
         assert_eq!(d.debtors[1].last_name, "Traoré");
         assert_eq!(d.debtors[1].status, "PARTIEL");
 
-        let methods: Vec<_> = d.by_method.iter().map(|m| (m.method.as_str(), m.amount)).collect();
+        let methods: Vec<_> = d
+            .by_method
+            .iter()
+            .map(|m| (m.method.as_str(), m.amount))
+            .collect();
         assert_eq!(methods, vec![("ESPECES", 15_000), ("MOBILE_MONEY", 5_000)]);
     }
 
     #[test]
     fn dashboard_ignore_les_autres_annees_et_eleves_inactifs() {
         let conn = seeded_db();
-        conn.execute("UPDATE enrollments SET status = 'DROPPED' WHERE id = 'e3'", []).unwrap();
+        conn.execute(
+            "UPDATE enrollments SET status = 'DROPPED' WHERE id = 'e3'",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO academic_years (id, school_id, name, status) VALUES ('y2', 'school-1', '2026-2027', 'PLANNED')", []).unwrap();
         conn.execute("INSERT INTO payments (id, school_id, academic_year_id, enrollment_id, student_id, amount, payment_date, payment_method, receipt_number, recorded_by, status, created_at, updated_at)
                       VALUES ('p9', 'school-1', 'y2', 'e1', 's1', 99000, '2026-03-01', 'ESPECES', 'RECU-p9', 'system', 'VALID', '2026-03-01', '2026-03-01')", []).unwrap();
@@ -7033,9 +9164,15 @@ mod finance_tests {
 /// et retourne le chemin absolu du fichier créé. Utilisé par l'export Excel du
 /// super-admin (les fichiers sont générés côté navigateur puis persistés ici).
 #[tauri::command]
-pub fn write_download_file(app: tauri::AppHandle, file_name: String, base64_content: String, state: State<'_, DbState>) -> Result<String, String> {
+pub fn write_download_file(
+    app: tauri::AppHandle,
+    file_name: String,
+    base64_content: String,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::require_authenticated(&conn)?;
+    let session = crate::auth_guard::require_authenticated(&conn)?;
+    crate::auth_guard::require_active_license_for_session(&conn, &session)?;
     use base64::Engine;
 
     let bytes = base64::engine::general_purpose::STANDARD
@@ -7043,19 +9180,24 @@ pub fn write_download_file(app: tauri::AppHandle, file_name: String, base64_cont
         .map_err(|e| format!("Contenu base64 invalide : {}", e))?;
 
     // Dossier cible : Téléchargements de l'utilisateur, sinon données applicatives.
-    let dir = app
-        .path()
-        .download_dir()
-        .unwrap_or_else(|_| app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir()));
+    let dir = app.path().download_dir().unwrap_or_else(|_| {
+        app.path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+    });
 
     if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Création du dossier impossible : {}", e))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Création du dossier impossible : {}", e))?;
     }
 
     // Nom de fichier assaini (interdit : /\:*?"<>|)
     let safe_name: String = file_name
         .chars()
-        .map(|c| match c { '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_', c => c })
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c => c,
+        })
         .collect();
 
     if safe_name.trim().is_empty() {
@@ -7082,35 +9224,43 @@ pub fn get_current_user_profile(
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
 
     // 1. Identité (table profiles + users)
-    let profile: Option<(Option<String>, Option<String>, Option<String>)> = conn.query_row(
-        "SELECT p.first_name, p.last_name, p.phone FROM profiles p
+    let profile: Option<(Option<String>, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT p.first_name, p.last_name, p.phone FROM profiles p
          WHERE p.user_id=?1 AND p.school_id=?2 AND p.deleted_at IS NULL
          LIMIT 1",
-        rusqlite::params![user_id, school_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).ok();
+            rusqlite::params![user_id, school_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
 
-    let email: Option<String> = conn.query_row(
-        "SELECT email FROM users WHERE id=?1",
-        rusqlite::params![user_id],
-        |row| row.get(0),
-    ).unwrap_or(None);
+    let email: Option<String> = conn
+        .query_row(
+            "SELECT email FROM users WHERE id=?1",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
 
     // 2. Rôles effectifs
     let mut roles: Vec<String> = Vec::new();
     {
-        let mut stmt = conn.prepare(
-            "SELECT r.name FROM user_roles ur
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.name FROM user_roles ur
              JOIN roles r ON ur.role_id = r.id
              WHERE ur.user_id=?1 AND ur.school_id=?2
              UNION
              SELECT r.name FROM user_roles ur
              JOIN roles r ON ur.role_id = r.id
              WHERE ur.user_id=?1 AND r.name='SUPER_ADMIN'",
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(rusqlite::params![user_id, school_id], |row| {
-            row.get::<_, String>(0)
-        }).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![user_id, school_id], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|e| e.to_string())?;
         for r in rows.filter_map(Result::ok) {
             roles.push(r);
         }
@@ -7118,22 +9268,26 @@ pub fn get_current_user_profile(
 
     // 3. Fiche personnel liée (rapprochement par email)
     let staff: Option<(String, Option<String>, Option<String>, Option<String>)> = match &email {
-        Some(mail) if !mail.trim().is_empty() => conn.query_row(
-            "SELECT id, fonction, matricule, photo_url FROM staff
+        Some(mail) if !mail.trim().is_empty() => conn
+            .query_row(
+                "SELECT id, fonction, matricule, photo_url FROM staff
              WHERE school_id=?1 AND email IS NOT NULL AND lower(email)=lower(?2)
              LIMIT 1",
-            rusqlite::params![school_id, mail],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).ok(),
+                rusqlite::params![school_id, mail],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .ok(),
         _ => None,
     };
 
     // 4. Nom de l'établissement
-    let school_name: Option<String> = conn.query_row(
-        "SELECT name FROM schools WHERE id=?1",
-        rusqlite::params![school_id],
-        |row| row.get(0),
-    ).unwrap_or(None);
+    let school_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM schools WHERE id=?1",
+            rusqlite::params![school_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
 
     Ok(crate::models::CurrentUserProfile {
         first_name: profile.as_ref().and_then(|p| p.0.clone()),
@@ -7158,21 +9312,28 @@ pub fn get_school_dashboard_stats(
     state: State<'_, DbState>,
 ) -> Result<crate::models::SchoolDashboardStats, String> {
     let conn = state.0.lock().map_err(|_| "Base verrouillée".to_string())?;
-    crate::auth_guard::authorize(&conn, &school_id, &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"])?;
+    crate::auth_guard::authorize(
+        &conn,
+        &school_id,
+        &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
+    )?;
 
     // 1. Effectif des élèves inscrits (inscriptions actives de l'année)
     let mut total_students: i64 = 0;
     let mut girls: i64 = 0;
     let mut boys: i64 = 0;
     {
-        let mut stmt = conn.prepare(
-            "SELECT s.gender FROM enrollments e JOIN students s ON s.id = e.student_id
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.gender FROM enrollments e JOIN students s ON s.id = e.student_id
              WHERE e.school_id=?1 AND e.academic_year_id=?2 AND e.status='ACTIVE'",
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(
-            rusqlite::params![school_id, academic_year_id],
-            |row| row.get::<_, Option<String>>(0),
-        ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![school_id, academic_year_id], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .map_err(|e| e.to_string())?;
         for g in rows.filter_map(Result::ok).flatten() {
             total_students += 1;
             match g.trim().to_uppercase().as_str() {
@@ -7184,19 +9345,23 @@ pub fn get_school_dashboard_stats(
     }
 
     // 2. Personnel : total et professeurs (type « Enseignant » ou fonction contenant « prof »)
-    let total_staff: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM staff WHERE school_id=?1",
-        rusqlite::params![school_id],
-        |r| r.get(0),
-    ).unwrap_or(0);
+    let total_staff: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM staff WHERE school_id=?1",
+            rusqlite::params![school_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
 
-    let teachers: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM staff WHERE school_id=?1 AND est_actif=1
+    let teachers: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM staff WHERE school_id=?1 AND est_actif=1
          AND (LOWER(COALESCE(type_personnel,''))='enseignant'
               OR LOWER(COALESCE(fonction,'')) LIKE '%prof%')",
-        rusqlite::params![school_id],
-        |r| r.get(0),
-    ).unwrap_or(0);
+            rusqlite::params![school_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
 
     Ok(crate::models::SchoolDashboardStats {
         total_students,
@@ -7268,27 +9433,83 @@ mod purge_tests {
         assert!(res.is_ok(), "La purge doit réussir: {:?}", res.err());
 
         // Vérifier que school-1 et ses données sont supprimées
-        let s1_count: i64 = conn.query_row("SELECT COUNT(*) FROM schools WHERE id = 'school-1'", [], |r| r.get(0)).unwrap();
+        let s1_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schools WHERE id = 'school-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s1_count, 0);
-        let s1_students: i64 = conn.query_row("SELECT COUNT(*) FROM students WHERE school_id = 'school-1'", [], |r| r.get(0)).unwrap();
+        let s1_students: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM students WHERE school_id = 'school-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s1_students, 0);
-        let s1_classes: i64 = conn.query_row("SELECT COUNT(*) FROM classes WHERE school_id = 'school-1'", [], |r| r.get(0)).unwrap();
+        let s1_classes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM classes WHERE school_id = 'school-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s1_classes, 0);
-        let s1_history: i64 = conn.query_row("SELECT COUNT(*) FROM enrollment_history WHERE id = 'eh-1'", [], |r| r.get(0)).unwrap();
+        let s1_history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM enrollment_history WHERE id = 'eh-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s1_history, 0);
-        let s1_users: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE id = 'u-1'", [], |r| r.get(0)).unwrap();
+        let s1_users: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users WHERE id = 'u-1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(s1_users, 0);
 
         // Vérifier que school-2 et ses données restent STRICTEMENT intactes
-        let s2_count: i64 = conn.query_row("SELECT COUNT(*) FROM schools WHERE id = 'school-2'", [], |r| r.get(0)).unwrap();
+        let s2_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schools WHERE id = 'school-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s2_count, 1);
-        let s2_students: i64 = conn.query_row("SELECT COUNT(*) FROM students WHERE school_id = 'school-2'", [], |r| r.get(0)).unwrap();
+        let s2_students: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM students WHERE school_id = 'school-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s2_students, 1);
-        let s2_classes: i64 = conn.query_row("SELECT COUNT(*) FROM classes WHERE school_id = 'school-2'", [], |r| r.get(0)).unwrap();
+        let s2_classes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM classes WHERE school_id = 'school-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s2_classes, 1);
-        let s2_history: i64 = conn.query_row("SELECT COUNT(*) FROM enrollment_history WHERE id = 'eh-2'", [], |r| r.get(0)).unwrap();
+        let s2_history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM enrollment_history WHERE id = 'eh-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s2_history, 1);
-        let s2_users: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE id = 'u-2'", [], |r| r.get(0)).unwrap();
+        let s2_users: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users WHERE id = 'u-2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(s2_users, 1);
     }
 
@@ -7307,16 +9528,37 @@ mod purge_tests {
 
         for payload in &malicious_payloads {
             let res = purge_school_data(&mut conn, payload);
-            assert!(res.is_err(), "Le payload malveillant '{}' doit être rejeté par validate_school_id", payload);
+            assert!(
+                res.is_err(),
+                "Le payload malveillant '{}' doit être rejeté par validate_school_id",
+                payload
+            );
         }
 
         // Vérifier qu'absolument AUCUNE donnée n'a été altérée
-        let s1_count: i64 = conn.query_row("SELECT COUNT(*) FROM schools WHERE id = 'school-1'", [], |r| r.get(0)).unwrap();
+        let s1_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schools WHERE id = 'school-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s1_count, 1, "school-1 doit être intact");
-        let s2_count: i64 = conn.query_row("SELECT COUNT(*) FROM schools WHERE id = 'school-2'", [], |r| r.get(0)).unwrap();
+        let s2_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schools WHERE id = 'school-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s2_count, 1, "school-2 doit être intact");
-        let students_count: i64 = conn.query_row("SELECT COUNT(*) FROM students", [], |r| r.get(0)).unwrap();
-        assert_eq!(students_count, 2, "La table students ne doit pas avoir été vidée ni altérée");
+        let students_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM students", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            students_count, 2,
+            "La table students ne doit pas avoir été vidée ni altérée"
+        );
     }
 
     #[test]
@@ -7338,8 +9580,9 @@ mod purge_tests {
                 operation TEXT NOT NULL,
                 payload TEXT NOT NULL,
                 status TEXT NOT NULL
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
 
         // 1. Insérer une mutation pour chaque type valide
         for (i, valid_type) in VALID_SYNC_ENTITY_TYPES.iter().enumerate() {
@@ -7368,24 +9611,45 @@ mod purge_tests {
             ).unwrap();
         }
 
-        let total_before: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0)).unwrap();
-        assert_eq!(total_before as usize, VALID_SYNC_ENTITY_TYPES.len() + invalid_types.len());
+        let total_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            total_before as usize,
+            VALID_SYNC_ENTITY_TYPES.len() + invalid_types.len()
+        );
 
         // 3. Exécuter la purge globale
         let deleted = purge_invalid_mutations_conn(&conn, None).expect("La purge doit réussir");
-        assert_eq!(deleted, invalid_types.len(), "Doit supprimer exactement le nombre de mutations invalides");
+        assert_eq!(
+            deleted,
+            invalid_types.len(),
+            "Doit supprimer exactement le nombre de mutations invalides"
+        );
 
-        let total_after: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0)).unwrap();
-        assert_eq!(total_after as usize, VALID_SYNC_ENTITY_TYPES.len(), "Toutes les mutations valides doivent être conservées");
+        let total_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            total_after as usize,
+            VALID_SYNC_ENTITY_TYPES.len(),
+            "Toutes les mutations valides doivent être conservées"
+        );
 
         // 4. Vérifier individuellement que CHAQUE type valide est encore présent
         for valid_type in VALID_SYNC_ENTITY_TYPES.iter() {
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
-                rusqlite::params![valid_type],
-                |r| r.get(0),
-            ).unwrap();
-            assert_eq!(count, 1, "L'entité valide '{}' doit être impérativement conservée", valid_type);
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
+                    rusqlite::params![valid_type],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 1,
+                "L'entité valide '{}' doit être impérativement conservée",
+                valid_type
+            );
         }
 
         // 5. Vérifier spécifiquement les modules critiques mentionnés dans la consigne :
@@ -7414,22 +9678,34 @@ mod purge_tests {
             "library_reservations",
         ];
         for mod_name in &critical_modules {
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
-                rusqlite::params![mod_name],
-                |r| r.get(0),
-            ).unwrap();
-            assert_eq!(count, 1, "Le module critique '{}' doit être conservé dans la file", mod_name);
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
+                    rusqlite::params![mod_name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 1,
+                "Le module critique '{}' doit être conservé dans la file",
+                mod_name
+            );
         }
 
         // 6. Vérifier qu'aucun type invalide ne subsiste (notamment "school")
         for invalid_type in &invalid_types {
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
-                rusqlite::params![invalid_type],
-                |r| r.get(0),
-            ).unwrap();
-            assert_eq!(count, 0, "L'entité invalide '{}' doit avoir été purgée", invalid_type);
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pending_mutations WHERE entity_type = ?1",
+                    rusqlite::params![invalid_type],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "L'entité invalide '{}' doit avoir été purgée",
+                invalid_type
+            );
         }
     }
 
@@ -7445,8 +9721,9 @@ mod purge_tests {
                 operation TEXT NOT NULL,
                 payload TEXT NOT NULL,
                 status TEXT NOT NULL
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
 
         // 1. Mutations valides pour school-1 et school-2
         conn.execute(
@@ -7474,19 +9751,52 @@ mod purge_tests {
 
         // 3. Purge ciblée sur school-1 uniquement
         let deleted = purge_invalid_mutations_conn(&conn, Some("school-1")).unwrap();
-        assert_eq!(deleted, 1, "Seule l'entité invalide de school-1 doit être supprimée");
+        assert_eq!(
+            deleted, 1,
+            "Seule l'entité invalide de school-1 doit être supprimée"
+        );
 
         // 4. Vérifier que school-1 n'a plus l'invalide mais conserve sa valide
-        let s1_valid: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-valid-1'", [], |r| r.get(0)).unwrap();
+        let s1_valid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-valid-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s1_valid, 1, "La mutation valide de school-1 doit subsister");
-        let s1_inv: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-inv-1'", [], |r| r.get(0)).unwrap();
-        assert_eq!(s1_inv, 0, "La mutation invalide de school-1 doit être purgée");
+        let s1_inv: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-inv-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            s1_inv, 0,
+            "La mutation invalide de school-1 doit être purgée"
+        );
 
         // 5. Vérifier que school-2 reste complètement intacte (isolation)
-        let s2_valid: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-valid-2'", [], |r| r.get(0)).unwrap();
+        let s2_valid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-valid-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(s2_valid, 1, "La mutation valide de school-2 doit subsister");
-        let s2_inv: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-inv-2'", [], |r| r.get(0)).unwrap();
-        assert_eq!(s2_inv, 1, "La mutation de school-2 ne doit pas avoir été touchée par la purge de school-1");
+        let s2_inv: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_mutations WHERE id = 'm-inv-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            s2_inv, 1,
+            "La mutation de school-2 ne doit pas avoir été touchée par la purge de school-1"
+        );
     }
 
     #[test]
@@ -7518,7 +9828,9 @@ mod purge_tests {
         // Cohérence bidirectionnelle : chaque type déclaré valide doit être recensé dans REMOTE_COLUMNS ou DEPENDENCY_ORDER
         for table in VALID_SYNC_ENTITY_TYPES.iter() {
             let in_remote = REMOTE_COLUMNS.iter().any(|(t, _)| t == table);
-            let in_deps = crate::sync::DEPENDENCY_ORDER.iter().any(|(t, _)| t == table);
+            let in_deps = crate::sync::DEPENDENCY_ORDER
+                .iter()
+                .any(|(t, _)| t == table);
             assert!(
                 in_remote || in_deps,
                 "L'entité '{}' dans VALID_SYNC_ENTITY_TYPES doit être déclarée dans REMOTE_COLUMNS ou DEPENDENCY_ORDER",
@@ -7535,12 +9847,18 @@ mod purge_tests {
         // 1. Appel sans session -> rejeté
         crate::auth_guard::clear_session();
         let res_anon = crate::auth_guard::require_super_admin(&conn);
-        assert!(res_anon.is_err(), "Un appel non authentifié doit être rejeté");
+        assert!(
+            res_anon.is_err(),
+            "Un appel non authentifié doit être rejeté"
+        );
 
         // 2. Appel avec rôle DIRECTION -> rejeté
         crate::auth_guard::establish_local_session(&conn, "u-1", "school-1").unwrap();
         let res_dir = crate::auth_guard::require_super_admin(&conn);
-        assert!(res_dir.is_err(), "Un utilisateur DIRECTION doit être rejeté");
+        assert!(
+            res_dir.is_err(),
+            "Un utilisateur DIRECTION doit être rejeté"
+        );
         assert!(
             res_dir.unwrap_err().contains("Super Administrateur"),
             "Le message d'erreur doit indiquer que le rôle Super Administrateur est requis"
@@ -7550,7 +9868,8 @@ mod purge_tests {
         conn.execute(
             "INSERT INTO users (id, email) VALUES ('u-sa', 'sa@orion.com')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa', 'u-sa', 'school-1', 'r2')",
             [],
@@ -7565,6 +9884,50 @@ mod purge_tests {
 mod transfer_tests {
     use super::*;
     use rusqlite::Connection;
+
+    fn seed_active_test_license(conn: &Connection, school_id: &str) {
+        crate::commands::set_test_license_public_key_pem(Some(
+            crate::test_keys::TEST_RSA_PUBLIC_KEY_A,
+        ));
+        crate::commands::set_test_device_identifier(Some("device-test"));
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        let lic_id = format!("lic-{}", school_id);
+        let lic_key = format!("ORION-TEST-{}", school_id);
+        let claims = crate::commands::LicenseClaims {
+            iss: "orion-license".to_string(),
+            sub: lic_id.clone(),
+            license_id: lic_id.clone(),
+            school_id: school_id.to_string(),
+            license_key: lic_key.clone(),
+            status: "ACTIVE".to_string(),
+            starts_at: Some(starts.clone()),
+            expires_at: Some(expires.clone()),
+            is_current: true,
+            max_devices: 5,
+            device_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            device_identifier: "device-test".to_string(),
+            jti: Some("jti-test".to_string()),
+            iat,
+            exp,
+        };
+        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        let key = jsonwebtoken::EncodingKey::from_rsa_pem(
+            crate::test_keys::TEST_RSA_PRIVATE_KEY_A.as_bytes(),
+        )
+        .unwrap();
+        let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+        conn.execute(
+            "INSERT INTO licenses
+             (id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current, signed_token)
+             VALUES (?1, ?2, ?3, 'ACTIVE', ?4, ?5, 5, 1, ?6)",
+            rusqlite::params![lic_id, school_id, lic_key, starts, expires, token],
+        )
+        .unwrap();
+    }
 
     fn setup_transfer_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -7594,6 +9957,7 @@ mod transfer_tests {
                 ('enr-2', 'school-2', 'ay-2', 'student-2', 'class-other-school', 'INITIAL');"
         )
         .unwrap();
+        seed_active_test_license(&conn, "school-1");
         conn
     }
 
@@ -7847,15 +10211,63 @@ mod auth_tests {
     fn setup_test_auth_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::run_migrations(&conn).unwrap();
-        conn.execute("INSERT INTO schools (id, name) VALUES ('school-1', 'École de test')", []).unwrap();
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-1', 'École de test')",
+            [],
+        )
+        .unwrap();
+        crate::commands::set_test_license_public_key_pem(Some(
+            crate::test_keys::TEST_RSA_PUBLIC_KEY_A,
+        ));
+        crate::commands::set_test_device_identifier(Some("device-test"));
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        let claims = crate::commands::LicenseClaims {
+            iss: "orion-license".to_string(),
+            sub: "lic-school-1".to_string(),
+            license_id: "lic-school-1".to_string(),
+            school_id: "school-1".to_string(),
+            license_key: "ORION-TEST-SCHOOL1".to_string(),
+            status: "ACTIVE".to_string(),
+            starts_at: Some(starts.clone()),
+            expires_at: Some(expires.clone()),
+            is_current: true,
+            max_devices: 5,
+            device_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            device_identifier: "device-test".to_string(),
+            jti: Some("jti-test".to_string()),
+            iat,
+            exp,
+        };
+        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        let key = jsonwebtoken::EncodingKey::from_rsa_pem(
+            crate::test_keys::TEST_RSA_PRIVATE_KEY_A.as_bytes(),
+        )
+        .unwrap();
+        let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+        conn.execute(
+            "INSERT INTO licenses (id, school_id, license_key, status, starts_at, expires_at, max_devices, is_current, signed_token)
+             VALUES ('lic-school-1', 'school-1', 'ORION-TEST-SCHOOL1', 'ACTIVE', ?1, ?2, 5, 1, ?3)",
+            rusqlite::params![starts, expires, token],
+        ).unwrap();
         conn
     }
 
-    fn insert_check_role_user(conn: &Connection, id: &str, school_id: &str, status: &str, profile_deleted: bool) {
+    fn insert_check_role_user(
+        conn: &Connection,
+        id: &str,
+        school_id: &str,
+        status: &str,
+        profile_deleted: bool,
+    ) {
         conn.execute(
             "INSERT INTO users (id, email, status) VALUES (?1, ?2, ?3)",
             rusqlite::params![id, format!("{id}@orion.test"), status],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO profiles (id, user_id, school_id, first_name, last_name, deleted_at)
              VALUES (?1, ?2, ?3, 'Test', 'Utilisateur', ?4)",
@@ -7863,19 +10275,34 @@ mod auth_tests {
                 format!("profile-{id}"),
                 id,
                 school_id,
-                if profile_deleted { Some("2026-01-01 00:00:00") } else { None }
+                if profile_deleted {
+                    Some("2026-01-01 00:00:00")
+                } else {
+                    None
+                }
             ],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     fn grant_check_role(conn: &Connection, user_id: &str, school_id: &str, role_name: &str) {
         let role_id: String = conn
-            .query_row("SELECT id FROM roles WHERE name = ?1", rusqlite::params![role_name], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM roles WHERE name = ?1",
+                rusqlite::params![role_name],
+                |r| r.get(0),
+            )
             .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![uuid::Uuid::new_v4().to_string(), user_id, school_id, role_id],
-        ).unwrap();
+            rusqlite::params![
+                uuid::Uuid::new_v4().to_string(),
+                user_id,
+                school_id,
+                role_id
+            ],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -7889,32 +10316,52 @@ mod auth_tests {
             rusqlite::params![hashed],
         ).unwrap();
 
-        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        let sa_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa', 'u-sa', 'school-1', ?1)",
             rusqlite::params![sa_role_id],
         ).unwrap();
 
         // 1. Connexion réussie avec mot de passe individuel via username
-        let profile = login_local_conn(&conn, "SuperAdmin", "PersonalPassword2026!", "school-1").unwrap();
+        let profile =
+            login_local_conn(&conn, "SuperAdmin", "PersonalPassword2026!", "school-1").unwrap();
         assert_eq!(profile.user_id, "u-sa");
         assert_eq!(profile.role_name, Some("SUPER_ADMIN".to_string()));
 
         // Connexion réussie via email
-        let profile_email = login_local_conn(&conn, "superadmin@orion.app", "PersonalPassword2026!", "school-1").unwrap();
+        let profile_email = login_local_conn(
+            &conn,
+            "superadmin@orion.app",
+            "PersonalPassword2026!",
+            "school-1",
+        )
+        .unwrap();
         assert_eq!(profile_email.user_id, "u-sa");
 
         // 2. Échec avec l'ancien mot de passe maître (rejeté car aucun mot de passe maître n'existe)
         let err_master = login_local_conn(&conn, "SuperAdmin", "@admin@//10", "school-1");
-        assert!(err_master.is_err(), "L'ancien mot de passe maître doit être rejeté");
+        assert!(
+            err_master.is_err(),
+            "L'ancien mot de passe maître doit être rejeté"
+        );
 
         // 3. Échec avec un mauvais mot de passe
         let err_wrong = login_local_conn(&conn, "SuperAdmin", "WrongPassword", "school-1");
-        assert!(err_wrong.is_err(), "Un mauvais mot de passe doit être rejeté");
+        assert!(
+            err_wrong.is_err(),
+            "Un mauvais mot de passe doit être rejeté"
+        );
 
         // 4. Tentative avec 'Admin' sans compte correspondant échoue
         let err_unknown = login_local_conn(&conn, "Admin", "@admin@//10", "school-1");
-        assert!(err_unknown.is_err(), "Un identifiant inexistant doit être rejeté");
+        assert!(
+            err_unknown.is_err(),
+            "Un identifiant inexistant doit être rejeté"
+        );
     }
 
     #[test]
@@ -7927,14 +10374,21 @@ mod auth_tests {
             [],
         ).unwrap();
 
-        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        let sa_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa2', 'u-sa2', 'school-1', ?1)",
             rusqlite::params![sa_role_id],
         ).unwrap();
 
         let res = login_local_conn(&conn, "sa2", "AnyPassword", "school-1");
-        assert!(res.is_err(), "Un compte sans hash de mot de passe ne doit pas pouvoir se connecter");
+        assert!(
+            res.is_err(),
+            "Un compte sans hash de mot de passe ne doit pas pouvoir se connecter"
+        );
     }
 
     #[test]
@@ -7948,7 +10402,11 @@ mod auth_tests {
             rusqlite::params![hashed],
         ).unwrap();
 
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-std', 'u-std', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
@@ -7967,23 +10425,37 @@ mod auth_tests {
     fn test_login_rejects_other_school() {
         let _guard = crate::auth_guard::lock_test_session();
         let conn = setup_test_auth_db();
-        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'Autre école')", []).unwrap();
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-2', 'Autre école')",
+            [],
+        )
+        .unwrap();
         let hashed = bcrypt::hash("UserPassword123!", bcrypt::DEFAULT_COST).unwrap();
         conn.execute(
             "INSERT INTO users (id, email, username, password_hash, status) VALUES ('u-std', 'user@school.com', 'stduser', ?1, 'ACTIVE')",
             rusqlite::params![hashed],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-std', 'u-std', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
         ).unwrap();
 
         let wrong = login_local_conn(&conn, "stduser", "UserPassword123!", "school-2");
-        assert!(wrong.is_err(), "Un compte de l'école 1 ne doit pas ouvrir de session sur l'école 2");
+        assert!(
+            wrong.is_err(),
+            "Un compte de l'école 1 ne doit pas ouvrir de session sur l'école 2"
+        );
 
         let missing = login_local_conn(&conn, "stduser", "UserPassword123!", "");
-        assert!(missing.is_err(), "Un établissement vide ne doit pas retomber sur school-1");
+        assert!(
+            missing.is_err(),
+            "Un établissement vide ne doit pas retomber sur school-1"
+        );
 
         let ok = login_local_conn(&conn, "stduser", "UserPassword123!", "school-1").unwrap();
         assert_eq!(ok.school_id, "school-1");
@@ -8015,8 +10487,9 @@ mod auth_tests {
                 status TEXT NOT NULL,
                 attempt_count INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
 
         conn.execute(
             "INSERT INTO staff (id, school_id, nom, prenoms, est_prof_principal, est_responsable_classe, est_actif, created_at, updated_at)
@@ -8055,12 +10528,18 @@ mod auth_tests {
 
         // 1. Appel sans session pour rôle DIRECTION -> doit être rejeté
         let res_dir = set_local_user_role_conn(&conn, "u-target-1", "school-1", "DIRECTION");
-        assert!(res_dir.is_err(), "Un appel anonyme ne doit pas pouvoir attribuer DIRECTION");
+        assert!(
+            res_dir.is_err(),
+            "Un appel anonyme ne doit pas pouvoir attribuer DIRECTION"
+        );
         assert!(res_dir.unwrap_err().contains("session non authentifiée"));
 
         // 2. Appel sans session pour rôle SUPER_ADMIN -> doit également être rejeté
         let res_sa = set_local_user_role_conn(&conn, "u-target-1", "school-1", "SUPER_ADMIN");
-        assert!(res_sa.is_err(), "Un appel anonyme ne doit pas pouvoir attribuer SUPER_ADMIN");
+        assert!(
+            res_sa.is_err(),
+            "Un appel anonyme ne doit pas pouvoir attribuer SUPER_ADMIN"
+        );
         assert!(res_sa.unwrap_err().contains("session non authentifiée"));
     }
 
@@ -8080,7 +10559,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-caller-prof', 'prof@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let prof_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'PROFESSEUR'", [], |r| r.get(0)).unwrap();
+        let prof_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'PROFESSEUR'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-prof-caller', 'u-caller-prof', 'school-1', ?1)",
             rusqlite::params![prof_role_id],
@@ -8090,16 +10573,26 @@ mod auth_tests {
         crate::auth_guard::establish_local_session(&conn, "u-caller-prof", "school-1").unwrap();
 
         // Le professeur ne peut pas s'auto-promouvoir DIRECTION
-        let res_self_dir = set_local_user_role_conn(&conn, "u-caller-prof", "school-1", "DIRECTION");
-        assert!(res_self_dir.is_err(), "Un professeur ne doit pas pouvoir s'auto-promouvoir DIRECTION");
+        let res_self_dir =
+            set_local_user_role_conn(&conn, "u-caller-prof", "school-1", "DIRECTION");
+        assert!(
+            res_self_dir.is_err(),
+            "Un professeur ne doit pas pouvoir s'auto-promouvoir DIRECTION"
+        );
 
         // Le professeur ne peut pas promouvoir un autre utilisateur DIRECTION
         let res_other_dir = set_local_user_role_conn(&conn, "u-target-2", "school-1", "DIRECTION");
-        assert!(res_other_dir.is_err(), "Un professeur ne doit pas pouvoir attribuer DIRECTION à autrui");
+        assert!(
+            res_other_dir.is_err(),
+            "Un professeur ne doit pas pouvoir attribuer DIRECTION à autrui"
+        );
 
         // Le professeur ne peut pas s'auto-promouvoir SUPER_ADMIN
         let res_sa = set_local_user_role_conn(&conn, "u-caller-prof", "school-1", "SUPER_ADMIN");
-        assert!(res_sa.is_err(), "Un professeur ne doit pas pouvoir s'auto-promouvoir SUPER_ADMIN");
+        assert!(
+            res_sa.is_err(),
+            "Un professeur ne doit pas pouvoir s'auto-promouvoir SUPER_ADMIN"
+        );
     }
 
     #[test]
@@ -8117,7 +10610,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-caller-dir', 'dir@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-dir-caller', 'u-caller-dir', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
@@ -8127,7 +10624,10 @@ mod auth_tests {
 
         // La direction ne peut JAMAIS attribuer le rôle SUPER_ADMIN
         let res = set_local_user_role_conn(&conn, "u-target-3", "school-1", "SUPER_ADMIN");
-        assert!(res.is_err(), "La direction ne doit pas pouvoir attribuer le rôle SUPER_ADMIN");
+        assert!(
+            res.is_err(),
+            "La direction ne doit pas pouvoir attribuer le rôle SUPER_ADMIN"
+        );
         assert!(res.unwrap_err().contains("seul un Super Administrateur"));
     }
 
@@ -8137,7 +10637,11 @@ mod auth_tests {
         let conn = setup_test_auth_db();
 
         // Créer deuxième école
-        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO users (id, email, status) VALUES ('u-target-4', 'target4@school.com', 'ACTIVE')",
             [],
@@ -8148,7 +10652,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-caller-dir-1', 'dir1@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-dir-1', 'u-caller-dir-1', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
@@ -8158,7 +10666,10 @@ mod auth_tests {
 
         // Direction school-1 tente d'agir sur school-2
         let res = set_local_user_role_conn(&conn, "u-target-4", "school-2", "SECRETAIRE");
-        assert!(res.is_err(), "La direction de school-1 ne doit pas pouvoir attribuer de rôle sur school-2");
+        assert!(
+            res.is_err(),
+            "La direction de school-1 ne doit pas pouvoir attribuer de rôle sur school-2"
+        );
     }
 
     #[test]
@@ -8176,7 +10687,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-caller-sa-5', 'sa5@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        let sa_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa-5', 'u-caller-sa-5', 'school-1', ?1)",
             rusqlite::params![sa_role_id],
@@ -8185,17 +10700,26 @@ mod auth_tests {
         crate::auth_guard::establish_local_session(&conn, "u-caller-sa-5", "school-1").unwrap();
 
         // Tentative d'attribuer un rôle inexistant dans le référentiel
-        let res = set_local_user_role_conn(&conn, "u-target-5", "school-1", "ROLE_INVENTE_MALVEILLANT");
-        assert!(res.is_err(), "L'attribution d'un rôle inconnu doit être rejetée");
+        let res =
+            set_local_user_role_conn(&conn, "u-target-5", "school-1", "ROLE_INVENTE_MALVEILLANT");
+        assert!(
+            res.is_err(),
+            "L'attribution d'un rôle inconnu doit être rejetée"
+        );
         assert!(res.unwrap_err().contains("Rôle invalide ou inexistant"));
 
         // Vérifier que la table `roles` n'a pas été polluée par une création dynamique
-        let role_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM roles WHERE name = 'ROLE_INVENTE_MALVEILLANT'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(role_count, 0, "Aucun rôle inconnu ne doit être inséré dynamiquement dans roles");
+        let role_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM roles WHERE name = 'ROLE_INVENTE_MALVEILLANT'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            role_count, 0,
+            "Aucun rôle inconnu ne doit être inséré dynamiquement dans roles"
+        );
     }
 
     #[test]
@@ -8213,7 +10737,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-dir-ok', 'dir-ok@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-dir-ok', 'u-dir-ok', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
@@ -8222,7 +10750,11 @@ mod auth_tests {
         crate::auth_guard::establish_local_session(&conn, "u-dir-ok", "school-1").unwrap();
 
         let res_dir_sec = set_local_user_role_conn(&conn, "u-target-ok", "school-1", "SECRETAIRE");
-        assert!(res_dir_sec.is_ok(), "La direction doit pouvoir attribuer SECRETAIRE sur son école : {:?}", res_dir_sec);
+        assert!(
+            res_dir_sec.is_ok(),
+            "La direction doit pouvoir attribuer SECRETAIRE sur son école : {:?}",
+            res_dir_sec
+        );
 
         let has_sec: i64 = conn.query_row(
             "SELECT COUNT(*) FROM user_roles ur
@@ -8238,7 +10770,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-sa-ok', 'sa-ok@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        let sa_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-sa-ok', 'u-sa-ok', 'school-1', ?1)",
             rusqlite::params![sa_role_id],
@@ -8247,7 +10783,11 @@ mod auth_tests {
         crate::auth_guard::establish_local_session(&conn, "u-sa-ok", "school-1").unwrap();
 
         let res_sa = set_local_user_role_conn(&conn, "u-target-ok", "school-1", "SUPER_ADMIN");
-        assert!(res_sa.is_ok(), "Le Super Admin doit pouvoir attribuer SUPER_ADMIN : {:?}", res_sa);
+        assert!(
+            res_sa.is_ok(),
+            "Le Super Admin doit pouvoir attribuer SUPER_ADMIN : {:?}",
+            res_sa
+        );
     }
 
     #[test]
@@ -8262,21 +10802,36 @@ mod auth_tests {
         ).unwrap();
 
         // 1. set_local_user_role_conn sans session doit ÉCHOUER même s'il n'y a aucun Super Admin en base
-        let res_public = set_local_user_role_conn(&conn, "u-first-admin", "school-1", "SUPER_ADMIN");
-        assert!(res_public.is_err(), "set_local_user_role public sans session doit être rejeté même si aucun SA n'existe");
+        let res_public =
+            set_local_user_role_conn(&conn, "u-first-admin", "school-1", "SUPER_ADMIN");
+        assert!(
+            res_public.is_err(),
+            "set_local_user_role public sans session doit être rejeté même si aucun SA n'existe"
+        );
 
         // 2. L'amorçage contrôlé séparé doit RÉUSSIR quand aucun SA n'existe
-        let res_bootstrap = bootstrap_initial_super_admin_conn(&mut conn, "u-first-admin", "school-1");
-        assert!(res_bootstrap.is_ok(), "L'amorçage initial doit réussir pour le premier Super Admin : {:?}", res_bootstrap);
+        let res_bootstrap =
+            bootstrap_initial_super_admin_conn(&mut conn, "u-first-admin", "school-1");
+        assert!(
+            res_bootstrap.is_ok(),
+            "L'amorçage initial doit réussir pour le premier Super Admin : {:?}",
+            res_bootstrap
+        );
 
         // 3. Un second appel à bootstrap_initial_super_admin_conn doit être REJETÉ
         conn.execute(
             "INSERT INTO users (id, email, status) VALUES ('u-second-admin', 'second@orion.app', 'ACTIVE')",
             [],
         ).unwrap();
-        let res_bootstrap2 = bootstrap_initial_super_admin_conn(&mut conn, "u-second-admin", "school-1");
-        assert!(res_bootstrap2.is_err(), "Un deuxième appel d'amorçage doit être rejeté");
-        assert!(res_bootstrap2.unwrap_err().contains("un Super Administrateur existe déjà"));
+        let res_bootstrap2 =
+            bootstrap_initial_super_admin_conn(&mut conn, "u-second-admin", "school-1");
+        assert!(
+            res_bootstrap2.is_err(),
+            "Un deuxième appel d'amorçage doit être rejeté"
+        );
+        assert!(res_bootstrap2
+            .unwrap_err()
+            .contains("un Super Administrateur existe déjà"));
     }
 
     #[test]
@@ -8300,22 +10855,35 @@ mod auth_tests {
             "school-main",
             Some("test-sync-token"),
         );
-        assert!(res.is_ok(), "L'amorçage avec identité cloud vérifiée doit réussir sans secret maître : {:?}", res);
+        assert!(
+            res.is_ok(),
+            "L'amorçage avec identité cloud vérifiée doit réussir sans secret maître : {:?}",
+            res
+        );
 
         // Vérifier l'insertion effective du rôle en base
-        let sa_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM user_roles ur
+        let sa_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_roles ur
              JOIN roles r ON r.id = ur.role_id
              WHERE ur.user_id = 'u-legit-sa' AND r.name = 'SUPER_ADMIN'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(sa_count, 1, "Le premier Super Admin doit avoir son rôle persisté");
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            sa_count, 1,
+            "Le premier Super Admin doit avoir son rôle persisté"
+        );
 
         // Vérifier que la session locale a été établie
-        let current_session = crate::auth_guard::get_authenticated_user(&conn).expect("Session active attendue");
+        let current_session =
+            crate::auth_guard::get_authenticated_user(&conn).expect("Session active attendue");
         assert_eq!(current_session.user_id, "u-legit-sa");
-        assert!(current_session.is_super_admin, "La session doit être reconnue comme Super Admin");
+        assert!(
+            current_session.is_super_admin,
+            "La session doit être reconnue comme Super Admin"
+        );
     }
 
     #[test]
@@ -8339,7 +10907,10 @@ mod auth_tests {
             None,
         );
 
-        assert!(res.is_err(), "Toute tentative d'usurpation avec un target_user_id divergent doit être rejetée");
+        assert!(
+            res.is_err(),
+            "Toute tentative d'usurpation avec un target_user_id divergent doit être rejetée"
+        );
         assert!(res.unwrap_err().contains("Usurpation d'identité détectée"));
     }
 
@@ -8356,7 +10927,8 @@ mod auth_tests {
             id: "u-sa-premier".to_string(),
             email: Some("premier@orion.app".to_string()),
         };
-        let res1 = bootstrap_super_admin_with_verified_user(&mut conn, &user1, None, "school-main", None);
+        let res1 =
+            bootstrap_super_admin_with_verified_user(&mut conn, &user1, None, "school-main", None);
         assert!(res1.is_ok(), "Le premier amorçage doit réussir");
 
         // Deuxième tentative : même avec un utilisateur légitime, doit être irrévocablement rejetée
@@ -8364,9 +10936,12 @@ mod auth_tests {
             id: "u-sa-second".to_string(),
             email: Some("second@orion.app".to_string()),
         };
-        let res2 = bootstrap_super_admin_with_verified_user(&mut conn, &user2, None, "school-main", None);
+        let res2 =
+            bootstrap_super_admin_with_verified_user(&mut conn, &user2, None, "school-main", None);
         assert!(res2.is_err(), "La deuxième tentative doit être rejetée");
-        assert!(res2.unwrap_err().contains("un Super Administrateur existe déjà"));
+        assert!(res2
+            .unwrap_err()
+            .contains("un Super Administrateur existe déjà"));
     }
 
     #[test]
@@ -8413,14 +10988,16 @@ mod auth_tests {
         let p1 = db_path.clone();
         let handle1 = std::thread::spawn(move || {
             let mut conn = rusqlite::Connection::open(&p1).unwrap();
-            conn.busy_timeout(std::time::Duration::from_millis(500)).unwrap();
+            conn.busy_timeout(std::time::Duration::from_millis(500))
+                .unwrap();
             bootstrap_initial_super_admin_conn(&mut conn, "u-thread-1", "school-1")
         });
 
         let p2 = db_path.clone();
         let handle2 = std::thread::spawn(move || {
             let mut conn = rusqlite::Connection::open(&p2).unwrap();
-            conn.busy_timeout(std::time::Duration::from_millis(500)).unwrap();
+            conn.busy_timeout(std::time::Duration::from_millis(500))
+                .unwrap();
             bootstrap_initial_super_admin_conn(&mut conn, "u-thread-2", "school-1")
         });
 
@@ -8428,18 +11005,26 @@ mod auth_tests {
         let r2 = handle2.join().unwrap();
 
         let verify_conn = rusqlite::Connection::open(&db_path).unwrap();
-        let sa_count: i64 = verify_conn.query_row(
-            "SELECT COUNT(*) FROM user_roles ur
+        let sa_count: i64 = verify_conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_roles ur
              JOIN roles r ON r.id = ur.role_id
              WHERE r.name = 'SUPER_ADMIN'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
 
         // Exactement UN SEUL Super Admin doit avoir pu être créé, jamais deux
-        assert_eq!(sa_count, 1, "En concurrence stricte, un et un seul Super Administrateur doit être créé");
+        assert_eq!(
+            sa_count, 1,
+            "En concurrence stricte, un et un seul Super Administrateur doit être créé"
+        );
 
-        let successes = [r1.is_ok(), r2.is_ok()].into_iter().filter(|&ok| ok).count();
+        let successes = [r1.is_ok(), r2.is_ok()]
+            .into_iter()
+            .filter(|&ok| ok)
+            .count();
         assert_eq!(successes, 1, "Exactement un des deux threads doit réussir");
 
         // Nettoyer le fichier temporaire
@@ -8464,30 +11049,48 @@ mod auth_tests {
                  SELECT RAISE(ABORT, 'Erreur forcée pour tester le rollback atomique');
              END;",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Tentative d'amorçage avec une nouvelle école qui serait insérée juste avant l'échec de user_roles
-        let res = bootstrap_initial_super_admin_conn(&mut conn, "u-rollback-candidate", "school-must-rollback");
-        assert!(res.is_err(), "L'amorçage doit échouer lors de l'interruption de la transaction");
+        let res = bootstrap_initial_super_admin_conn(
+            &mut conn,
+            "u-rollback-candidate",
+            "school-must-rollback",
+        );
+        assert!(
+            res.is_err(),
+            "L'amorçage doit échouer lors de l'interruption de la transaction"
+        );
 
         // Vérifier que la base est restée absolument propre :
         // 1. Aucun rôle SUPER_ADMIN créé
-        let sa_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM user_roles ur
+        let sa_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_roles ur
              JOIN roles r ON r.id = ur.role_id
              WHERE r.name = 'SUPER_ADMIN'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(sa_count, 0, "En cas d'échec, aucun Super Admin ne doit subsister");
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            sa_count, 0,
+            "En cas d'échec, aucun Super Admin ne doit subsister"
+        );
 
         // 2. L'école insérée à l'étape précédente dans la même transaction a été rollbackée
-        let school_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM schools WHERE id = 'school-must-rollback'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(school_count, 0, "L'école insérée dans la transaction a été annulée par le rollback");
+        let school_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schools WHERE id = 'school-must-rollback'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            school_count, 0,
+            "L'école insérée dans la transaction a été annulée par le rollback"
+        );
     }
 
     #[test]
@@ -8504,7 +11107,8 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-target-integ', 'target@orion.app', 'ACTIVE')",
             [],
         ).unwrap();
-        let res_no_session = set_local_user_role_conn(&conn, "u-target-integ", "school-1", "DIRECTION");
+        let res_no_session =
+            set_local_user_role_conn(&conn, "u-target-integ", "school-1", "DIRECTION");
         assert!(res_no_session.is_err(), "Appel anonyme doit être rejeté");
 
         // 2. Amorçage légitime du premier Super Admin via identité cloud vérifiée
@@ -8512,26 +11116,46 @@ mod auth_tests {
             id: "u-founder-sa".to_string(),
             email: Some("founder@orion.app".to_string()),
         };
-        let res_boot = bootstrap_super_admin_with_verified_user(&mut conn, &verified_sa, None, "school-1", None);
+        let res_boot = bootstrap_super_admin_with_verified_user(
+            &mut conn,
+            &verified_sa,
+            None,
+            "school-1",
+            None,
+        );
         assert!(res_boot.is_ok(), "Amorçage légitime doit réussir");
 
         // 3. Le Super Admin maintenant authentifié peut utiliser set_local_user_role_conn
-        let res_assign_dir = set_local_user_role_conn(&conn, "u-target-integ", "school-1", "DIRECTION");
-        assert!(res_assign_dir.is_ok(), "Le Super Admin dûment amorcé doit pouvoir attribuer des rôles : {:?}", res_assign_dir);
+        let res_assign_dir =
+            set_local_user_role_conn(&conn, "u-target-integ", "school-1", "DIRECTION");
+        assert!(
+            res_assign_dir.is_ok(),
+            "Le Super Admin dûment amorcé doit pouvoir attribuer des rôles : {:?}",
+            res_assign_dir
+        );
 
-        let has_dir: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM user_roles ur
+        let has_dir: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_roles ur
              JOIN roles r ON r.id = ur.role_id
              WHERE ur.user_id = 'u-target-integ' AND r.name = 'DIRECTION'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(has_dir, 1, "Le rôle DIRECTION doit être attribué avec succès");
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            has_dir, 1,
+            "Le rôle DIRECTION doit être attribué avec succès"
+        );
 
         // 4. L'utilisateur DIRECTION nouvellement promu ne peut PAS s'auto-promouvoir en SUPER_ADMIN
         crate::auth_guard::establish_local_session(&conn, "u-target-integ", "school-1").unwrap();
-        let res_illegal_elevation = set_local_user_role_conn(&conn, "u-target-integ", "school-1", "SUPER_ADMIN");
-        assert!(res_illegal_elevation.is_err(), "Une DIRECTION ne peut pas s'auto-promouvoir en SUPER_ADMIN");
+        let res_illegal_elevation =
+            set_local_user_role_conn(&conn, "u-target-integ", "school-1", "SUPER_ADMIN");
+        assert!(
+            res_illegal_elevation.is_err(),
+            "Une DIRECTION ne peut pas s'auto-promouvoir en SUPER_ADMIN"
+        );
     }
 
     #[test]
@@ -8558,13 +11182,18 @@ mod auth_tests {
             Some("school-1"),
             "mock-valid-bearer-token",
         );
-        assert!(res.is_ok(), "L'établissement de session en ligne doit réussir : {:?}", res);
+        assert!(
+            res.is_ok(),
+            "L'établissement de session en ligne doit réussir : {:?}",
+            res
+        );
         let profile = res.unwrap();
         assert_eq!(profile.user_id, "u-cloud-dir-1");
         assert_eq!(profile.school_id, "school-1");
 
         // Vérifier que CURRENT_SESSION est active et valide
-        let sess = crate::auth_guard::get_authenticated_user(&conn).expect("Session doit être reconnue");
+        let sess =
+            crate::auth_guard::get_authenticated_user(&conn).expect("Session doit être reconnue");
         assert_eq!(sess.user_id, "u-cloud-dir-1");
         assert_eq!(sess.school_id, "school-1");
         assert!(sess.roles.contains(&"DIRECTION".to_string()));
@@ -8632,7 +11261,10 @@ mod auth_tests {
             Some("school-forbidden"),
             "token",
         );
-        assert!(res.is_err(), "L'accès à un établissement non autorisé doit être rejeté");
+        assert!(
+            res.is_err(),
+            "L'accès à un établissement non autorisé doit être rejeté"
+        );
         assert!(res.unwrap_err().contains("Accès refusé"));
 
         // Vérifier qu'aucune session n'a été créée
@@ -8652,13 +11284,7 @@ mod auth_tests {
         // Aucun rôle cloud avec school_id
         let cloud_roles: Vec<crate::auth_guard::CloudUserRole> = vec![];
 
-        let res = establish_online_session_conn(
-            &mut conn,
-            &auth_user,
-            &cloud_roles,
-            None,
-            "token",
-        );
+        let res = establish_online_session_conn(&mut conn, &auth_user, &cloud_roles, None, "token");
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Aucun établissement autorisé"));
         assert!(crate::auth_guard::get_authenticated_user(&conn).is_err());
@@ -8711,8 +11337,20 @@ mod auth_tests {
             school_id: Some("school-1".to_string()),
             role_name: "DIRECTION".to_string(),
         }];
-        assert!(establish_online_session_conn(&mut conn, &auth_legit, &roles_legit, Some("school-1"), "token-1").is_ok());
-        assert_eq!(crate::auth_guard::get_authenticated_user(&conn).unwrap().user_id, "u-legit");
+        assert!(establish_online_session_conn(
+            &mut conn,
+            &auth_legit,
+            &roles_legit,
+            Some("school-1"),
+            "token-1"
+        )
+        .is_ok());
+        assert_eq!(
+            crate::auth_guard::get_authenticated_user(&conn)
+                .unwrap()
+                .user_id,
+            "u-legit"
+        );
 
         // 2. Une tentative frauduleuse ou invalide survient
         let auth_bad = crate::auth_guard::CloudAuthUser {
@@ -8724,7 +11362,10 @@ mod auth_tests {
 
         // 3. Vérifier que l'ancienne session u-legit n'a PAS subsisté
         let sess_after = crate::auth_guard::get_authenticated_user(&conn);
-        assert!(sess_after.is_err(), "En cas d'échec, aucune session résiduelle ne doit être conservée");
+        assert!(
+            sess_after.is_err(),
+            "En cas d'échec, aucune session résiduelle ne doit être conservée"
+        );
     }
 
     /// SEC-VERIFY3-06a : un SUPER_ADMIN exclusivement local (sans cloud) ne peut pas s'élever.
@@ -8740,7 +11381,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, username, status) VALUES ('u-local-sa', 'localsa@orion.app', 'localsa', 'ACTIVE')",
             [],
         ).unwrap();
-        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
+        let sa_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-local-sa', 'u-local-sa', 'school-1', ?1)",
             rusqlite::params![sa_role_id],
@@ -8773,12 +11418,17 @@ mod auth_tests {
         conn.execute(
             "INSERT INTO schools (id, name) VALUES ('school-revoked', 'École révoquée')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO users (id, email, username, status) VALUES ('u-revoked', 'revoked@orion.app', 'revoked', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-revoked', 'u-revoked', 'school-revoked', ?1)",
             rusqlite::params![dir_role_id],
@@ -8795,7 +11445,13 @@ mod auth_tests {
         }];
 
         // Demande explicite d'accès à l'école révoquée → doit être rejetée
-        let result = establish_online_session_conn(&mut conn, &auth, &cloud_roles, Some("school-revoked"), "token-revoked");
+        let result = establish_online_session_conn(
+            &mut conn,
+            &auth,
+            &cloud_roles,
+            Some("school-revoked"),
+            "token-revoked",
+        );
         assert!(
             result.is_err(),
             "L'accès à une école révoquée dans Supabase doit être refusé même si elle est dans SQLite"
@@ -8813,7 +11469,11 @@ mod auth_tests {
         let conn = setup_test_auth_db();
 
         // Créer une 2ème école et des entités rattachées
-        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École B')", []).unwrap();
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-2', 'École B')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO students (id, school_id, first_name, last_name) VALUES ('st-2', 'school-2', 'Alice', 'Dupont')",
             [],
@@ -8828,7 +11488,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, username, status) VALUES ('u-dir-s1', 'dir@school1.com', 'dir1', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-dir-s1', 'u-dir-s1', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
@@ -8848,7 +11512,10 @@ mod auth_tests {
             &student_school.unwrap(),
             &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
         );
-        assert!(res_student.is_err(), "L'accès à un élève d'un autre établissement doit être bloqué");
+        assert!(
+            res_student.is_err(),
+            "L'accès à un élève d'un autre établissement doit être bloqué"
+        );
 
         // 2. Accès au personnel de school-2 depuis school-1 : doit échouer
         let staff_school: Result<String, _> = conn.query_row(
@@ -8862,7 +11529,10 @@ mod auth_tests {
             &staff_school.unwrap(),
             &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
         );
-        assert!(res_staff.is_err(), "L'accès au personnel d'un autre établissement doit être bloqué");
+        assert!(
+            res_staff.is_err(),
+            "L'accès au personnel d'un autre établissement doit être bloqué"
+        );
     }
 
     /// Vérifie la séparation des rôles (RBAC) pour les commandes sensibles :
@@ -8879,7 +11549,11 @@ mod auth_tests {
             "INSERT INTO users (id, email, username, status) VALUES ('u-prof', 'prof@school1.com', 'prof1', 'ACTIVE')",
             [],
         ).unwrap();
-        let prof_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'PROFESSEUR'", [], |r| r.get(0)).unwrap();
+        let prof_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'PROFESSEUR'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-prof', 'u-prof', 'school-1', ?1)",
             rusqlite::params![prof_role_id],
@@ -8890,11 +11564,18 @@ mod auth_tests {
 
         // 1. Suppression année scolaire par un prof : rejeté
         let res_delete_year = crate::auth_guard::authorize(&conn, "school-1", &["DIRECTION"]);
-        assert!(res_delete_year.is_err(), "Un professeur ne doit pas pouvoir supprimer une année scolaire");
+        assert!(
+            res_delete_year.is_err(),
+            "Un professeur ne doit pas pouvoir supprimer une année scolaire"
+        );
 
         // 2. Dashboard financier par un prof : rejeté
-        let res_finance = crate::auth_guard::authorize(&conn, "school-1", &["DIRECTION", "COMPTABLE"]);
-        assert!(res_finance.is_err(), "Un professeur ne doit pas pouvoir accéder au tableau de bord financier");
+        let res_finance =
+            crate::auth_guard::authorize(&conn, "school-1", &["DIRECTION", "COMPTABLE"]);
+        assert!(
+            res_finance.is_err(),
+            "Un professeur ne doit pas pouvoir accéder au tableau de bord financier"
+        );
 
         // 3. Consultation des élèves par un prof : autorisé
         let res_students = crate::auth_guard::authorize(
@@ -8902,7 +11583,10 @@ mod auth_tests {
             "school-1",
             &["DIRECTION", "SECRETAIRE", "COMPTABLE", "PROFESSEUR"],
         );
-        assert!(res_students.is_ok(), "Un professeur doit pouvoir consulter les élèves");
+        assert!(
+            res_students.is_ok(),
+            "Un professeur doit pouvoir consulter les élèves"
+        );
     }
 
     #[test]
@@ -8915,14 +11599,21 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-roles-self', 'self@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-roles-self', 'u-roles-self', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
         ).unwrap();
 
         let res = get_current_user_roles_conn(&conn, "u-roles-self", "school-1");
-        assert!(res.is_err(), "Sans session valide, aucun rôle ne doit être retourné");
+        assert!(
+            res.is_err(),
+            "Sans session valide, aucun rôle ne doit être retourné"
+        );
         assert!(res.unwrap_err().contains("session non authentifiée"));
 
         crate::auth_guard::clear_session();
@@ -8939,23 +11630,36 @@ mod auth_tests {
              ('u-roles-caller', 'caller@school.com', 'ACTIVE'),
              ('u-roles-victim', 'victim@school.com', 'ACTIVE')",
             [],
-        ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        )
+        .unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES
              ('ur-roles-caller', 'u-roles-caller', 'school-1', ?1),
              ('ur-roles-victim', 'u-roles-victim', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         crate::auth_guard::establish_local_session(&conn, "u-roles-caller", "school-1").unwrap();
 
         let res = get_current_user_roles_conn(&conn, "u-roles-victim", "school-1");
-        assert!(res.is_err(), "Un utilisateur ne doit pas pouvoir lire les rôles d'un autre compte");
+        assert!(
+            res.is_err(),
+            "Un utilisateur ne doit pas pouvoir lire les rôles d'un autre compte"
+        );
         assert!(res.unwrap_err().contains("vos propres rôles"));
 
         let own = get_current_user_roles_conn(&conn, "u-roles-caller", "school-1");
-        assert!(own.is_ok(), "La consultation de ses propres rôles doit rester possible : {:?}", own);
+        assert!(
+            own.is_ok(),
+            "La consultation de ses propres rôles doit rester possible : {:?}",
+            own
+        );
         assert!(own.unwrap().contains(&"DIRECTION".to_string()));
 
         crate::auth_guard::clear_session();
@@ -8966,13 +11670,21 @@ mod auth_tests {
         let _guard = crate::auth_guard::lock_test_session();
         crate::auth_guard::clear_session();
         let conn = setup_test_auth_db();
-        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')",
+            [],
+        )
+        .unwrap();
 
         conn.execute(
             "INSERT INTO users (id, email, status) VALUES ('u-roles-own', 'own@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-roles-own', 'u-roles-own', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
@@ -8981,11 +11693,18 @@ mod auth_tests {
         crate::auth_guard::establish_local_session(&conn, "u-roles-own", "school-1").unwrap();
 
         let own_school = get_current_user_roles_conn(&conn, "u-roles-own", "school-1");
-        assert!(own_school.is_ok(), "La consultation locale authentifiée doit conserver son comportement normal : {:?}", own_school);
+        assert!(
+            own_school.is_ok(),
+            "La consultation locale authentifiée doit conserver son comportement normal : {:?}",
+            own_school
+        );
         assert!(own_school.unwrap().contains(&"DIRECTION".to_string()));
 
         let other_school = get_current_user_roles_conn(&conn, "u-roles-own", "school-2");
-        assert!(other_school.is_err(), "Un utilisateur non SUPER_ADMIN ne doit pas consulter un autre établissement");
+        assert!(
+            other_school.is_err(),
+            "Un utilisateur non SUPER_ADMIN ne doit pas consulter un autre établissement"
+        );
         assert!(other_school.unwrap_err().contains("établissement"));
 
         crate::auth_guard::clear_session();
@@ -8996,29 +11715,50 @@ mod auth_tests {
         let _guard = crate::auth_guard::lock_test_session();
         crate::auth_guard::clear_session();
         let conn = setup_test_auth_db();
-        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')",
+            [],
+        )
+        .unwrap();
 
         conn.execute(
             "INSERT INTO users (id, email, status) VALUES
              ('u-roles-sa', 'sa@school.com', 'ACTIVE'),
              ('u-roles-other-sa', 'other@school.com', 'ACTIVE')",
             [],
-        ).unwrap();
-        let sa_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| r.get(0)).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        )
+        .unwrap();
+        let sa_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES
              ('ur-roles-sa', 'u-roles-sa', 'school-1', ?1),
              ('ur-roles-other-sa', 'u-roles-other-sa', 'school-2', ?2)",
             rusqlite::params![sa_role_id, dir_role_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         crate::auth_guard::establish_local_session(&conn, "u-roles-sa", "school-1").unwrap();
         let session = crate::auth_guard::get_authenticated_user(&conn).unwrap();
-        assert!(session.is_super_admin, "Le privilège SUPER_ADMIN doit provenir de la session authentifiée");
+        assert!(
+            session.is_super_admin,
+            "Le privilège SUPER_ADMIN doit provenir de la session authentifiée"
+        );
 
         let cross_school = get_current_user_roles_conn(&conn, "u-roles-sa", "school-2");
-        assert!(cross_school.is_ok(), "Le SUPER_ADMIN peut consulter ses propres rôles dans un autre établissement : {:?}", cross_school);
+        assert!(
+            cross_school.is_ok(),
+            "Le SUPER_ADMIN peut consulter ses propres rôles dans un autre établissement : {:?}",
+            cross_school
+        );
         assert!(cross_school.unwrap().contains(&"SUPER_ADMIN".to_string()));
 
         let other_user = get_current_user_roles_conn(&conn, "u-roles-other-sa", "school-2");
@@ -9038,18 +11778,40 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-device-dir', 'device-dir@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-device-dir', 'u-device-dir', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
         ).unwrap();
 
-        let no_session = register_device_conn(&mut conn, Some("school-1".to_string()), "device-1", "PC", "Windows");
-        assert!(no_session.is_err(), "Sans session, aucun appareil ne doit être enregistré");
+        let no_session = register_device_conn(
+            &mut conn,
+            Some("school-1".to_string()),
+            "device-1",
+            "PC",
+            "Windows",
+        );
+        assert!(
+            no_session.is_err(),
+            "Sans session, aucun appareil ne doit être enregistré"
+        );
 
         crate::auth_guard::establish_local_session(&conn, "u-device-dir", "school-1").unwrap();
-        let foreign = register_device_conn(&mut conn, Some("school-2".to_string()), "device-1", "PC", "Windows");
-        assert!(foreign.is_err(), "Le school_id du frontend ne doit pas pouvoir changer l'établissement");
+        let foreign = register_device_conn(
+            &mut conn,
+            Some("school-2".to_string()),
+            "device-1",
+            "PC",
+            "Windows",
+        );
+        assert!(
+            foreign.is_err(),
+            "Le school_id du frontend ne doit pas pouvoir changer l'établissement"
+        );
 
         crate::auth_guard::clear_session();
     }
@@ -9064,42 +11826,290 @@ mod auth_tests {
             "INSERT INTO users (id, email, status) VALUES ('u-device-quota', 'quota@school.com', 'ACTIVE')",
             [],
         ).unwrap();
-        let dir_role_id: String = conn.query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| r.get(0)).unwrap();
+        let dir_role_id: String = conn
+            .query_row("SELECT id FROM roles WHERE name = 'DIRECTION'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO user_roles (id, user_id, school_id, role_id) VALUES ('ur-device-quota', 'u-device-quota', 'school-1', ?1)",
             rusqlite::params![dir_role_id],
         ).unwrap();
         conn.execute(
+            "UPDATE licenses SET is_current = 0, status = 'SUPERSEDED' WHERE school_id = 'school-1' AND is_current = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO licenses (id, school_id, license_key, status, max_devices, is_current)
              VALUES ('lic-device-1', 'school-1', 'ORION-DEV1-QUOTA-001', 'ACTIVE', 1, 1)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         crate::auth_guard::establish_local_session(&conn, "u-device-quota", "school-1").unwrap();
 
-        let first = register_device_conn(&mut conn, Some("school-1".to_string()), "device-1", "PC 1", "Windows");
-        assert!(first.is_ok(), "Le premier appareil doit être accepté : {:?}", first);
+        let first = register_device_conn(
+            &mut conn,
+            Some("school-1".to_string()),
+            "device-1",
+            "PC 1",
+            "Windows",
+        );
+        assert!(
+            first.is_ok(),
+            "Le premier appareil doit être accepté : {:?}",
+            first
+        );
 
-        let second = register_device_conn(&mut conn, Some("school-1".to_string()), "device-2", "PC 2", "Windows");
-        assert!(second.is_err(), "Le deuxième appareil doit être refusé avec max_devices=1");
+        let second = register_device_conn(
+            &mut conn,
+            Some("school-1".to_string()),
+            "device-2",
+            "PC 2",
+            "Windows",
+        );
+        assert!(
+            second.is_err(),
+            "Le deuxième appareil doit être refusé avec max_devices=1"
+        );
         assert!(second.unwrap_err().contains("Limite d'appareils"));
 
-        let reused = register_device_conn(&mut conn, Some("school-1".to_string()), "device-1", "PC 1", "Windows");
-        assert!(reused.is_ok(), "La réutilisation du même appareil doit rester possible");
-        let active: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM devices WHERE school_id = 'school-1' AND status = 'ACTIVE'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let reused = register_device_conn(
+            &mut conn,
+            Some("school-1".to_string()),
+            "device-1",
+            "PC 1",
+            "Windows",
+        );
+        assert!(
+            reused.is_ok(),
+            "La réutilisation du même appareil doit rester possible"
+        );
+        let active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM devices WHERE school_id = 'school-1' AND status = 'ACTIVE'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(active, 1, "Aucun doublon ne doit être créé");
 
         conn.execute(
             "UPDATE devices SET status = 'REVOKED', deleted_at = 1 WHERE device_identifier = 'device-1'",
             [],
         ).unwrap();
-        let after_release = register_device_conn(&mut conn, Some("school-1".to_string()), "device-2", "PC 2", "Windows");
-        assert!(after_release.is_ok(), "Un nouvel appareil doit pouvoir prendre la place libérée : {:?}", after_release);
+        let after_release = register_device_conn(
+            &mut conn,
+            Some("school-1".to_string()),
+            "device-2",
+            "PC 2",
+            "Windows",
+        );
+        assert!(
+            after_release.is_ok(),
+            "Un nouvel appareil doit pouvoir prendre la place libérée : {:?}",
+            after_release
+        );
 
+        crate::auth_guard::clear_session();
+    }
+
+    fn make_signed_lic_rec_and_token(
+        id: &str,
+        school_id: &str,
+        license_key: &str,
+        max_devices: i64,
+        device_identifier: &str,
+    ) -> (LicenseRec, String) {
+        let now = chrono::Utc::now();
+        let starts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let expires = (now + chrono::Duration::days(30)).to_rfc3339();
+        let iat = now.timestamp();
+        let exp = iat + 7 * 24 * 60 * 60;
+        let claims = LicenseClaims {
+            iss: "orion-license".to_string(),
+            sub: id.to_string(),
+            license_id: id.to_string(),
+            school_id: school_id.to_string(),
+            license_key: license_key.to_string(),
+            status: "ACTIVE".to_string(),
+            starts_at: Some(starts.clone()),
+            expires_at: Some(expires.clone()),
+            is_current: true,
+            max_devices,
+            device_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            device_identifier: device_identifier.to_string(),
+            jti: Some(format!("jti-{}", id)),
+            iat,
+            exp,
+        };
+        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        let key = jsonwebtoken::EncodingKey::from_rsa_pem(crate::test_keys::TEST_RSA_PRIVATE_KEY_A.as_bytes()).unwrap();
+        let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+        let rec = LicenseRec {
+            id: id.to_string(),
+            school_id: school_id.to_string(),
+            license_key: license_key.to_string(),
+            status: "ACTIVE".to_string(),
+            starts_at: Some(starts),
+            expires_at: Some(expires),
+            max_devices: Some(max_devices),
+            is_current: true,
+        };
+        (rec, token)
+    }
+
+    #[test]
+    fn test_lic03_first_activation_binds_device_to_current_license() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        crate::commands::set_test_license_public_key_pem(Some(crate::test_keys::TEST_RSA_PUBLIC_KEY_A));
+        crate::commands::set_test_device_identifier(Some("device-virgin-1"));
+
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-1', 'École Vierge')", []).unwrap();
+        insert_check_role_user(&conn, "u-lic03-1", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-lic03-1", "school-1", "DIRECTION");
+        crate::auth_guard::establish_local_session(&conn, "u-lic03-1", "school-1").unwrap();
+
+        // Avant save_license : register_device doit refuser (jamais de license_id = NULL)
+        let before_save = register_device_conn(&mut conn, Some("school-1".to_string()), "device-virgin-1", "PC-1", "Windows");
+        assert!(before_save.is_err());
+
+        // Persistance de la licence puis liaison de l'appareil
+        let (lic, token) = make_signed_lic_rec_and_token("lic-virgin-1", "school-1", "ORION-VIRG-0001-0001", 3, "device-virgin-1");
+        save_license_conn(&mut conn, &token, &lic).unwrap();
+        register_device_conn(&mut conn, Some("school-1".to_string()), "device-virgin-1", "PC-1", "Windows").unwrap();
+
+        let (bound_lic_id, status): (Option<String>, String) = conn
+            .query_row(
+                "SELECT license_id, status FROM devices WHERE device_identifier = 'device-virgin-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(bound_lic_id.as_deref(), Some("lic-virgin-1"));
+        assert_eq!(status, "ACTIVE");
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_lic03_reactivation_same_computer_no_duplicates() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        crate::commands::set_test_license_public_key_pem(Some(crate::test_keys::TEST_RSA_PUBLIC_KEY_A));
+        crate::commands::set_test_device_identifier(Some("device-same-pc"));
+
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-1', 'École Test')", []).unwrap();
+        insert_check_role_user(&conn, "u-lic03-2", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-lic03-2", "school-1", "DIRECTION");
+        crate::auth_guard::establish_local_session(&conn, "u-lic03-2", "school-1").unwrap();
+
+        let (lic, token) = make_signed_lic_rec_and_token("lic-react-1", "school-1", "ORION-REAC-0001-0001", 1, "device-same-pc");
+        save_license_conn(&mut conn, &token, &lic).unwrap();
+        register_device_conn(&mut conn, Some("school-1".to_string()), "device-same-pc", "PC-A", "Windows").unwrap();
+
+        // Réactivation sur le même ordinateur
+        save_license_conn(&mut conn, &token, &lic).unwrap();
+        register_device_conn(&mut conn, Some("school-1".to_string()), "device-same-pc", "PC-A-RENAMED", "Windows").unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM devices WHERE device_identifier = 'device-same-pc'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "Aucun doublon ne doit être créé lors d'une réactivation");
+
+        let bound_lic_id: Option<String> = conn
+            .query_row("SELECT license_id FROM devices WHERE device_identifier = 'device-same-pc'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bound_lic_id.as_deref(), Some("lic-react-1"));
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_lic03_license_renewal_and_change_updates_device_license_id() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        crate::commands::set_test_license_public_key_pem(Some(crate::test_keys::TEST_RSA_PUBLIC_KEY_A));
+        crate::commands::set_test_device_identifier(Some("device-renew-1"));
+
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-1', 'École Test')", []).unwrap();
+        insert_check_role_user(&conn, "u-lic03-3", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-lic03-3", "school-1", "DIRECTION");
+        crate::auth_guard::establish_local_session(&conn, "u-lic03-3", "school-1").unwrap();
+
+        // 1. Licence initiale
+        let (lic1, tok1) = make_signed_lic_rec_and_token("lic-1", "school-1", "ORION-KEY1-0001-0001", 2, "device-renew-1");
+        save_license_conn(&mut conn, &tok1, &lic1).unwrap();
+        register_device_conn(&mut conn, Some("school-1".to_string()), "device-renew-1", "PC-1", "Windows").unwrap();
+
+        // 2. Renouvellement / Changement vers lic-2
+        let (lic2, tok2) = make_signed_lic_rec_and_token("lic-2", "school-1", "ORION-KEY2-0002-0002", 2, "device-renew-1");
+        save_license_conn(&mut conn, &tok2, &lic2).unwrap();
+        register_device_conn(&mut conn, Some("school-1".to_string()), "device-renew-1", "PC-1", "Windows").unwrap();
+
+        let bound_lic_id: Option<String> = conn
+            .query_row("SELECT license_id FROM devices WHERE device_identifier = 'device-renew-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bound_lic_id.as_deref(), Some("lic-2"));
+
+        // Vérifier que l'historique des licences et appareils est conservé
+        let lic1_status: String = conn.query_row("SELECT status FROM licenses WHERE id = 'lic-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(lic1_status, "SUPERSEDED");
+        let dev_count: i64 = conn.query_row("SELECT COUNT(*) FROM devices WHERE school_id = 'school-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(dev_count, 1);
+        crate::auth_guard::clear_session();
+    }
+
+    #[test]
+    fn test_lic03_active_devices_always_have_valid_license_id_and_respect_quota() {
+        let _guard = crate::auth_guard::lock_test_session();
+        crate::auth_guard::clear_session();
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        crate::commands::set_test_license_public_key_pem(Some(crate::test_keys::TEST_RSA_PUBLIC_KEY_A));
+        crate::commands::set_test_device_identifier(Some("device-q1"));
+
+        conn.execute("INSERT INTO schools (id, name) VALUES ('school-1', 'École 1'), ('school-2', 'École 2')", []).unwrap();
+        insert_check_role_user(&conn, "u-lic03-q1", "school-1", "ACTIVE", false);
+        grant_check_role(&conn, "u-lic03-q1", "school-1", "DIRECTION");
+        insert_check_role_user(&conn, "u-lic03-q2", "school-2", "ACTIVE", false);
+        grant_check_role(&conn, "u-lic03-q2", "school-2", "DIRECTION");
+
+        crate::auth_guard::establish_local_session(&conn, "u-lic03-q1", "school-1").unwrap();
+        let (lic1, tok1) = make_signed_lic_rec_and_token("lic-q1", "school-1", "ORION-QUOT-0001-0001", 1, "device-q1");
+        save_license_conn(&mut conn, &tok1, &lic1).unwrap();
+        register_device_conn(&mut conn, Some("school-1".to_string()), "device-q1", "PC-1", "Windows").unwrap();
+
+        // Dépassement du quota d'appareils
+        let over_quota = register_device_conn(&mut conn, Some("school-1".to_string()), "device-q2", "PC-2", "Windows");
+        assert!(over_quota.is_err());
+
+        // Un appareil déjà lié à school-1 ne peut pas être associé à school-2
+        crate::auth_guard::clear_session();
+        crate::commands::set_test_device_identifier(Some("device-q1"));
+        crate::auth_guard::establish_local_session(&conn, "u-lic03-q2", "school-2").unwrap();
+        let (lic2, tok2) = make_signed_lic_rec_and_token("lic-q2", "school-2", "ORION-QUOT-0002-0002", 2, "device-q1");
+        save_license_conn(&mut conn, &tok2, &lic2).unwrap();
+        let cross_school = register_device_conn(&mut conn, Some("school-2".to_string()), "device-q1", "PC-1", "Windows");
+        assert!(cross_school.is_err());
+
+        // Chaque appareil actif possède un license_id non-NULL et existant dans licenses
+        let invalid_active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM devices d
+                 WHERE d.status = 'ACTIVE' AND (d.deleted_at IS NULL OR d.deleted_at = 0)
+                   AND (d.license_id IS NULL OR NOT EXISTS (SELECT 1 FROM licenses l WHERE l.id = d.license_id))",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(invalid_active, 0);
         crate::auth_guard::clear_session();
     }
 
@@ -9110,7 +12120,10 @@ mod auth_tests {
         let conn = setup_test_auth_db();
 
         let result = check_user_role_conn(&conn, "u-caller", "school-1", "DIRECTION");
-        assert!(result.is_err(), "Sans session, aucun rôle ne doit être révélé");
+        assert!(
+            result.is_err(),
+            "Sans session, aucun rôle ne doit être révélé"
+        );
         assert!(result.unwrap_err().contains("Non authentifié"));
     }
 
@@ -9126,7 +12139,10 @@ mod auth_tests {
         crate::auth_guard::establish_local_session(&conn, "u-caller", "school-1").unwrap();
 
         let result = check_user_role_conn(&conn, "u-target-sa", "school-1", "SUPER_ADMIN");
-        assert!(result.is_err(), "Le user_id du frontend ne doit jamais désigner un autre compte");
+        assert!(
+            result.is_err(),
+            "Le user_id du frontend ne doit jamais désigner un autre compte"
+        );
         assert!(result.unwrap_err().contains("vos propres rôles"));
 
         crate::auth_guard::clear_session();
@@ -9141,10 +12157,17 @@ mod auth_tests {
         insert_check_role_user(&conn, "u-caller", "school-1", "ACTIVE", false);
         grant_check_role(&conn, "u-caller", "school-1", "DIRECTION");
         crate::auth_guard::establish_local_session(&conn, "u-caller", "school-1").unwrap();
-        conn.execute("UPDATE users SET status = 'INACTIVE' WHERE id = 'u-caller'", []).unwrap();
+        conn.execute(
+            "UPDATE users SET status = 'INACTIVE' WHERE id = 'u-caller'",
+            [],
+        )
+        .unwrap();
 
         let result = check_user_role_conn(&conn, "u-caller", "school-1", "DIRECTION");
-        assert!(result.is_err(), "Un compte inactif ne doit plus consulter ses rôles");
+        assert!(
+            result.is_err(),
+            "Un compte inactif ne doit plus consulter ses rôles"
+        );
         assert!(result.unwrap_err().contains("Non authentifié"));
 
         crate::auth_guard::clear_session();
@@ -9162,10 +12185,14 @@ mod auth_tests {
         conn.execute(
             "UPDATE profiles SET deleted_at = '2026-01-01 00:00:00' WHERE user_id = 'u-caller'",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = check_user_role_conn(&conn, "u-caller", "school-1", "DIRECTION");
-        assert!(result.is_err(), "Un profil supprimé logiquement ne doit plus consulter ses rôles");
+        assert!(
+            result.is_err(),
+            "Un profil supprimé logiquement ne doit plus consulter ses rôles"
+        );
         assert!(result.unwrap_err().contains("Profil utilisateur supprimé"));
 
         crate::auth_guard::clear_session();
@@ -9176,14 +12203,21 @@ mod auth_tests {
         let _guard = crate::auth_guard::lock_test_session();
         crate::auth_guard::clear_session();
         let conn = setup_test_auth_db();
-        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')",
+            [],
+        )
+        .unwrap();
 
         insert_check_role_user(&conn, "u-caller", "school-1", "ACTIVE", false);
         grant_check_role(&conn, "u-caller", "school-1", "DIRECTION");
         crate::auth_guard::establish_local_session(&conn, "u-caller", "school-1").unwrap();
 
         let result = check_user_role_conn(&conn, "u-caller", "school-2", "DIRECTION");
-        assert!(result.is_err(), "Un DIRECTION ne doit pas vérifier de rôles dans un autre établissement");
+        assert!(
+            result.is_err(),
+            "Un DIRECTION ne doit pas vérifier de rôles dans un autre établissement"
+        );
         assert!(result.unwrap_err().contains("pas autorité"));
 
         crate::auth_guard::clear_session();
@@ -9194,14 +12228,22 @@ mod auth_tests {
         let _guard = crate::auth_guard::lock_test_session();
         crate::auth_guard::clear_session();
         let conn = setup_test_auth_db();
-        conn.execute("INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO schools (id, name) VALUES ('school-2', 'École 2')",
+            [],
+        )
+        .unwrap();
 
         insert_check_role_user(&conn, "u-sa", "school-1", "ACTIVE", false);
         grant_check_role(&conn, "u-sa", "school-1", "SUPER_ADMIN");
         crate::auth_guard::establish_local_session(&conn, "u-sa", "school-1").unwrap();
 
         let result = check_user_role_conn(&conn, "u-sa", "school-2", "DIRECTION");
-        assert_eq!(result, Ok(true), "Le SUPER_ADMIN authentifié peut vérifier un rôle dans un autre établissement");
+        assert_eq!(
+            result,
+            Ok(true),
+            "Le SUPER_ADMIN authentifié peut vérifier un rôle dans un autre établissement"
+        );
 
         crate::auth_guard::clear_session();
     }
@@ -9647,11 +12689,16 @@ mod class_statistics_tests {
         save_grade_as(conn, &["DIRECTION"], score, max_score)
     }
 
-    fn save_grade_as(conn: &Connection, roles: &[&str], score: f64, max_score: f64) -> Result<String, String> {
+    fn save_grade_as(
+        conn: &Connection,
+        roles: &[&str],
+        score: f64,
+        max_score: f64,
+    ) -> Result<String, String> {
         let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
         upsert_grade_conn(
-            conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt",
-            score, max_score, None, None, "ped-user", false, &roles,
+            conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt", score, max_score, None,
+            None, "ped-user", false, &roles,
         )
     }
 
@@ -9670,12 +12717,14 @@ mod class_statistics_tests {
             "INSERT INTO staff (id, school_id, nom, prenoms, created_at, updated_at)
              VALUES ('staff-1', ?1, 'Test', 'Enseignant', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
             rusqlite::params![SCHOOL],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO profiles (id, user_id, school_id, staff_id, first_name, last_name)
              VALUES ('profile-1', 'ped-user', ?1, 'staff-1', 'Test', 'Enseignant')",
             rusqlite::params![SCHOOL],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     #[test]
@@ -9840,8 +12889,21 @@ mod class_statistics_tests {
         add_student(&conn, "1");
 
         let grade_id = upsert_grade_conn(
-            &conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt", 14.0, 20.0, None, None,
-            "ped-user", true, &["DIRECTION".to_string()],
+            &conn,
+            SCHOOL,
+            YEAR,
+            "enr-1",
+            "stu-1",
+            MATH,
+            PERIOD,
+            "ped-gt",
+            14.0,
+            20.0,
+            None,
+            None,
+            "ped-user",
+            true,
+            &["DIRECTION".to_string()],
         )
         .unwrap();
         let (score, is_absent): (f64, i64) = conn
@@ -9940,13 +13002,31 @@ mod class_statistics_tests {
 
     #[test]
     fn test_competition_ranks_cover_all_equality_cases() {
-        assert_eq!(competition_ranks(&[Some(16.0), Some(14.0), Some(12.0)]), vec![1, 2, 3]);
-        assert_eq!(competition_ranks(&[Some(16.0), Some(16.0), Some(14.0)]), vec![1, 1, 3]);
-        assert_eq!(competition_ranks(&[Some(16.0), Some(16.0), Some(16.0), Some(14.0)]), vec![1, 1, 1, 4]);
-        assert_eq!(competition_ranks(&[Some(12.345), Some(12.3449999995), Some(11.0)]), vec![1, 1, 3]);
-        assert_eq!(competition_ranks(&[Some(16.0), Some(16.0), Some(16.0)]), vec![1, 1, 1]);
+        assert_eq!(
+            competition_ranks(&[Some(16.0), Some(14.0), Some(12.0)]),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            competition_ranks(&[Some(16.0), Some(16.0), Some(14.0)]),
+            vec![1, 1, 3]
+        );
+        assert_eq!(
+            competition_ranks(&[Some(16.0), Some(16.0), Some(16.0), Some(14.0)]),
+            vec![1, 1, 1, 4]
+        );
+        assert_eq!(
+            competition_ranks(&[Some(12.345), Some(12.3449999995), Some(11.0)]),
+            vec![1, 1, 3]
+        );
+        assert_eq!(
+            competition_ranks(&[Some(16.0), Some(16.0), Some(16.0)]),
+            vec![1, 1, 1]
+        );
         assert_eq!(competition_ranks(&[Some(16.0)]), vec![1]);
-        assert_eq!(competition_ranks(&[Some(14.0), None, Some(16.0)]), vec![2, 3, 1]);
+        assert_eq!(
+            competition_ranks(&[Some(14.0), None, Some(16.0)]),
+            vec![2, 3, 1]
+        );
         assert_eq!(competition_ranks(&[None, None]), vec![0, 0]);
         assert!(competition_ranks(&[]).is_empty());
     }
@@ -9967,13 +13047,25 @@ mod class_statistics_tests {
         let rankings = get_class_rankings_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD).unwrap();
         let recap = get_class_notes_recap_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD, None).unwrap();
         let expected = [
-            ("enr-1", 1), ("enr-2", 1), ("enr-3", 3), ("enr-4", 4),
-            ("enr-5", 4), ("enr-6", 6), ("enr-7", 7),
+            ("enr-1", 1),
+            ("enr-2", 1),
+            ("enr-3", 3),
+            ("enr-4", 4),
+            ("enr-5", 4),
+            ("enr-6", 6),
+            ("enr-7", 7),
         ];
 
         for (enrollment_id, rank) in expected {
-            let ranking = rankings.iter().find(|r| r.enrollment_id == enrollment_id).unwrap();
-            let recap_row = recap.students.iter().find(|s| s.enrollment_id == enrollment_id).unwrap();
+            let ranking = rankings
+                .iter()
+                .find(|r| r.enrollment_id == enrollment_id)
+                .unwrap();
+            let recap_row = recap
+                .students
+                .iter()
+                .find(|s| s.enrollment_id == enrollment_id)
+                .unwrap();
             assert_eq!(ranking.rank, rank);
             assert_eq!(recap_row.rank, rank);
         }
@@ -9985,7 +13077,8 @@ mod class_statistics_tests {
         add_student(&conn, "1");
 
         let empty_rankings = get_class_rankings_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD).unwrap();
-        let empty_recap = get_class_notes_recap_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD, None).unwrap();
+        let empty_recap =
+            get_class_notes_recap_conn(&conn, SCHOOL, YEAR, CLASS, PERIOD, None).unwrap();
         assert_eq!(empty_rankings[0].rank, 0);
         assert_eq!(empty_recap.students[0].rank, 0);
 
@@ -10024,7 +13117,9 @@ mod class_statistics_tests {
         let audit: serde_json::Value = serde_json::from_str(&audit).unwrap();
         assert_eq!(audit["old_score"], serde_json::json!(14.0));
         assert_eq!(audit["new_score"], serde_json::json!(16.0));
-        let mutations: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0)).unwrap();
+        let mutations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(mutations, 2);
     }
 
@@ -10033,12 +13128,24 @@ mod class_statistics_tests {
         let conn = setup_db();
         add_student(&conn, "1");
 
-        assert!(save_grade(&conn, -1.0, 20.0).unwrap_err().contains("comprise entre 0 et 20"));
-        assert!(save_grade(&conn, 21.0, 20.0).unwrap_err().contains("comprise entre 0 et 20"));
-        assert!(save_grade(&conn, 14.0, 0.0).unwrap_err().contains("strictement supérieur à zéro"));
-        assert!(save_grade(&conn, f64::NAN, 20.0).unwrap_err().contains("nombres finis"));
-        assert!(save_grade(&conn, f64::INFINITY, 20.0).unwrap_err().contains("nombres finis"));
-        assert!(save_grade(&conn, 14.0, f64::NEG_INFINITY).unwrap_err().contains("nombres finis"));
+        assert!(save_grade(&conn, -1.0, 20.0)
+            .unwrap_err()
+            .contains("comprise entre 0 et 20"));
+        assert!(save_grade(&conn, 21.0, 20.0)
+            .unwrap_err()
+            .contains("comprise entre 0 et 20"));
+        assert!(save_grade(&conn, 14.0, 0.0)
+            .unwrap_err()
+            .contains("strictement supérieur à zéro"));
+        assert!(save_grade(&conn, f64::NAN, 20.0)
+            .unwrap_err()
+            .contains("nombres finis"));
+        assert!(save_grade(&conn, f64::INFINITY, 20.0)
+            .unwrap_err()
+            .contains("nombres finis"));
+        assert!(save_grade(&conn, 14.0, f64::NEG_INFINITY)
+            .unwrap_err()
+            .contains("nombres finis"));
     }
 
     #[test]
@@ -10058,8 +13165,8 @@ mod class_statistics_tests {
         let roles = vec!["DIRECTION".to_string()];
 
         let result = upsert_grade_conn(
-            &conn, SCHOOL, YEAR, "enr-1", "stu-2", MATH, PERIOD, "ped-gt",
-            14.0, 20.0, None, None, "ped-user", false, &roles,
+            &conn, SCHOOL, YEAR, "enr-1", "stu-2", MATH, PERIOD, "ped-gt", 14.0, 20.0, None, None,
+            "ped-user", false, &roles,
         );
         assert!(result.unwrap_err().contains("élève ne correspond pas"));
     }
@@ -10075,14 +13182,17 @@ mod class_statistics_tests {
         conn.execute(
             "UPDATE class_subjects SET class_id='other-class' WHERE id=?1",
             rusqlite::params![FRENCH],
-        ).unwrap();
+        )
+        .unwrap();
         let roles = vec!["DIRECTION".to_string()];
 
         let result = upsert_grade_conn(
-            &conn, SCHOOL, YEAR, "enr-1", "stu-1", FRENCH, PERIOD, "ped-gt",
-            14.0, 20.0, None, None, "ped-user", false, &roles,
+            &conn, SCHOOL, YEAR, "enr-1", "stu-1", FRENCH, PERIOD, "ped-gt", 14.0, 20.0, None,
+            None, "ped-user", false, &roles,
         );
-        assert!(result.unwrap_err().contains("n'est pas associée à la classe"));
+        assert!(result
+            .unwrap_err()
+            .contains("n'est pas associée à la classe"));
     }
 
     #[test]
@@ -10096,12 +13206,13 @@ mod class_statistics_tests {
         conn.execute(
             "UPDATE grading_periods SET class_id='other-class' WHERE id=?1",
             rusqlite::params![PERIOD],
-        ).unwrap();
+        )
+        .unwrap();
         let roles = vec!["DIRECTION".to_string()];
 
         let result = upsert_grade_conn(
-            &conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt",
-            14.0, 20.0, None, None, "ped-user", false, &roles,
+            &conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "ped-gt", 14.0, 20.0, None, None,
+            "ped-user", false, &roles,
         );
         assert!(result.unwrap_err().contains("période n'est pas associée"));
     }
@@ -10113,8 +13224,21 @@ mod class_statistics_tests {
         let roles = vec!["DIRECTION".to_string()];
 
         let result = upsert_grade_conn(
-            &conn, SCHOOL, YEAR, "enr-1", "stu-1", MATH, PERIOD, "gt-inconnu",
-            14.0, 20.0, None, None, "ped-user", false, &roles,
+            &conn,
+            SCHOOL,
+            YEAR,
+            "enr-1",
+            "stu-1",
+            MATH,
+            PERIOD,
+            "gt-inconnu",
+            14.0,
+            20.0,
+            None,
+            None,
+            "ped-user",
+            false,
+            &roles,
         );
         assert!(result.unwrap_err().contains("introuvable"));
     }
@@ -10126,20 +13250,28 @@ mod class_statistics_tests {
         conn.execute(
             "INSERT INTO schools (id, name) VALUES ('other-school', 'Autre école')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "UPDATE grade_types SET school_id='other-school' WHERE id='ped-gt'",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert!(save_grade(&conn, 14.0, 20.0).unwrap_err().contains("n'appartiennent pas à cet établissement"));
+        assert!(save_grade(&conn, 14.0, 20.0)
+            .unwrap_err()
+            .contains("n'appartiennent pas à cet établissement"));
     }
 
     #[test]
     fn test_upsert_grade_rejects_teacher_without_assignment() {
         let conn = setup_db();
         add_student(&conn, "1");
-        conn.execute("UPDATE grading_periods SET is_active=1 WHERE id=?1", rusqlite::params![PERIOD]).unwrap();
+        conn.execute(
+            "UPDATE grading_periods SET is_active=1 WHERE id=?1",
+            rusqlite::params![PERIOD],
+        )
+        .unwrap();
 
         assert!(save_grade_as(&conn, &["PROFESSEUR"], 14.0, 20.0)
             .unwrap_err()
@@ -10150,7 +13282,11 @@ mod class_statistics_tests {
     fn test_upsert_grade_accepts_assigned_teacher_on_active_period() {
         let conn = setup_db();
         add_student(&conn, "1");
-        conn.execute("UPDATE grading_periods SET is_active=1 WHERE id=?1", rusqlite::params![PERIOD]).unwrap();
+        conn.execute(
+            "UPDATE grading_periods SET is_active=1 WHERE id=?1",
+            rusqlite::params![PERIOD],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO teacher_assignments (id, school_id, academic_year_id, teacher_id, class_subject_id, created_at, updated_at)
              VALUES ('ta-1', ?1, ?2, 'ped-user', ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
@@ -10160,23 +13296,29 @@ mod class_statistics_tests {
         let grade_id = save_grade_as(&conn, &["PROFESSEUR"], 14.0, 20.0).unwrap();
         assert!(!grade_id.is_empty());
 
-        conn.execute("DELETE FROM teacher_assignments WHERE id='ta-1'", []).unwrap();
+        conn.execute("DELETE FROM teacher_assignments WHERE id='ta-1'", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO staff (id, school_id, nom, prenoms, created_at, updated_at)
              VALUES ('staff-1', ?1, 'Test', 'Enseignant', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
             rusqlite::params![SCHOOL],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO profiles (id, user_id, school_id, staff_id, first_name, last_name)
              VALUES ('profile-1', 'ped-user', ?1, 'staff-1', 'Test', 'Enseignant')",
             rusqlite::params![SCHOOL],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "UPDATE class_subjects SET teacher_id='staff-1' WHERE id=?1",
             rusqlite::params![MATH],
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert!(!save_grade_as(&conn, &["PROFESSEUR"], 15.0, 20.0).unwrap().is_empty());
+        assert!(!save_grade_as(&conn, &["PROFESSEUR"], 15.0, 20.0)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -10186,7 +13328,8 @@ mod class_statistics_tests {
         conn.execute(
             "UPDATE academic_years SET status='CLOSED' WHERE id=?1",
             rusqlite::params![YEAR],
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(save_grade_as(&conn, &["PROFESSEUR"], 14.0, 20.0)
             .unwrap_err()
@@ -10198,13 +13341,23 @@ mod class_statistics_tests {
     fn test_upsert_grade_rejects_secretary_and_super_admin_without_assignment() {
         let conn = setup_db();
         add_student(&conn, "1");
-        conn.execute("UPDATE grading_periods SET is_active=1 WHERE id=?1", rusqlite::params![PERIOD]).unwrap();
+        conn.execute(
+            "UPDATE grading_periods SET is_active=1 WHERE id=?1",
+            rusqlite::params![PERIOD],
+        )
+        .unwrap();
 
         let secretary_err = save_grade_as(&conn, &["SECRETAIRE"], 14.0, 20.0).unwrap_err();
-        assert!(secretary_err.contains("ne vous est pas attribuée"), "erreur inattendue: {secretary_err}");
+        assert!(
+            secretary_err.contains("ne vous est pas attribuée"),
+            "erreur inattendue: {secretary_err}"
+        );
 
         let super_admin_err = save_grade_as(&conn, &["SUPER_ADMIN"], 14.0, 20.0).unwrap_err();
-        assert!(super_admin_err.contains("ne vous est pas attribuée"), "erreur inattendue: {super_admin_err}");
+        assert!(
+            super_admin_err.contains("ne vous est pas attribuée"),
+            "erreur inattendue: {super_admin_err}"
+        );
     }
 
     #[test]
@@ -10214,15 +13367,21 @@ mod class_statistics_tests {
         let teacher = test_session("ped-user", &["PROFESSEUR"]);
 
         assert_eq!(
-            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, None).unwrap().as_deref(),
+            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, None)
+                .unwrap()
+                .as_deref(),
             Some("staff-1")
         );
         assert_eq!(
-            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, Some("staff-1")).unwrap().as_deref(),
+            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, Some("staff-1"))
+                .unwrap()
+                .as_deref(),
             Some("staff-1")
         );
         assert_eq!(
-            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, Some("ped-user")).unwrap().as_deref(),
+            scoped_pedagogical_teacher_id(&conn, &teacher, SCHOOL, Some("ped-user"))
+                .unwrap()
+                .as_deref(),
             Some("staff-1")
         );
         assert!(
@@ -10243,7 +13402,9 @@ mod class_statistics_tests {
             None
         );
         assert_eq!(
-            scoped_pedagogical_teacher_id(&conn, &secretary, SCHOOL, Some("staff-autre")).unwrap().as_deref(),
+            scoped_pedagogical_teacher_id(&conn, &secretary, SCHOOL, Some("staff-autre"))
+                .unwrap()
+                .as_deref(),
             Some("staff-autre")
         );
     }
@@ -10266,12 +13427,14 @@ mod class_statistics_tests {
             "INSERT INTO staff (id, school_id, nom, prenoms, created_at, updated_at)
              VALUES ('staff-prof', ?1, 'Dupont', 'Jean', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
             rusqlite::params![SCHOOL],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO profiles (id, user_id, school_id, staff_id, first_name, last_name)
              VALUES ('profile-prof', 'ped-user', ?1, 'staff-prof', 'Jean', 'Dupont')",
             rusqlite::params![SCHOOL],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO teacher_assignments (id, school_id, academic_year_id, teacher_id, class_subject_id, created_at, updated_at)
              VALUES ('ta-prof', ?1, ?2, 'ped-user', ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
@@ -10295,12 +13458,17 @@ mod class_statistics_tests {
         conn.execute_batch(
             "CREATE TRIGGER fail_grade_audit BEFORE INSERT ON audit_logs
              BEGIN SELECT RAISE(ABORT, 'audit indisponible'); END;",
-        ).unwrap();
+        )
+        .unwrap();
 
         let err = save_grade(&conn, 14.0, 20.0).unwrap_err();
         assert!(err.contains("journaliser"));
-        let grades: i64 = conn.query_row("SELECT COUNT(*) FROM grades", [], |r| r.get(0)).unwrap();
-        let mutations: i64 = conn.query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0)).unwrap();
+        let grades: i64 = conn
+            .query_row("SELECT COUNT(*) FROM grades", [], |r| r.get(0))
+            .unwrap();
+        let mutations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_mutations", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(grades, 0);
         assert_eq!(mutations, 0);
     }

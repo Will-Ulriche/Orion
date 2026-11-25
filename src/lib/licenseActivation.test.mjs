@@ -517,6 +517,50 @@ describe('LIC-01 : Parcours d’activation et persistance atomique SQLite', () =
     assert.equal(issuedBody.device_name, 'Poste A');
     assert.equal(issuedBody.platform, 'Linux');
     assert.ok(commands.indexOf('get_device_info') < commands.indexOf('verify_license_token'));
-    assert.ok(commands.indexOf('register_device') < commands.indexOf('save_license'));
+    assert.ok(commands.indexOf('verify_license_token') < commands.indexOf('save_license'));
+    assert.ok(commands.indexOf('save_license') < commands.indexOf('register_device'));
+  });
+
+  it('LIC-03 : si save_license échoue, register_device n’est jamais appelé (aucune activation partielle)', async () => {
+    let registerCalled = false;
+    const mockInvoke = async (cmd) => {
+      if (cmd === 'get_device_info') {
+        return { identifier: 'device-machine-001', name: 'Poste A', platform: 'Linux' };
+      }
+      if (cmd === 'verify_license_token') {
+        return { valid: true, claims: { sub: validLic.id, school_id: schoolA } };
+      }
+      if (cmd === 'save_license') {
+        throw new Error('Échec SQLite simulé');
+      }
+      if (cmd === 'register_device') {
+        registerCalled = true;
+        return 'ok';
+      }
+      throw new Error(`Commande inconnue: ${cmd}`);
+    };
+
+    const mockSupabase = {
+      rpc: async () => ({ error: { code: 'PGRST202', message: 'function not found' } }),
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({ data: validLic, error: null }),
+          }),
+        }),
+      }),
+      functions: {
+        invoke: async () => ({ data: { token: 'token-lie-appareil' }, error: null }),
+      },
+    };
+
+    await assert.rejects(
+      activateSchoolLicense(
+        { licenseKey: 'ORION-ABCD-EFGH-1234', schoolId: schoolA },
+        { invokeFn: mockInvoke, supabaseClient: mockSupabase, storage: null }
+      ),
+      /SQLite/i
+    );
+    assert.equal(registerCalled, false);
   });
 });

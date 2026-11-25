@@ -20,9 +20,15 @@ import {
   validateOfflineLicenseClaims,
   type OfflineLicenseClaims,
 } from '../lib/licenseGuardErrors';
+import {
+  RECHECK_INTERVAL_MS,
+  buildIssueLicenseTokenPayload,
+  fetchDeviceInfo,
+  type DeviceInfoResult,
+} from '../lib/licenseGuardCheck';
 
 // ─── Types ────────────────────────────────────────────────────
-type CheckStatus = 'checking' | 'valid' | 'future' | 'expired' | 'suspended' | 'revoked' | 'missing' | 'offline_grace';
+type CheckStatus = 'checking' | 'valid' | 'future' | 'expired' | 'suspended' | 'revoked' | 'missing' | 'offline_grace' | 'verification_error';
 
 interface LicenseInfo extends LifecycleLicense {
   license_key: string;
@@ -30,7 +36,7 @@ interface LicenseInfo extends LifecycleLicense {
 }
 
 // ─── Constantes ───────────────────────────────────────────────
-const RECHECK_MS = 5 * 60 * 1000; // revérification toutes les 5 minutes
+const RECHECK_MS = RECHECK_INTERVAL_MS; // revérification toutes les 5 minutes
 
 async function verifyOfflineLicenseToken(targetId: string): Promise<LicenseInfo | null> {
   const token = localStorage.getItem(LS_LIC_TOKEN);
@@ -80,6 +86,7 @@ const STATUS_CFG: Record<CheckStatus, { icon: typeof ShieldOff; title: string; d
   revoked: { icon: Ban, title: 'Licence révoquée', desc: 'Votre licence a été révoquée. Contactez votre administrateur.', color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
   missing: { icon: ShieldOff, title: 'Aucune licence', desc: "Aucune licence trouvée pour cet établissement. Activez votre clé.", color: 'text-rose-600', bg: 'bg-rose-50', border: 'border-rose-200' },
   offline_grace: { icon: RefreshCw, title: 'Mode hors-ligne', desc: 'Licence non vérifiable (réseau indisponible). Accès temporaire accordé.', color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
+  verification_error: { icon: AlertTriangle, title: 'Vérification impossible', desc: 'La vérification de la licence a échoué. Vérifiez votre appareil ou réessayez.', color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
 };
 
 // ─── Composant ────────────────────────────────────────────────
@@ -98,6 +105,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
 
   const [checkStatus, setCheckStatus] = useState<CheckStatus>('checking');
   const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
+  const [verificationError, setVerificationError] = useState<string>('');
   const [activationKey, setActivationKey] = useState('');
   const [activating, setActivating] = useState(false);
   const [activationError, setActivationError] = useState('');
@@ -111,6 +119,7 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
     if (!user || isSuperAdmin || authError) return;
 
     setCheckStatus('checking');
+    setVerificationError('');
 
     // Déterminer le school_id réel (accessible aussi en catch)
     let targetId = schoolId;
@@ -147,16 +156,36 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
 
       if (verdict === 'valid' && currentRecord) {
         const validCloud = currentRecord;
-        // [LIC-01C] Obtenir un jeton signé RS256 et le valider impérativement via Rust
+
+        // [LIC-02] Récupérer impérativement l'identifiant réel de la machine avant toute émission.
+        let deviceInfo: DeviceInfoResult;
+        try {
+          deviceInfo = await fetchDeviceInfo(invoke);
+        } catch (devErr: any) {
+          setLicenseInfo(validCloud);
+          setVerificationError(devErr?.message || 'Identifiant machine indisponible : vérification de la licence impossible.');
+          setCheckStatus('verification_error');
+          return;
+        }
+
+        // [LIC-01C / LIC-02] Obtenir un jeton signé RS256 et le valider impérativement via Rust
         let tokenVerified = false;
         let tokenFailureAllowedOffline = false;
+        let tokenFailureMessage = '';
+        let issuedToken: string | null = null;
         try {
+          const payload = buildIssueLicenseTokenPayload({
+            licenseId: validCloud.id,
+            schoolId: targetId,
+            deviceInfo,
+          });
           const { data: tokenRes, error: tokenErr } = await supabase.functions.invoke('issue-license-token', {
-            body: { license_id: validCloud.id, school_id: targetId },
+            body: payload,
           });
           if (tokenErr) {
             const classified = classifyLicenseGuardError(tokenErr, 'edge');
             tokenFailureAllowedOffline = classified.offlineAllowed;
+            tokenFailureMessage = classified.message;
             console.warn('[LicenseGuard] Émission du jeton refusée:', classified.category);
           } else if (tokenRes?.token) {
             const verifyRes = await invoke<{
@@ -170,17 +199,26 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
             if (
               verifyRes.valid &&
               verifyRes.claims &&
-              validateOfflineLicenseClaims(verifyRes.claims, targetId).valid
+              validateOfflineLicenseClaims(verifyRes.claims, targetId).valid &&
+              verifyRes.claims.device_identifier === deviceInfo.identifier
             ) {
-              localStorage.setItem(LS_LIC_TOKEN, tokenRes.token);
+              issuedToken = tokenRes.token;
               tokenVerified = true;
             } else {
-              console.warn('[LicenseGuard] Jeton émis rejeté:', verifyRes.reason);
+              tokenFailureMessage =
+                verifyRes?.reason ||
+                (verifyRes?.claims?.device_identifier !== deviceInfo.identifier
+                  ? 'Le jeton reçu ne correspond pas à cet appareil.'
+                  : 'Jeton de licence rejeté par le module de sécurité local.');
+              console.warn('[LicenseGuard] Jeton émis rejeté:', tokenFailureMessage);
             }
+          } else {
+            tokenFailureMessage = "Le serveur d'émission n'a renvoyé aucun jeton de licence.";
           }
         } catch (tokenEx) {
           const classified = classifyLicenseGuardError(tokenEx, 'native');
           tokenFailureAllowedOffline = classified.offlineAllowed;
+          tokenFailureMessage = classified.message;
           console.warn('[LicenseGuard] Échec de vérification du jeton émis:', classified.category);
         }
 
@@ -194,15 +232,18 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
           }
         }
 
-        if (!tokenVerified) {
-          localStorage.removeItem(LS_LIC_TOKEN);
-          setCheckStatus('missing');
+        if (!tokenVerified || !issuedToken) {
+          // Ne jamais supprimer injustement une licence pourtant valide en cas d'erreur technique.
+          setLicenseInfo(validCloud);
+          setVerificationError(tokenFailureMessage || 'Échec de vérification du jeton de licence.');
+          setCheckStatus('verification_error');
           return;
         }
 
         try {
-          await invoke('save_license', { license: { ...validCloud, is_current: true } });
+          await invoke('save_license', { token: issuedToken, license: { ...validCloud, is_current: true } });
         } catch (_) { }
+        localStorage.setItem(LS_LIC_TOKEN, issuedToken);
         setLicenseInfo(validCloud);
         setCheckStatus('valid');
         return;
@@ -230,8 +271,8 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
 
       // Seule une véritable indisponibilité réseau peut ouvrir la grâce hors ligne.
       if (!canUseOfflineGrace(classified.category)) {
-        localStorage.removeItem(LS_LIC_TOKEN);
-        setCheckStatus('missing');
+        setVerificationError(classified.message);
+        setCheckStatus('verification_error');
         return;
       }
 
@@ -415,7 +456,9 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
             </div>
             <div className="text-center">
               <h1 className={`text-xl font-bold ${cfg.color}`}>{cfg.title}</h1>
-              <p className="text-sm text-slate-500 mt-1 max-w-xs leading-relaxed">{cfg.desc}</p>
+              <p className="text-sm text-slate-500 mt-1 max-w-xs leading-relaxed">
+                {checkStatus === 'verification_error' && verificationError ? verificationError : cfg.desc}
+              </p>
             </div>
           </div>
 

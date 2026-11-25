@@ -334,10 +334,8 @@ export async function activateSchoolLicense(
     );
   }
 
-  await invoke('register_device', { schoolId: targetSchoolId });
-
-  // 5. Persistance locale atomique : sauvegarde SQLite obligatoire d'abord
-  // Si SQLite échoue, l'activation échoue visiblement et aucun jeton n'est persisté.
+  // 5. Persistance locale atomique : sauvegarde de la licence dans SQLite AVANT la liaison
+  // locale de l'appareil, afin que devices.license_id soit toujours renseigné avec la licence courante.
   try {
     await invoke('save_license', { token, license: { ...licData, is_current: true } });
   } catch (saveErr: any) {
@@ -348,7 +346,10 @@ export async function activateSchoolLicense(
     );
   }
 
-  // 6. Si SQLite a réussi, validation finale et persistance du jeton dans localStorage
+  // 6. Liaison locale de l'appareil avec la licence courante nouvellement persistée.
+  await invoke('register_device', { schoolId: targetSchoolId });
+
+  // 7. Si SQLite et la liaison appareil ont réussi, persistance du jeton dans localStorage
   if (storage) {
     storage.setItem(LS_LIC_TOKEN, token);
     storage.setItem(LS_CACHED_LIC, JSON.stringify({ ...licData, is_current: true }));

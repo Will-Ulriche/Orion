@@ -1,6 +1,7 @@
 export type LicenseGuardErrorCategory =
   | 'network'
   | 'jwt_expired'
+  | 'bad_request'
   | 'unauthorized'
   | 'forbidden'
   | 'server_error'
@@ -21,6 +22,7 @@ export const MAX_OFFLINE_TOKEN_SECONDS = 7 * 24 * 60 * 60;
 const MESSAGES: Record<LicenseGuardErrorCategory, string> = {
   network: 'Réseau indisponible : validation locale temporaire possible.',
   jwt_expired: 'Session expirée : veuillez vous reconnecter.',
+  bad_request: "Requête d'émission de jeton invalide (400) : aucune validation hors ligne n'est autorisée.",
   unauthorized: 'Authentification refusée (401) : veuillez vous reconnecter.',
   forbidden: "Accès refusé par les règles de sécurité (403) : aucune validation hors ligne n'est autorisée.",
   server_error: "Erreur serveur (500) : aucune validation hors ligne n'est autorisée.",
@@ -82,6 +84,8 @@ export function classifyLicenseGuardError(
     code === 'JWT_EXPIRED'
   ) {
     category = 'jwt_expired';
+  } else if (status === 400 || /^400$/.test(code) || /\bbad request\b/.test(text)) {
+    category = 'bad_request';
   } else if (status === 401 || /^401$/.test(code) || /\bunauthorized\b|invalid jwt|missing bearer/.test(text)) {
     category = 'unauthorized';
   } else if (
