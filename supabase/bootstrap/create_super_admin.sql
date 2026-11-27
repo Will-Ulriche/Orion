@@ -83,6 +83,6 @@ END $$;
 -- Vérification
 SELECT u.email, r.name AS role
 FROM public.users u
-JOIN public.user_roles ur ON ur.user_id = u.id
+JOIN public.user_roles ur ON ur.user_id = u.id::text
 JOIN public.roles r ON r.id = ur.role_id
 WHERE r.name = 'SUPER_ADMIN';

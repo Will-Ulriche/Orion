@@ -1,5 +1,7 @@
 import { supabase } from './supabaseClient';
 
+export { classifyLicenseView, filterLicensesByView, groupLicensesByView, LICENSE_VIEWS, type LicenseView } from './licenseViews';
+
 async function invokeAdminFunction<T>(
   name: string,
   body: Record<string, unknown> = {},
@@ -674,16 +676,44 @@ export async function createLicense(input: LicenseInput): Promise<License> {
 
 
 export async function setLicenseStatus(id: string, status: string): Promise<void> {
-  const res = await supabase.from('licenses').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
-  if (res.error) throw new Error(res.error.message);
+  const { data, error } = await supabase
+    .from('licenses')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('id')
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new Error(
+      'Modification refusée : aucune licence modifiée. Vérifiez les permissions SUPER_ADMIN.'
+    );
+  }
 }
 
 export async function updateLicense(id: string, patch: Partial<LicenseInput>): Promise<void> {
-  const res = await supabase.from('licenses').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id);
-  if (res.error) throw new Error(res.error.message);
+  const { data, error } = await supabase
+    .from('licenses')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('id')
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new Error(
+      'Modification refusée : aucune licence modifiée. Vérifiez les permissions SUPER_ADMIN.'
+    );
+  }
 }
 
-export async function deleteLicense(id: string): Promise<void> {
+export async function archiveLicense(id: string): Promise<void> {
   // Archivage logique : l'historique des licences n'est jamais détruit.
   const { error } = await supabase.rpc('archive_license', { p_license_id: id });
   if (error) throw new Error(error.message);

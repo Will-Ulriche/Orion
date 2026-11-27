@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node --test src/contexts/auth.test.mjs src/lib/licenseFlow.test.mjs src/lib/licenseActivation.test.mjs src/lib/licenseLifecycle.test.mjs src/lib/licenseGuardErrors.test.mjs src/lib/licenseGuardCheck.test.mjs src/lib/offlineSync.test.mjs src/lib/ranking.test.mjs src/lib/rbac.test.mjs src/lib/updateFlow.test.mjs supabase/functions/issue-license-token/issueLicense_test.mjs"
+    "test": "node --test src/contexts/auth.test.mjs src/lib/licenseFlow.test.mjs src/lib/licenseActivation.test.mjs src/lib/licenseLifecycle.test.mjs src/lib/licenseGuardErrors.test.mjs src/lib/licenseGuardCheck.test.mjs src/lib/licenseViews.test.mjs src/lib/licenseLocalPurge.test.mjs src/lib/offlineSync.test.mjs src/lib/ranking.test.mjs src/lib/rbac.test.mjs src/lib/updateFlow.test.mjs supabase/functions/issue-license-token/issueLicense_test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

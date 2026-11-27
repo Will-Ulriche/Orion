@@ -134,6 +134,35 @@ test('LIC-02 : vérification automatique avec appareil correctement identifié t
   assert.equal(storage.getItem(LS_LIC_TOKEN), 'signed.jwt.token');
 });
 
+test('LIC-03 : échec de save_license refuse la licence sans écraser le jeton existant', async () => {
+  const storage = makeMemoryStorage({ [LS_LIC_TOKEN]: 'existing.valid.token' });
+  const { client } = makeSupabaseMock();
+
+  const invokeFn = async (cmd) => {
+    if (cmd === 'get_device_info') {
+      return { identifier: 'hw-uid-123', name: 'PC-DIRECTION', platform: 'Windows' };
+    }
+    if (cmd === 'verify_license_token') {
+      return { valid: true, claims: sampleClaims() };
+    }
+    if (cmd === 'save_license') {
+      throw new Error('Base SQLite verrouillée');
+    }
+    throw new Error(`Unexpected invoke ${cmd}`);
+  };
+
+  const outcome = await runLicenseGuardCheck(
+    { userId: 'u-dir', targetSchoolId: 'school-1' },
+    { invokeFn, supabaseClient: client, storage, now: NOW }
+  );
+
+  assert.equal(outcome.status, 'verification_error');
+  assert.match(outcome.errorMessage, /Impossible d'enregistrer la licence localement/);
+  assert.match(outcome.errorMessage, /Base SQLite verrouillée/);
+  assert.equal(outcome.licenseInfo.id, 'lic-1');
+  assert.equal(storage.getItem(LS_LIC_TOKEN), 'existing.valid.token');
+});
+
 test('LIC-02 : refus propre avec erreur explicite si device_identifier est absent sans supprimer la licence valide', async () => {
   const storage = makeMemoryStorage({ [LS_LIC_TOKEN]: 'existing.valid.token' });
   const { client, edgeCalls } = makeSupabaseMock();

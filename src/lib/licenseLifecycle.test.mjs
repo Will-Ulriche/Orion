@@ -137,6 +137,17 @@ test('LIC-02 Frontend : LicenseGuard ne sélectionne plus dans tout l’historiq
   assert.match(guard, /classifyLicense\(currentRecord, targetId, now\)/);
   assert.doesNotMatch(guard, /cloudLics\.find\(/);
   assert.doesNotMatch(guard, /cloudLics\[0\]/);
+
+  const persistence = guard.slice(guard.indexOf("await invoke('save_license'"));
+  const tryBody = persistence.slice(0, persistence.indexOf('catch (error: any)'));
+  assert.match(tryBody, /localStorage\.setItem\(LS_LIC_TOKEN, issuedToken\)/);
+  assert.match(tryBody, /setCheckStatus\('valid'\)/);
+  assert.match(
+    persistence.slice(persistence.indexOf('catch'), persistence.indexOf('catch') + 20),
+    /catch \(error: any\)/
+  );
+  assert.match(persistence, /Impossible d'enregistrer la licence localement/);
+  assert.match(persistence, /setCheckStatus\('verification_error'\)/);
 });
 
 test('LIC-03 : quota appareils, liaison JWT et libération SUPER_ADMIN', () => {
@@ -166,4 +177,130 @@ test('LIC-03 : quota appareils, liaison JWT et libération SUPER_ADMIN', () => {
   const localMigration = read('../../src-tauri/migrations/28_device_license_binding.sql');
   assert.match(localMigration, /ALTER TABLE devices ADD COLUMN license_id TEXT/);
   assert.match(localMigration, /idx_devices_active_license_identifier/);
+});
+
+test('LIC-02 renouvellement : transfert transactionnel des appareils actifs', () => {
+  const migration = read('../../supabase/migrations/20261117000000_license_lifecycle.sql');
+  const renewal = migration.slice(migration.indexOf('FUNCTION public.renew_license'));
+
+  assert.match(renewal, /SELECT \* INTO v_school FROM public\.schools WHERE id = p_school_id FOR UPDATE/);
+  assert.match(renewal, /SELECT \* INTO v_old[\s\S]*FOR UPDATE/);
+  assert.match(renewal, /SELECT count\(\*\) INTO v_device_count/);
+  assert.match(renewal, /IF v_device_count > p_max_devices THEN/);
+  assert.match(renewal, /DEVICE_LIMIT_REACHED/);
+  assert.match(renewal, /UPDATE public\.devices d/);
+  assert.match(renewal, /SET license_id = v_new\.id/);
+  assert.match(renewal, /d\.school_id = p_school_id/);
+  assert.match(renewal, /l\.school_id = p_school_id/);
+  assert.match(renewal, /l\.is_current = false/);
+
+  const transfer = renewal.slice(renewal.indexOf('UPDATE public.devices'));
+  assert.doesNotMatch(transfer, /device_identifier\s*=/);
+
+  const archive = migration.slice(migration.indexOf('FUNCTION public.archive_license'));
+  assert.match(archive, /FOR UPDATE/);
+  assert.match(archive, /renew_license\(\)/);
+});
+
+test('LIC-03 : réaffectation depuis une licence archivée du même établissement uniquement', () => {
+  const binding = read('../../supabase/migrations/20261121000000_device_binding_hardening.sql');
+  assert.match(binding, /Appareil déjà associé à une autre licence/);
+  assert.match(binding, /v_dev\.school_id = v_lic\.school_id/);
+  assert.match(binding, /l\.school_id = v_lic\.school_id/);
+  assert.match(binding, /l\.is_current = false/);
+
+  const edge = read('../../supabase/functions/issue-license-token/index.ts');
+  assert.match(edge, /\.eq\("school_id", school_id\)/);
+  assert.match(edge, /\.eq\("is_current", true\)/);
+});
+
+test('SUPER_ADMIN : archivage logique et trois vues distinctes des licences', () => {
+  const api = read('../../src/lib/superAdminApi.ts');
+  assert.match(api, /rpc\('archive_license', \{ p_license_id: id \}\)/);
+  assert.doesNotMatch(api, /from\('licenses'\)\s*\.delete\(\)/);
+  assert.match(api, /export async function archiveLicense/);
+
+  const migration = read('../../supabase/migrations/20261117000000_license_lifecycle.sql');
+  assert.match(migration, /COMMENT ON FUNCTION public\.archive_license\(uuid\) IS/);
+  assert.match(migration, /Aucune suppression SQL/);
+
+  const views = read('../../src/lib/licenseViews.ts');
+  assert.match(views, /Historique archiv\u00e9/);
+  assert.match(views, /Suspendues \/ r\u00e9voqu\u00e9es/);
+
+  const page = read('../../src/pages/superadmin/LicencesSuperAdmin.tsx');
+  assert.match(page, /LICENSE_VIEWS/);
+  assert.match(page, /groupLicensesByView/);
+  assert.match(page, /Archiver la licence/);
+  assert.doesNotMatch(page, /Supprimer la licence/);
+  assert.doesNotMatch(page, /deleteTarget/);
+});
+
+test('SUPER_ADMIN : modification sans ligne modifiée est refusée', () => {
+  const api = read('../../src/lib/superAdminApi.ts');
+  const setStatus = api.slice(
+    api.indexOf('export async function setLicenseStatus'),
+    api.indexOf('export async function updateLicense')
+  );
+  const update = api.slice(
+    api.indexOf('export async function updateLicense'),
+    api.indexOf('export async function archiveLicense')
+  );
+
+  for (const source of [setStatus, update]) {
+    assert.ok(source.length > 0);
+    assert.match(source, /\.select\('id'\)/);
+    assert.match(source, /\.maybeSingle\(\)/);
+    assert.match(source, /if \(error\)[\s\S]*throw new Error\(error\.message\)/);
+    assert.match(source, /if \(!data\)/);
+    assert.match(source, /Modification refus\u00e9e : aucune licence modifi\u00e9e\. V\u00e9rifiez les permissions SUPER_ADMIN\./);
+  }
+});
+
+test('SUPER_ADMIN : purge locale attendue et erreur affichée', () => {
+  const page = read('../../src/pages/superadmin/LicencesSuperAdmin.tsx');
+  assert.match(page, /await invoke\('purge_local_licenses', \{ schoolId \}\)/);
+  assert.doesNotMatch(page, /\.catch\(\(\) => \{\}\)/);
+  assert.match(page, /decideLicenseLocalInvalidation/);
+  assert.match(page, /removeItem\(LS_LIC_TOKEN\)/);
+  assert.match(page, /Purge locale impossible/);
+  assert.match(page, /await purgeWithFeedback/);
+  assert.match(page, /dispatchEvent\(new Event\('orion:license-updated'\)\)/);
+});
+
+test('SUPER_ADMIN : bootstrap compare user_id text avec users.id casté', () => {
+  const bootstrap = read('../../supabase/bootstrap/create_super_admin.sql');
+  assert.match(bootstrap, /JOIN public\.user_roles ur ON ur\.user_id = u\.id::text/);
+  assert.doesNotMatch(bootstrap, /JOIN public\.user_roles ur ON ur\.user_id = u\.id(?![:\w])/);
+
+  const migration = read('../../supabase/migrations/20261122000000_fix_text_uuid_operator_error.sql');
+  assert.match(migration, /u\.id::text = ur\.user_id/);
+  assert.match(migration, /ur\.user_id = auth\.uid\(\)::text/);
+});
+
+test('RLS licenses : lecture administrative et périmètre établissement', () => {
+  const fix = read('../../supabase/migrations/20261125000000_fix_licenses_select_rls.sql');
+  assert.match(fix, /ALTER TABLE public\.licenses ENABLE ROW LEVEL SECURITY/);
+  assert.match(fix, /REVOKE ALL ON TABLE public\.licenses FROM anon/);
+  assert.match(fix, /GRANT SELECT ON TABLE public\.licenses TO authenticated/);
+  assert.match(fix, /DROP POLICY %I ON public\.licenses/);
+  assert.match(fix, /CREATE POLICY sec08_licenses_select[\s\S]*public\.is_super_admin\(\)[\s\S]*school_id::text IN \(SELECT public\.user_school_ids\(\)\)/);
+  assert.match(fix, /CREATE POLICY sec08_licenses_insert[\s\S]*WITH CHECK \(public\.is_super_admin\(\)\)/);
+  assert.match(fix, /CREATE POLICY sec08_licenses_update[\s\S]*public\.is_super_admin\(\)/);
+  assert.match(fix, /CREATE POLICY sec08_licenses_delete[\s\S]*public\.is_super_admin\(\)/);
+
+  const sqlTest = read('../../supabase/tests/license_rls_select_test.sql');
+  for (const marker of [
+    'SUPER_ADMIN',
+    'DIRECTION A',
+    'DIRECTION B',
+    'SECRETAIRE',
+    'PROFESSEUR',
+    'anonyme',
+    'ORION-RLS-A',
+    'ORION-RLS-B',
+  ]) {
+    assert.ok(sqlTest.includes(marker), `Scénario manquant : ${marker}`);
+  }
+  assert.match(sqlTest, /ROLLBACK;/);
 });

@@ -19,6 +19,9 @@
  *  3. Paramètres requis license_id, school_id et device_identifier fournis (400 si manquants).
  *  4. Licence existante en base (table licenses) (404 si introuvable).
  *  5. school_id de la licence correspondant exactement à l'établissement demandé (403).
+ *  5b. La licence demandée doit être la licence courante de l'établissement :
+ *      lors d'un renouvellement, renew_license() transfère les appareils actifs
+ *      vers cette licence courante, avec contrôle du nouveau quota (403 sinon).
  *  6. Statut == 'ACTIVE' (403 si suspendue, révoquée ou inactive).
  *  7. starts_at absent ou déjà atteint (<= now) (403 si future).
  *  8. expires_at absent ou non dépassé (> now) (403 si expirée).
@@ -234,11 +237,15 @@ export async function handleIssueLicenseRequest(
       );
     }
 
-    // 5. Vérifier la licence en base (via adminClient)
+    // 5. Vérifier la licence en base (via adminClient). Le filtre is_current
+    //    est appliqué côté requête : une licence archivée ne peut jamais
+    //    servir à lier un appareil, même si son statut historique est ACTIVE.
     const { data: lic, error: licErr } = await adminClient
       .from("licenses")
       .select("id, school_id, license_key, status, starts_at, expires_at, is_current, max_devices")
       .eq("id", license_id)
+      .eq("school_id", school_id)
+      .eq("is_current", true)
       .maybeSingle();
 
     if (licErr || !lic) {

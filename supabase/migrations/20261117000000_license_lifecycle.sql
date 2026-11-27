@@ -5,9 +5,12 @@
 -- 2. Les anciennes licences restent dans l'historique (SUPERSEDED)
 --    et ne peuvent jamais réautoriser l'accès.
 -- 3. Le renouvellement est atomique : archivage de l'ancienne
---    courante + promotion de la nouvelle dans une seule transaction.
+--    courante + promotion de la nouvelle + transfert des appareils
+--    actifs dans une seule transaction.
 -- 4. Le drapeau is_current ne peut être modifié que par les RPC
 --    SECURITY DEFINER de ce module (trigger de garde).
+-- 5. Les appareils ne sont jamais transférés depuis une licence
+--    appartenant à un autre établissement.
 -- ============================================================
 
 ALTER TABLE public.licenses
@@ -78,7 +81,9 @@ DECLARE
   v_clean_key text := upper(trim(p_license_key));
   v_status text := upper(trim(coalesce(p_status, 'ACTIVE')));
   v_school public.schools%ROWTYPE;
+  v_old public.licenses%ROWTYPE;
   v_new public.licenses%ROWTYPE;
+  v_device_count integer;
 BEGIN
   IF v_user_id IS NULL OR NOT public.is_super_admin() THEN
     RAISE EXCEPTION 'Action réservée au SUPER_ADMIN'
@@ -105,11 +110,40 @@ BEGIN
       USING ERRCODE = '22023';
   END IF;
 
-  -- Verrouille l'établissement pour sérialiser les renouvellements concurrents.
+  -- 1. Verrouille l'établissement, puis sa licence courante, pour sérialiser
+  --    les renouvellements et les enregistrements d'appareils concurrents.
   SELECT * INTO v_school FROM public.schools WHERE id = p_school_id FOR UPDATE;
   IF v_school.id IS NULL THEN
     RAISE EXCEPTION 'Établissement introuvable'
       USING ERRCODE = 'P0002';
+  END IF;
+
+  SELECT * INTO v_old
+    FROM public.licenses
+   WHERE school_id = p_school_id AND is_current = true
+   FOR UPDATE;
+
+  -- 2. Comptage des appareils actifs à transférer. Le filtre sur les deux
+  --    school_id garantit qu'aucun appareil d'une licence d'un autre
+  --    établissement n'entre dans le périmètre du renouvellement.
+  SELECT count(*) INTO v_device_count
+    FROM (
+      SELECT d.id
+        FROM public.devices d
+        JOIN public.licenses l ON l.id = d.license_id
+       WHERE l.school_id = p_school_id
+         AND d.school_id = p_school_id
+         AND d.deleted_at IS NULL
+         AND d.status = 'ACTIVE'
+       FOR UPDATE OF d
+    ) AS v_devices_to_transfer;
+
+  -- 3. Refus avant toute écriture : le nouveau quota doit couvrir les
+  --    appareils existants. Une exception annule la transaction entière.
+  IF v_device_count > p_max_devices THEN
+    RAISE EXCEPTION 'Quota insuffisant pour transférer les appareils actifs (% appareils pour un quota de %)',
+      v_device_count, p_max_devices
+      USING ERRCODE = 'P0001', DETAIL = 'DEVICE_LIMIT_REACHED';
   END IF;
 
   IF EXISTS (SELECT 1 FROM public.licenses WHERE license_key = v_clean_key) THEN
@@ -119,13 +153,14 @@ BEGIN
 
   PERFORM set_config('orion.license_lifecycle', 'on', true);
 
-  -- Archivage transactionnel de l'ancienne licence courante.
+  -- 4. Archivage transactionnel de l'ancienne licence courante.
   UPDATE public.licenses
   SET is_current = false,
       status = CASE WHEN status = 'ACTIVE' THEN 'SUPERSEDED' ELSE status END,
       updated_at = now()
   WHERE school_id = p_school_id AND is_current = true;
 
+  -- 5. Création de la nouvelle licence courante.
   INSERT INTO public.licenses (
     school_id, license_key, status, issued_at, starts_at, expires_at,
     max_devices, is_current
@@ -135,6 +170,26 @@ BEGIN
   )
   RETURNING * INTO v_new;
 
+  -- 6. Transfert des appareils actifs, y compris ceux restés liés à une
+  --    licence archivée plus tôt par archive_license(). Seuls license_id et
+  --    updated_at changent : identifiant physique et historique conservés.
+  UPDATE public.devices d
+     SET license_id = v_new.id,
+         updated_at = now()
+   WHERE d.school_id = p_school_id
+     AND d.deleted_at IS NULL
+     AND d.status = 'ACTIVE'
+     AND d.license_id IS DISTINCT FROM v_new.id
+     AND EXISTS (
+       SELECT 1
+         FROM public.licenses l
+        WHERE l.id = d.license_id
+          AND l.school_id = p_school_id
+          AND l.is_current = false
+     );
+
+  -- 8. Toute erreur (quota, clé dupliquée, contrainte, ...) est propagée :
+  --    PostgreSQL annule alors archivage, insertion et transfert ensemble.
   PERFORM set_config('orion.license_lifecycle', 'off', true);
   RETURN to_jsonb(v_new);
 END;
@@ -154,11 +209,27 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_user_id text := auth.uid()::text;
+  v_school_id uuid;
+  v_school public.schools%ROWTYPE;
   v_lic public.licenses%ROWTYPE;
 BEGIN
   IF v_user_id IS NULL OR NOT public.is_super_admin() THEN
     RAISE EXCEPTION 'Action réservée au SUPER_ADMIN'
       USING ERRCODE = '42501';
+  END IF;
+
+  -- Même ordre de verrouillage que renew_license() (établissement puis
+  -- licence) afin d'éviter tout interblocage entre archivage et renouvellement.
+  SELECT school_id INTO v_school_id FROM public.licenses WHERE id = p_license_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Licence introuvable'
+      USING ERRCODE = 'P0002';
+  END IF;
+
+  SELECT * INTO v_school FROM public.schools WHERE id = v_school_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Établissement introuvable'
+      USING ERRCODE = 'P0002';
   END IF;
 
   SELECT * INTO v_lic FROM public.licenses WHERE id = p_license_id FOR UPDATE;
@@ -167,6 +238,10 @@ BEGIN
       USING ERRCODE = 'P0002';
   END IF;
 
+  -- Les appareils actifs restent liés à cette licence archivée jusqu'au
+  -- renouvellement suivant : renew_license() les transférera alors vers la
+  -- nouvelle licence courante, quota vérifié, sans toucher aux licences des
+  -- autres établissements. Aucun appareil n'est supprimé ni réinitialisé ici.
   PERFORM set_config('orion.license_lifecycle', 'on', true);
 
   UPDATE public.licenses
@@ -184,6 +259,9 @@ $$;
 
 REVOKE ALL ON FUNCTION public.archive_license(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.archive_license(uuid) TO authenticated, service_role;
+
+COMMENT ON FUNCTION public.archive_license(uuid) IS
+  'Archivage logique : conserve la licence et son historique, retire le statut courant et révoque l accès. Aucune suppression SQL.';
 
 -- ── Renforcement de activate_license : licence courante obligatoire ──
 CREATE OR REPLACE FUNCTION public.activate_license(

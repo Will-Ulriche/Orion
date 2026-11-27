@@ -241,12 +241,28 @@ export default function LicenseGuard({ children }: { children: React.ReactNode }
         }
 
         try {
-          await invoke('save_license', { token: issuedToken, license: { ...validCloud, is_current: true } });
-        } catch (_) { }
-        localStorage.setItem(LS_LIC_TOKEN, issuedToken);
-        setLicenseInfo(validCloud);
-        setCheckStatus('valid');
-        return;
+          await invoke('save_license', {
+            token: issuedToken,
+            license: { ...validCloud, is_current: true }
+          });
+
+          localStorage.setItem(LS_LIC_TOKEN, issuedToken);
+          setLicenseInfo(validCloud);
+          setCheckStatus('valid');
+          return;
+        } catch (error: any) {
+          console.error(
+            '[LicenseGuard] Échec de persistance SQLite:',
+            error
+          );
+          setVerificationError(
+            `Impossible d'enregistrer la licence localement : ${
+              error?.message || String(error)
+            }`
+          );
+          setCheckStatus('verification_error');
+          return;
+        }
       }
 
       if (currentRecord) {

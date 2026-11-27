@@ -271,14 +271,24 @@ export async function runLicenseGuardCheck(
           token: issuedToken,
           license: { ...currentRecord, is_current: true },
         });
-      } catch (_) {}
 
-      storage?.setItem(LS_LIC_TOKEN, issuedToken);
-      return {
-        status: 'valid',
-        licenseInfo: currentRecord,
-        errorMessage: null,
-      };
+        storage?.setItem(LS_LIC_TOKEN, issuedToken);
+        return {
+          status: 'valid',
+          licenseInfo: currentRecord,
+          errorMessage: null,
+        };
+      } catch (error: any) {
+        console.error(
+          '[LicenseGuardCheck] Échec de persistance SQLite:',
+          error
+        );
+        return {
+          status: 'verification_error',
+          licenseInfo: currentRecord,
+          errorMessage: `Impossible d'enregistrer la licence localement : ${error?.message || String(error)}`,
+        };
+      }
     }
 
     if (currentRecord) {

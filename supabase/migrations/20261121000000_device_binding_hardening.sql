@@ -1,6 +1,10 @@
 ALTER TABLE public.devices
   ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 
+-- Un appareil actif lié à une licence archivée du MÊME établissement peut
+-- être réaffecté à la licence courante (quota vérifié). Tout changement
+-- depuis une licence active ou d'un autre établissement reste interdit.
+
 DO $device_license_column$
 DECLARE
   v_type text;
@@ -214,11 +218,34 @@ BEGIN
         IF v_dev.deleted_at IS NULL AND v_dev.status = 'ACTIVE'
            AND (v_dev.license_id IS DISTINCT FROM v_lic.id
                 OR v_dev.school_id IS DISTINCT FROM v_lic.school_id) THEN
-          RAISE EXCEPTION 'Appareil déjà associé à une autre licence'
-            USING ERRCODE = '42501';
-        END IF;
+          -- Seule dérogation : l'ancienne licence est archivée et
+          -- appartient au même établissement. Les licences d'un autre
+          -- établissement ne sont jamais transférées automatiquement.
+          IF NOT (
+            v_dev.school_id = v_lic.school_id
+            AND EXISTS (
+              SELECT 1
+                FROM public.licenses l
+               WHERE l.id = v_dev.license_id
+                 AND l.school_id = v_lic.school_id
+                 AND l.is_current = false
+            )
+          ) THEN
+            RAISE EXCEPTION 'Appareil déjà associé à une autre licence'
+              USING ERRCODE = '42501';
+          END IF;
 
-        IF v_dev.deleted_at IS NOT NULL OR v_dev.status <> 'ACTIVE' THEN
+          SELECT count(*) INTO v_count
+            FROM public.devices
+           WHERE license_id = v_lic.id
+             AND deleted_at IS NULL
+             AND status = 'ACTIVE';
+
+          IF v_count >= v_max THEN
+            RAISE EXCEPTION 'Limite d''appareils atteinte pour cette licence'
+              USING ERRCODE = 'P0001', DETAIL = 'DEVICE_LIMIT_REACHED';
+          END IF;
+        ELSIF v_dev.deleted_at IS NOT NULL OR v_dev.status <> 'ACTIVE' THEN
           SELECT count(*) INTO v_count
             FROM public.devices
            WHERE license_id = v_lic.id

@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { KeyRound, Plus, RefreshCw, Calendar, MonitorSmartphone, Trash2, Copy, Check, Pencil, PlusCircle } from 'lucide-react';
+import { Archive, KeyRound, Plus, RefreshCw, Calendar, MonitorSmartphone, Copy, Check, Pencil, PlusCircle } from 'lucide-react';
 import { Badge, Btn, EmptyState, Field, Loader, Modal, SearchInput, Select, TableShell, Td, Th, TextInput, type Tone } from '../../components/ui';
 import SuperAdminShell from './SuperAdminShell';
 import {
-  createLicense, generateLicenseKey, listLicenses, listSchools, setLicenseStatus, deleteLicense, updateLicense,
-  LICENSE_STATUSES, type License, type LicenseInput, type School,
+  archiveLicense, createLicense, generateLicenseKey, groupLicensesByView, listLicenses,
+  listSchools, setLicenseStatus, updateLicense,
+  LICENSE_STATUSES, LICENSE_VIEWS, type License, type LicenseInput, type LicenseView, type School,
 } from '../../lib/superAdminApi';
+import { LS_CACHED_LIC, LS_LAST_OK_LIC, LS_LIC_TOKEN } from '../../lib/licenseActivation';
+import { decideLicenseLocalInvalidation } from '../../lib/licenseLocalPurge';
 
 const STATUS_META: Record<string, { label: string; tone: Tone }> = {
   ACTIVE:    { label: 'Active',    tone: 'emerald' },
@@ -73,6 +76,7 @@ export default function LicencesSuperAdmin() {
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState('');
   const [search,   setSearch]   = useState('');
+  const [view,     setView]     = useState<LicenseView>('current');
 
   // ── Création ───────────────────────────────────────────────────
   const [formOpen,   setFormOpen]   = useState(false);
@@ -91,10 +95,10 @@ export default function LicencesSuperAdmin() {
   const [extUnit,      setExtUnit]      = useState<DurUnit>('months');
   const [editSaving,   setEditSaving]   = useState(false);
 
-  // ── Suppression ────────────────────────────────────────────────
-  const [deleteTarget, setDeleteTarget] = useState<License | null>(null);
-  const [deleting,     setDeleting]     = useState(false);
-  const [copiedKey,    setCopiedKey]    = useState<string | null>(null);
+  // ── Archivage ──────────────────────────────────────────────────
+  const [archiveTarget, setArchiveTarget] = useState<License | null>(null);
+  const [archiving,     setArchiving]     = useState(false);
+  const [copiedKey,     setCopiedKey]    = useState<string | null>(null);
 
   // ─── Chargement ─────────────────────────────────────────────────
   const load = async () => {
@@ -190,23 +194,29 @@ export default function LicencesSuperAdmin() {
   };
 
   // ─── Autres actions ──────────────────────────────────────────────
-  /** Purge le cache local (localStorage + SQLite) pour une licence donnée */
-  const purgeLocalLicenseCache = (licId: string, schoolId: string) => {
-    // Invalider le cache localStorage
+  const purgeLocalLicenseCache = async (licId: string, schoolId: string, wasCurrent: boolean) => {
+    await invoke('purge_local_licenses', { schoolId });
+
+    let cached: { id?: string; school_id?: string; is_current?: boolean } | null = null;
     try {
-      const cached = localStorage.getItem('orion_lic_cache');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed?.id === licId || parsed?.school_id === schoolId) {
-          localStorage.removeItem('orion_lic_cache');
-          localStorage.removeItem('orion_lic_ok_at');
-        }
-      }
+      const raw = localStorage.getItem(LS_CACHED_LIC);
+      cached = raw ? JSON.parse(raw) : null;
     } catch (_) {}
-    // Purger SQLite local
-    invoke('purge_local_licenses', { schoolId }).catch(() => {});
-    // Notifier l'app qu'une licence a changé
+
+    const invalidation = decideLicenseLocalInvalidation(cached, licId, schoolId, wasCurrent);
+    if (invalidation.clearCache) localStorage.removeItem(LS_CACHED_LIC);
+    if (invalidation.clearLastOk) localStorage.removeItem(LS_LAST_OK_LIC);
+    if (invalidation.clearToken) localStorage.removeItem(LS_LIC_TOKEN);
+
     window.dispatchEvent(new Event('orion:license-updated'));
+  };
+
+  const purgeWithFeedback = async (l: License) => {
+    try {
+      await purgeLocalLicenseCache(l.id, l.school_id, l.is_current);
+    } catch (e: any) {
+      setError(`Purge locale impossible : ${e?.message ?? String(e)}`);
+    }
   };
 
   const changeStatus = async (l: License, status: string) => {
@@ -215,7 +225,7 @@ export default function LicencesSuperAdmin() {
       setLicenses((prev) => prev.map((x) => (x.id === l.id ? { ...x, status } : x)));
       // Si la licence est révoquée ou suspendue, invalider le cache local
       if (status === 'REVOKED' || status === 'SUSPENDED') {
-        purgeLocalLicenseCache(l.id, l.school_id);
+        await purgeWithFeedback(l);
       }
     } catch (e: any) { setError(e.message ?? String(e)); }
   };
@@ -226,26 +236,46 @@ export default function LicencesSuperAdmin() {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    setDeleting(true); setError('');
+  const handleArchive = async () => {
+    const target = archiveTarget;
+    if (!target) return;
+    setArchiving(true); setError('');
     try {
-      await deleteLicense(deleteTarget.id);
-      // La licence est archivée, pas supprimée : on recharge l'historique.
-      purgeLocalLicenseCache(deleteTarget.id, deleteTarget.school_id);
-      setDeleteTarget(null);
+      await archiveLicense(target.id);
+      setArchiveTarget(null);
+      setSearch('');
+      setView('archive');
       await load();
+      await purgeWithFeedback(target);
     } catch (e: any) { setError(e.message ?? String(e)); }
-    finally { setDeleting(false); }
+    finally { setArchiving(false); }
   };
+
+  const grouped = useMemo(() => groupLicensesByView(licenses), [licenses]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return licenses;
-    return licenses.filter((l) =>
+    const inView = grouped[view];
+    if (!q) return inView;
+    return inView.filter((l) =>
       `${l.license_key} ${l.schools?.name ?? ''} ${l.status}`.toLowerCase().includes(q)
     );
-  }, [licenses, search]);
+  }, [grouped, view, search]);
+
+  const emptyCopy: Record<LicenseView, { title: string; description: string }> = {
+    current: {
+      title: 'Aucune licence courante',
+      description: schools.length === 0 ? "Créez d'abord un établissement, puis générez sa licence." : 'Générez la première clé de licence.',
+    },
+    blocked: {
+      title: 'Aucune licence suspendue ou révoquée',
+      description: 'Les licences courantes suspendues, révoquées ou expirées apparaîtront ici.',
+    },
+    archive: {
+      title: 'Aucune licence archivée',
+      description: 'Les licences remplacées ou archivées restent conservées dans cet historique.',
+    },
+  };
 
   // ─── Render ──────────────────────────────────────────────────────
   return (
@@ -266,15 +296,30 @@ export default function LicencesSuperAdmin() {
       {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">{error}</div>}
 
       {!loading && licenses.length > 0 && (
-        <div className="mb-4">
-          <SearchInput value={search} onChange={setSearch} placeholder="Rechercher une licence…" className="w-full sm:w-72" />
-        </div>
+        <>
+          <div className="mb-3 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1">
+            {LICENSE_VIEWS.map((tab) => (
+              <button key={tab.id} type="button" onClick={() => setView(tab.id)}
+                className={['flex items-center gap-2 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors',
+                  view === tab.id ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-white'].join(' ')}>
+                {tab.label}
+                <span className={view === tab.id ? 'text-slate-300' : 'text-slate-400'}>{grouped[tab.id].length}</span>
+              </button>
+            ))}
+          </div>
+          <div className="mb-4">
+            <SearchInput value={search} onChange={setSearch} placeholder="Rechercher une licence…" className="w-full sm:w-72" />
+          </div>
+        </>
       )}
 
-      {loading ? <Loader label="Chargement des licences…" /> : licenses.length === 0 ? (
-        <EmptyState icon={KeyRound} title="Aucune licence"
-          description={schools.length === 0 ? "Créez d'abord un établissement, puis générez sa licence." : 'Générez la première clé de licence.'}
-          action={schools.length > 0 ? <Btn variant="primary" onClick={openCreate}><Plus size={15} /> Générer une licence</Btn> : undefined}
+      {loading ? <Loader label="Chargement des licences…" /> : filtered.length === 0 ? (
+        <EmptyState icon={KeyRound}
+          title={search.trim() ? 'Aucun résultat' : emptyCopy[view].title}
+          description={search.trim() ? 'Modifiez votre recherche.' : emptyCopy[view].description}
+          action={!search.trim() && view === 'current' && schools.length > 0
+            ? <Btn variant="primary" onClick={openCreate}><Plus size={15} /> Générer une licence</Btn>
+            : undefined}
         />
       ) : (
         <TableShell>
@@ -289,12 +334,13 @@ export default function LicencesSuperAdmin() {
             <tbody>
               {filtered.map((l) => {
                 const meta = STATUS_META[l.status] ?? { label: l.status, tone: 'slate' as Tone };
+                const isArchive = view === 'archive';
                 return (
                   <tr key={l.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/70">
                     <Td>
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono text-[12.5px] font-semibold text-slate-700 select-all">{l.license_key}</span>
-                        {l.is_current && <Badge tone="emerald">Courante</Badge>}
+                        {isArchive ? <Badge tone="slate">Archivée</Badge> : l.is_current && <Badge tone="emerald">Courante</Badge>}
                         <button onClick={() => copyLicenseKey(l.license_key)} className="p-1 text-slate-400 hover:text-slate-600 rounded" title="Copier la clé">
                           {copiedKey === l.license_key ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
                         </button>
@@ -318,20 +364,26 @@ export default function LicencesSuperAdmin() {
                     <Td>
                       <div className="flex items-center gap-2">
                         <Badge tone={meta.tone}>{meta.label}</Badge>
-                        <Select value={l.status} onChange={(e) => changeStatus(l, e.target.value)} className="!w-32 !px-2.5 !py-1.5 !text-[12px]" title="Changer le statut">
-                          {LICENSE_STATUSES.map((st) => <option key={st} value={st}>{STATUS_META[st]?.label ?? st}</option>)}
-                        </Select>
+                        {!isArchive && (
+                          <Select value={l.status} onChange={(e) => changeStatus(l, e.target.value)} className="!w-32 !px-2.5 !py-1.5 !text-[12px]" title="Changer le statut">
+                            {LICENSE_STATUSES.map((st) => <option key={st} value={st}>{STATUS_META[st]?.label ?? st}</option>)}
+                          </Select>
+                        )}
                       </div>
                     </Td>
                     <Td className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Btn variant="ghost" onClick={() => openEdit(l)} title="Modifier la licence" className="!h-8 !px-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100">
-                          <Pencil size={14} />
-                        </Btn>
-                          <Btn variant="ghost" onClick={() => setDeleteTarget(l)} title="Archiver cette licence (historique conservé)" className="!h-8 !px-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50">
-                          <Trash2 size={14} />
-                        </Btn>
-                      </div>
+                      {isArchive ? (
+                        <span className="text-[11px] text-slate-400">Historique</span>
+                      ) : (
+                        <div className="flex justify-end gap-1">
+                          <Btn variant="ghost" onClick={() => openEdit(l)} title="Modifier la licence" className="!h-8 !px-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100">
+                            <Pencil size={14} />
+                          </Btn>
+                          <Btn variant="ghost" onClick={() => setArchiveTarget(l)} title="Archiver la licence (historique conservé)" className="!h-8 !px-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50">
+                            <Archive size={14} />
+                          </Btn>
+                        </div>
+                      )}
                     </Td>
                   </tr>
                 );
@@ -473,12 +525,12 @@ export default function LicencesSuperAdmin() {
         </Modal>
       )}
 
-      {/* ─── MODAL SUPPRESSION ───────────────────────────────────── */}
-      {deleteTarget && (
+      {/* ─── MODAL ARCHIVAGE ────────────────────────────────────── */}
+      {archiveTarget && (
         <Modal title="Archiver cette licence ?"
-          description={`Êtes-vous sûr de vouloir révoquer la clé ${deleteTarget.license_key} (${deleteTarget.schools?.name ?? 'Établissement inconnu'}) ?`}
-          onClose={() => setDeleteTarget(null)}
-          footer={<><Btn onClick={() => setDeleteTarget(null)}>Annuler</Btn><Btn variant="danger" onClick={handleDelete} disabled={deleting}>{deleting ? 'Archivage…' : 'Archiver la licence'}</Btn></>}
+          description={`Êtes-vous sûr de vouloir révoquer la clé ${archiveTarget.license_key} (${archiveTarget.schools?.name ?? 'Établissement inconnu'}) ?`}
+          onClose={() => setArchiveTarget(null)}
+          footer={<><Btn onClick={() => setArchiveTarget(null)}>Annuler</Btn><Btn variant="danger" onClick={handleArchive} disabled={archiving}>{archiving ? 'Archivage…' : 'Archiver la licence'}</Btn></>}
         >
           <div className="p-3 bg-red-50 rounded-xl border border-red-200 text-xs text-red-700 leading-relaxed">
             ⚠️ <strong>Attention :</strong> La licence sera révoquée et retirée du statut courant, mais son historique reste conservé.
