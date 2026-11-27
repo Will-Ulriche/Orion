@@ -301,9 +301,24 @@ export async function activateSchoolLicense(
     );
 
     if (tokenErr) {
-      throw new Error(
-        tokenErr.message || "Échec lors de l'appel au serveur d'émission des licences."
-      );
+      let serverDetail = '';
+      try {
+        if ('context' in tokenErr && tokenErr.context) {
+          const res = tokenErr.context as Response;
+          if (typeof res.json === 'function') {
+            const errJson = await res.json();
+            serverDetail = errJson?.error || errJson?.message || JSON.stringify(errJson);
+          } else if (typeof res.text === 'function') {
+            serverDetail = await res.text();
+          }
+        }
+      } catch (_) {}
+
+      console.error('[licenseActivation] Échec Edge Function:', tokenErr, 'Détail serveur:', serverDetail);
+      const message = serverDetail
+        ? `Échec du serveur de licences : ${serverDetail}`
+        : tokenErr.message || "Échec lors de l'appel au serveur d'émission des licences.";
+      throw new Error(message);
     }
 
     if (!tokenRes || !tokenRes.token) {

@@ -215,8 +215,9 @@ export async function handleIssueLicenseRequest(
 
       // Traitement fail-closed : si erreur RPC, null ou format inattendu -> refus
       if (schoolErr || !Array.isArray(userSchoolIdsRaw)) {
+        console.error("[issue-license-token] user_school_ids error:", schoolErr);
         return jsonResponse(
-          { error: "Forbidden: échec de vérification des établissements rattachés" },
+          { error: `Forbidden: échec de vérification des établissements rattachés (${schoolErr?.message || 'réponse invalide'})` },
           403,
         );
       }
@@ -231,8 +232,9 @@ export async function handleIssueLicenseRequest(
     }
 
     if (!isAuthorized) {
+      console.error("[issue-license-token] Non autorisé. isSuperAdmin:", isSuperAdmin, "target school:", school_id);
       return jsonResponse(
-        { error: "Forbidden: utilisateur non autorisé pour cet établissement" },
+        { error: `Forbidden: utilisateur non autorisé pour l'établissement '${school_id}'` },
         403,
       );
     }
@@ -249,7 +251,10 @@ export async function handleIssueLicenseRequest(
       .maybeSingle();
 
     if (licErr || !lic) {
-      return jsonResponse({ error: "Licence introuvable" }, 404);
+      console.error("[issue-license-token] Licence introuvable. licErr:", licErr, "lic:", lic);
+      return jsonResponse({
+        error: `Licence introuvable ou non courante (${licErr?.message || 'aucun enregistrement actif et courant'})`
+      }, 404);
     }
 
     // 6. Cohérence établissement
