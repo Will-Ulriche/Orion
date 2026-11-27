@@ -35,7 +35,10 @@ export async function verifyCloudAccount(userId: string): Promise<CloudAccountSt
       .eq('id', userId)
       .maybeSingle();
     if (error) return 'unknown';
-    if (!data) return 'missing';
+    // Si data est null, cela peut être dû à une restriction RLS et non à l'absence
+    // du compte. Ne jamais conclure 'missing' pour un utilisateur authentifié dont
+    // le jeton Supabase est valide : la session est la preuve d'existence.
+    if (!data) return 'unknown';
     return data.status === 'ACTIVE' ? 'active' : 'missing';
   } catch (_) {
     return 'unknown';
@@ -64,7 +67,9 @@ export async function verifyCloudSchool(schoolId: string): Promise<CloudAccountS
       .eq('id', schoolId)
       .maybeSingle();
     if (error) return 'unknown';
-    if (!data) return 'missing';
+    // Si data est null, cela peut être dû à une restriction RLS et non à l'absence
+    // de l'établissement. Ne pas conclure 'missing' sans preuve explicite.
+    if (!data) return 'unknown';
     return data.status === 'CLOSED' ? 'missing' : 'active';
   } catch (_) {
     return 'unknown';

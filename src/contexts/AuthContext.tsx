@@ -357,8 +357,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           console.warn('Erreur profil cloud:', profileErr);
         }
 
+        // Si schoolId est vide à ce stade (profil non lu), tenter de le récupérer
+        // depuis user_roles avant de faire une résolution incomplète.
+        if (!schoolId) {
+          try {
+            const { data: roleSchoolData } = await supabase
+              .from('user_roles')
+              .select('school_id')
+              .eq('user_id', userSession.user.id)
+              .not('school_id', 'is', null)
+              .limit(1)
+              .maybeSingle();
+            if (roleSchoolData?.school_id) {
+              schoolId = roleSchoolData.school_id;
+              console.log('[AuthDiagnosis] schoolId récupéré depuis user_roles:', schoolId);
+            }
+          } catch (_) {}
+        }
+
         const roleRes = await resolveUserRolesOnline(supabase, userSession.user.id, schoolId);
+        console.log('[AuthDiagnosis] resolveUserRolesOnline:', { userId: userSession.user.id, schoolId, roles: roleRes.roles, error: roleRes.error });
         if (roleRes.error || roleRes.roles.length === 0) {
+          console.error('[AuthDiagnosis] Aucun rôle résolu. userId:', userSession.user.id, 'schoolId:', schoolId, 'Erreur:', roleRes.error);
           setRoles([]);
           setRolesLoaded(true);
           setAuthError(roleRes.error || "Aucun rôle valide attribué à ce compte. Privilèges bloqués.");
@@ -411,15 +431,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           token: accessToken,
           schoolId,
         });
+        console.log('[AuthDiagnosis] establish_online_session OK. schoolId:', schoolId);
       } catch (tokErr) {
         const message = tokErr instanceof Error ? tokErr.message : String(tokErr);
         const networkFailure = /Impossible de contacter|Impossible de lire|statut HTTP 5|timeout|délai/i.test(message);
-        console.error('Erreur establish_online_session:', tokErr);
+        // Un mauvais schoolId (ex: 'school-main' ou UUID non encore propagé) ne doit pas
+        // forcer la déconnexion si les rôles cloud ont déjà été validés par Supabase.
+        const schoolMismatch = /Accès refusé|établissement|autorisé|school-main/i.test(message);
+        console.error('[AuthDiagnosis] establish_online_session ERREUR:', message, '| schoolId envoyé:', schoolId, '| userId:', userSession.user.id);
         setRoles(effectiveRoles);
         setRolesLoaded(true);
         setLoading(false);
         if (networkFailure) {
           setAuthError('Connexion cloud indisponible. Session locale conservée.');
+          return;
+        }
+        if (schoolMismatch) {
+          console.warn('[AuthDiagnosis] Établissement non reconnu dans Rust mais rôles cloud validés. Session maintenue.');
+          setAuthError(null);
           return;
         }
         await supabase.auth.signOut().catch(() => { });

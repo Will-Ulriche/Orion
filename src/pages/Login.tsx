@@ -85,10 +85,12 @@ export default function Login({
           .select('roles(name)')
           .eq('user_id', data.user.id);
         if (roleErr) {
+          console.error('[AuthDiagnosis] Lecture user_roles au login impossible:', roleErr.message, 'code:', roleErr.code);
           await supabase.auth.signOut().catch(() => { });
           setError("Impossible de vérifier les permissions du compte. Connexion refusée.");
           return;
         }
+        console.log('[AuthDiagnosis] Rôles lus au login:', JSON.stringify(roleData), 'userId:', data.user.id);
         // SUPER_ADMIN uniquement depuis la vérification fiable des rôles.
         const isSuperAdmin = (roleData ?? []).some((r: any) => r.roles?.name === 'SUPER_ADMIN');
 

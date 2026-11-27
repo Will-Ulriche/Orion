@@ -340,3 +340,37 @@ test('RÉPARATION COMPLÈTE LICENCES : RPC renew_license text, archive_license t
   assert.match(page, /if \(archiving\) return;/);
   assert.match(page, /Erreur sur l'opération de licence/);
 });
+
+test('RÉPARATION BOUCLE CONNEXION DIRECTION : RLS users/profiles/user_roles, résilience school_id et diagnostic', () => {
+  // 1. Migration RLS 20261127200000_fix_direction_login_rls.sql
+  const rlsFix = read('../../supabase/migrations/20261127200000_fix_direction_login_rls.sql');
+  assert.match(rlsFix, /CREATE POLICY users_select ON public\.users/);
+  assert.match(rlsFix, /id::text = auth\.uid\(\)::text/);
+  assert.match(rlsFix, /CREATE POLICY profiles_select ON public\.profiles/);
+  assert.match(rlsFix, /user_id::text = auth\.uid\(\)::text/);
+  assert.match(rlsFix, /school_id::text IN \(SELECT public\.user_school_ids\(\)\)/);
+  assert.match(rlsFix, /CREATE POLICY user_roles_select ON public\.user_roles/);
+  assert.match(rlsFix, /user_id::text = auth\.uid\(\)::text/);
+
+  // 2. accountValidation.ts : résilience RLS
+  const accVal = read('../../src/lib/accountValidation.ts');
+  assert.match(accVal, /if \(!data\) return 'unknown';/);
+  assert.doesNotMatch(accVal, /if \(!data\) return 'missing';/);
+
+  // 3. AuthContext.tsx : fallback school_id, logs de diagnostic, résilience establish_online_session
+  const authCtx = read('../../src/contexts/AuthContext.tsx');
+  assert.match(authCtx, /\[AuthDiagnosis\] schoolId récupéré depuis user_roles:/);
+  assert.match(authCtx, /\[AuthDiagnosis\] resolveUserRolesOnline:/);
+  assert.match(authCtx, /schoolMismatch/);
+  assert.match(authCtx, /\[AuthDiagnosis\] Établissement non reconnu dans Rust mais rôles cloud validés/);
+
+  // 4. Login.tsx : diagnostic logs
+  const login = read('../../src/pages/Login.tsx');
+  assert.match(login, /\[AuthDiagnosis\] Rôles lus au login:/);
+
+  // 5. commands.rs : repli school_id côté Rust
+  const commands = read('../../src-tauri/src/commands.rs');
+  assert.match(commands, /\*s != "school-main"/);
+  assert.match(commands, /repli sur première école autorisée/);
+  assert.match(commands, /authorized_schools\[0\]\.clone\(\)/);
+});

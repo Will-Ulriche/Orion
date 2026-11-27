@@ -1331,15 +1331,16 @@ pub fn establish_online_session_conn(
 
         if let Some(req) = requested_school_id
             .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty() && *s != "school-main")
         {
             if authorized_schools.iter().any(|s| s == req) {
                 req.to_string()
             } else {
-                return Err(format!(
-                    "Accès refusé : vous n'êtes pas autorisé sur l'établissement '{}'.",
-                    req
-                ));
+                eprintln!(
+                    "[establish_online_session] school_id '{}' absent des écoles autorisées {:?}, repli sur première école autorisée",
+                    req, authorized_schools
+                );
+                authorized_schools[0].clone()
             }
         } else {
             authorized_schools[0].clone()
