@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Archive, KeyRound, Plus, RefreshCw, Calendar, MonitorSmartphone, Copy, Check, Pencil, PlusCircle } from 'lucide-react';
 import { Badge, Btn, EmptyState, Field, Loader, Modal, SearchInput, Select, TableShell, Td, Th, TextInput, type Tone } from '../../components/ui';
@@ -12,11 +12,11 @@ import { LS_CACHED_LIC, LS_LAST_OK_LIC, LS_LIC_TOKEN } from '../../lib/licenseAc
 import { decideLicenseLocalInvalidation } from '../../lib/licenseLocalPurge';
 
 const STATUS_META: Record<string, { label: string; tone: Tone }> = {
-  ACTIVE:    { label: 'Active',    tone: 'emerald' },
-  SUSPENDED: { label: 'Suspendue', tone: 'amber'   },
-  EXPIRED:   { label: 'Expirée',   tone: 'slate'   },
-  REVOKED:   { label: 'Révoquée',  tone: 'red'     },
-  SUPERSEDED:{ label: 'Remplacée', tone: 'slate'   },
+  ACTIVE: { label: 'Active', tone: 'emerald' },
+  SUSPENDED: { label: 'Suspendue', tone: 'amber' },
+  EXPIRED: { label: 'Expirée', tone: 'slate' },
+  REVOKED: { label: 'Révoquée', tone: 'red' },
+  SUPERSEDED: { label: 'Remplacée', tone: 'slate' },
 };
 
 function fmtDate(iso: string | null): string {
@@ -59,22 +59,22 @@ type DurUnit = 'minutes' | 'hours' | 'days' | 'months';
 
 const QUICK_PRESETS: { label: string; value: number; unit: DurUnit }[] = [
   { label: '30 min', value: 30, unit: 'minutes' },
-  { label: '1 h',    value: 1,  unit: 'hours'   },
-  { label: '1 j',    value: 1,  unit: 'days'    },
-  { label: '7 j',    value: 7,  unit: 'days'    },
-  { label: '1 mois', value: 1,  unit: 'months'  },
-  { label: '3 mois', value: 3,  unit: 'months'  },
-  { label: '1 an',   value: 12, unit: 'months'  },
-  { label: '2 ans',  value: 24, unit: 'months'  },
+  { label: '1 h', value: 1, unit: 'hours' },
+  { label: '1 j', value: 1, unit: 'days' },
+  { label: '7 j', value: 7, unit: 'days' },
+  { label: '1 mois', value: 1, unit: 'months' },
+  { label: '3 mois', value: 3, unit: 'months' },
+  { label: '1 an', value: 12, unit: 'months' },
+  { label: '2 ans', value: 24, unit: 'months' },
 ];
 
 /** Ajoute une durée à une date ISO */
 function addDuration(base: Date, value: number, unit: DurUnit): Date {
   const d = new Date(base);
   if (unit === 'minutes') d.setMinutes(d.getMinutes() + value);
-  else if (unit === 'hours')  d.setHours(d.getHours() + value);
-  else if (unit === 'days')   d.setDate(d.getDate() + value);
-  else                        d.setMonth(d.getMonth() + value);
+  else if (unit === 'hours') d.setHours(d.getHours() + value);
+  else if (unit === 'days') d.setDate(d.getDate() + value);
+  else d.setMonth(d.getMonth() + value);
   return d;
 }
 
@@ -82,33 +82,33 @@ function addDuration(base: Date, value: number, unit: DurUnit): Date {
 
 export default function LicencesSuperAdmin() {
   const [licenses, setLicenses] = useState<License[]>([]);
-  const [schools,  setSchools]  = useState<School[]>([]);
-  const [loading,  setLoading]  = useState(true);
-  const [error,    setError]    = useState('');
-  const [search,   setSearch]   = useState('');
-  const [view,     setView]     = useState<LicenseView>('current');
+  const [schools, setSchools] = useState<School[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [view, setView] = useState<LicenseView>('current');
 
   // ── Création ───────────────────────────────────────────────────
-  const [formOpen,   setFormOpen]   = useState(false);
-  const [form,       setForm]       = useState<LicenseForm>(EMPTY_FORM);
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState<LicenseForm>(EMPTY_FORM);
   const [previewKey, setPreviewKey] = useState('');
-  const [saving,     setSaving]     = useState(false);
-  const [durMode,    setDurMode]    = useState<'duration' | 'custom'>('duration');
-  const [durValue,   setDurValue]   = useState(1);
-  const [durUnit,    setDurUnit]    = useState<DurUnit>('months');
+  const [saving, setSaving] = useState(false);
+  const [durMode, setDurMode] = useState<'duration' | 'custom'>('duration');
+  const [durValue, setDurValue] = useState(1);
+  const [durUnit, setDurUnit] = useState<DurUnit>('months');
 
   // ── Modification ───────────────────────────────────────────────
-  const [editTarget,   setEditTarget]   = useState<License | null>(null);
-  const [editForm,     setEditForm]     = useState<{ status: string; max_devices: number; expires_at: string }>({ status: 'ACTIVE', max_devices: 1, expires_at: '' });
-  const [editMode,     setEditMode]     = useState<'set' | 'extend'>('set');   // "set" = nouvelle date, "extend" = ajouter délai
-  const [extValue,     setExtValue]     = useState(1);
-  const [extUnit,      setExtUnit]      = useState<DurUnit>('months');
-  const [editSaving,   setEditSaving]   = useState(false);
+  const [editTarget, setEditTarget] = useState<License | null>(null);
+  const [editForm, setEditForm] = useState<{ status: string; max_devices: number; expires_at: string }>({ status: 'ACTIVE', max_devices: 1, expires_at: '' });
+  const [editMode, setEditMode] = useState<'set' | 'extend'>('set');   // "set" = nouvelle date, "extend" = ajouter délai
+  const [extValue, setExtValue] = useState(1);
+  const [extUnit, setExtUnit] = useState<DurUnit>('months');
+  const [editSaving, setEditSaving] = useState(false);
 
   // ── Archivage ──────────────────────────────────────────────────
   const [archiveTarget, setArchiveTarget] = useState<License | null>(null);
-  const [archiving,     setArchiving]     = useState(false);
-  const [copiedKey,     setCopiedKey]    = useState<string | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // ─── Chargement ─────────────────────────────────────────────────
   const load = async () => {
@@ -218,7 +218,7 @@ export default function LicencesSuperAdmin() {
     try {
       const raw = localStorage.getItem(LS_CACHED_LIC);
       cached = raw ? JSON.parse(raw) : null;
-    } catch (_) {}
+    } catch (_) { }
 
     const invalidation = decideLicenseLocalInvalidation(cached, licId, schoolId, wasCurrent);
     if (invalidation.clearCache) localStorage.removeItem(LS_CACHED_LIC);
@@ -476,7 +476,7 @@ export default function LicencesSuperAdmin() {
           onClose={() => setEditTarget(null)}
           footer={
             <><Btn onClick={() => setEditTarget(null)}>Annuler</Btn>
-            <Btn variant="primary" onClick={saveEdit} disabled={editSaving}>{editSaving ? 'Enregistrement…' : 'Enregistrer'}</Btn></>
+              <Btn variant="primary" onClick={saveEdit} disabled={editSaving}>{editSaving ? 'Enregistrement…' : 'Enregistrer'}</Btn></>
           }
         >
           <div className="grid gap-4">
