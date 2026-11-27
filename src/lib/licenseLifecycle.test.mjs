@@ -374,3 +374,32 @@ test('RÉPARATION BOUCLE CONNEXION DIRECTION : RLS users/profiles/user_roles, r�
   assert.match(commands, /repli sur première école autorisée/);
   assert.match(commands, /authorized_schools\[0\]\.clone\(\)/);
 });
+
+test('CORRECTION JETON LICENCE : license_id obligatoire dans JWT, concordance license_id === sub et contrôles stricts Rust', () => {
+  // 1. Edge Function issue-license-token/index.ts
+  const edgeFn = read('../../supabase/functions/issue-license-token/index.ts');
+  assert.match(edgeFn, /sub:\s*lic\.id/);
+  assert.match(edgeFn, /license_id:\s*lic\.id/);
+  assert.match(edgeFn, /iss:\s*"orion-license"/);
+  assert.match(edgeFn, /is_current:\s*true/);
+
+  // 2. Tests Edge Function issueLicense_test.ts & issueLicense_test.mjs
+  const edgeTestTs = read('../../supabase/functions/issue-license-token/issueLicense_test.ts');
+  assert.match(edgeTestTs, /missing field license_id/);
+  assert.match(edgeTestTs, /license_id !== sampleClaims\.sub/);
+
+  const edgeTestMjs = read('../../supabase/functions/issue-license-token/issueLicense_test.mjs');
+  assert.match(edgeTestMjs, /assert\.equal\(payload\.license_id,\s*payload\.sub\)/);
+  assert.match(edgeTestMjs, /missing field license_id/);
+
+  // 3. Contrôles Rust dans commands.rs
+  const commands = read('../../src-tauri/src/commands.rs');
+  assert.match(commands, /pub license_id:\s*String/);
+  assert.match(commands, /claims\.license_id != claims\.sub/);
+  assert.match(commands, /test_missing_license_id_rejected/);
+  assert.match(commands, /test_license_id_sub_mismatch_rejected/);
+
+  // 4. licenseActivation.ts : purge préventive du jeton
+  const activation = read('../../src/lib/licenseActivation.ts');
+  assert.match(activation, /storage\.removeItem\(LS_LIC_TOKEN\)/);
+});

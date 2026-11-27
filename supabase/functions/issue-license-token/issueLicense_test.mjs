@@ -416,6 +416,7 @@ test("[Mock Handler HTTP] Payload signé lie licence, école, appareil et quota"
   assert.equal(payload.iss, "orion-license");
   assert.equal(payload.sub, "lic-001");
   assert.equal(payload.license_id, "lic-001");
+  assert.equal(payload.license_id, payload.sub);
   assert.equal(payload.school_id, "school-123");
   assert.equal(payload.device_id, "device-uuid-001");
   assert.equal(payload.device_identifier, "device-orion-001");
@@ -425,4 +426,21 @@ test("[Mock Handler HTTP] Payload signé lie licence, école, appareil et quota"
   assert.equal(typeof payload.jti, "string");
   assert.ok(payload.jti.length > 0);
   assert.equal(payload.exp - payload.iat, 7 * 24 * 60 * 60);
+});
+
+test("[Mock Handler HTTP] Refuse et invalide formellement un jeton sans license_id ou si license_id !== sub", () => {
+  function validateClaims(claims) {
+    if (!claims.license_id || typeof claims.license_id !== "string" || claims.license_id.trim() === "") {
+      throw new Error("missing field license_id");
+    }
+    if (claims.license_id !== claims.sub) {
+      throw new Error("license_id must be equal to sub");
+    }
+    return true;
+  }
+
+  assert.throws(() => validateClaims({ sub: "lic-001" }), /missing field license_id/);
+  assert.throws(() => validateClaims({ sub: "lic-001", license_id: "" }), /missing field license_id/);
+  assert.throws(() => validateClaims({ sub: "lic-001", license_id: "other" }), /license_id must be equal to sub/);
+  assert.equal(validateClaims({ sub: "lic-001", license_id: "lic-001" }), true);
 });

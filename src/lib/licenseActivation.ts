@@ -193,6 +193,12 @@ export async function activateSchoolLicense(
     }
   });
 
+  // Révoquer immédiatement tout jeton résiduel en début d'activation pour empêcher
+  // la réutilisation d'un ancien jeton en cas d'échec du nouveau processus.
+  if (storage) {
+    storage.removeItem(LS_LIC_TOKEN);
+  }
+
   if (!cleanKey) {
     throw new Error('Veuillez saisir une clé de licence.');
   }

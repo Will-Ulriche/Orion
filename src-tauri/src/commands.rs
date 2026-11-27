@@ -8154,6 +8154,76 @@ mod license_tests {
         assert!(!res.valid, "Une licence expirée doit être refusée");
     }
 
+    #[test]
+    fn test_missing_license_id_rejected() {
+        #[derive(Serialize)]
+        struct ClaimsWithoutLicenseId {
+            iss: String,
+            sub: String,
+            school_id: String,
+            license_key: String,
+            status: String,
+            starts_at: Option<String>,
+            expires_at: Option<String>,
+            is_current: bool,
+            max_devices: i64,
+            device_id: String,
+            device_identifier: String,
+            jti: Option<String>,
+            iat: i64,
+            exp: i64,
+        }
+        let now_dt = chrono::Utc::now();
+        let now = now_dt.timestamp();
+        let incomplete = ClaimsWithoutLicenseId {
+            iss: "orion-license".to_string(),
+            sub: "lic-001".to_string(),
+            school_id: "school-abc".to_string(),
+            license_key: "ORION-TEST-1234".to_string(),
+            status: "ACTIVE".to_string(),
+            starts_at: Some((now_dt - chrono::Duration::days(1)).to_rfc3339()),
+            expires_at: Some((now_dt + chrono::Duration::days(5)).to_rfc3339()),
+            is_current: true,
+            max_devices: 1,
+            device_id: "d3000000-0000-4000-8000-000000000001".to_string(),
+            device_identifier: "device-test".to_string(),
+            jti: Some("test-jti".to_string()),
+            iat: now,
+            exp: now + 5 * 86400,
+        };
+        let key = EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY_A.as_bytes()).unwrap();
+        let token = encode(&Header::new(Algorithm::RS256), &incomplete, &key).unwrap();
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(!res.valid, "Un jeton sans license_id doit être rejeté");
+        let reason = res.reason.unwrap();
+        assert!(
+            reason.contains("missing field `license_id`") || reason.contains("license_id"),
+            "La raison doit mentionner license_id: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn test_license_id_sub_mismatch_rejected() {
+        let mut claims = sample_valid_claims();
+        claims.sub = "lic-001".to_string();
+        claims.license_id = "lic-different".to_string();
+        let token = create_test_token(&claims, TEST_RSA_PRIVATE_KEY_A);
+        let res = verify_license_token_internal(
+            &token,
+            "school-abc",
+            "device-test",
+            TEST_RSA_PUBLIC_KEY_A,
+        );
+        assert!(!res.valid, "Un jeton avec license_id != sub doit être rejeté");
+        assert!(res.reason.unwrap().contains("incohérent"));
+    }
+
     fn sample_license_record() -> LicenseRec {
         let now_dt = chrono::Utc::now();
         LicenseRec {
