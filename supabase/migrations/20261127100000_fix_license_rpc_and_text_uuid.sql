@@ -12,6 +12,36 @@
 --   8. Politiques RLS sur public.licenses et public.schools
 -- ============================================================
 
+-- ── 0. Garantie des valeurs par défaut sur les clés primaires (id) ──
+-- Empêche l'erreur : null value in column "id" of relation "licenses" violates not-null constraint
+
+DO $$
+DECLARE
+  v_col_type text;
+BEGIN
+  -- licenses.id
+  SELECT data_type INTO v_col_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'licenses' AND column_name = 'id';
+
+  IF v_col_type = 'uuid' THEN
+    EXECUTE 'ALTER TABLE public.licenses ALTER COLUMN id SET DEFAULT gen_random_uuid()';
+  ELSIF v_col_type IS NOT NULL THEN
+    EXECUTE 'ALTER TABLE public.licenses ALTER COLUMN id SET DEFAULT gen_random_uuid()::text';
+  END IF;
+
+  -- devices.id
+  SELECT data_type INTO v_col_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'devices' AND column_name = 'id';
+
+  IF v_col_type = 'uuid' THEN
+    EXECUTE 'ALTER TABLE public.devices ALTER COLUMN id SET DEFAULT gen_random_uuid()';
+  ELSIF v_col_type IS NOT NULL THEN
+    EXECUTE 'ALTER TABLE public.devices ALTER COLUMN id SET DEFAULT gen_random_uuid()::text';
+  END IF;
+END $$;
+
 -- ── 1. Helper is_super_admin() ───────────────────────────────
 
 CREATE OR REPLACE FUNCTION public.is_super_admin()
