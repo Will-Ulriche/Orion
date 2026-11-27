@@ -344,27 +344,25 @@ export async function createSchoolWithAdmin(input: CreateSchoolWithAdminInput): 
     throw new Error(`Erreur attribution du rôle ${targetRole}: ${roleErr.message}`);
   }
 
-  // 6. Licence initiale optionnelle (activée par défaut)
+  // 6. Licence initiale optionnelle (activée par défaut via la méthode atomique RPC)
   let createdLicenseKey: string | null = null;
   if (input.createLicense !== false) {
-    try {
-      const now = new Date();
-      const oneYearLater = new Date();
-      oneYearLater.setFullYear(now.getFullYear() + 1);
-      createdLicenseKey = generateLicenseKey();
+    const now = new Date();
+    const oneYearLater = new Date();
+    oneYearLater.setFullYear(now.getFullYear() + 1);
+    createdLicenseKey = generateLicenseKey();
 
-      await supabase.from('licenses').insert({
-        id: crypto.randomUUID(),
+    try {
+      await createLicense({
         school_id: schoolId,
         license_key: createdLicenseKey,
         status: 'ACTIVE',
         starts_at: now.toISOString(),
         expires_at: oneYearLater.toISOString(),
         max_devices: 5,
-        issued_at: now.toISOString(),
       });
-    } catch (licErr) {
-      console.error('Erreur création licence auto:', licErr);
+    } catch (licErr: any) {
+      throw new Error(`Établissement et compte créés, mais échec de génération de la licence : ${licErr.message ?? String(licErr)}`);
     }
   }
 
@@ -662,8 +660,9 @@ export async function listLicenses(): Promise<License[]> {
 export async function createLicense(input: LicenseInput): Promise<License> {
   // Création / renouvellement atomique côté base : l'ancienne licence courante
   // est archivée dans la même transaction que l'insertion de la nouvelle.
+  const schoolId = String(input.school_id).trim();
   const { data, error } = await supabase.rpc('renew_license', {
-    p_school_id: input.school_id,
+    p_school_id: schoolId,
     p_license_key: input.license_key ?? generateLicenseKey(),
     p_starts_at: input.starts_at,
     p_expires_at: input.expires_at,

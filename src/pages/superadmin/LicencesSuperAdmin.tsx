@@ -29,6 +29,16 @@ function fmtDateTime(iso: string | null): string {
   return new Date(iso).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+function formatPgError(e: any, step?: string): string {
+  if (!e) return '';
+  const msg = e.message ?? String(e);
+  const code = e.code ? ` [Code: ${e.code}]` : '';
+  const details = e.details ? ` — Détail: ${e.details}` : '';
+  const hint = e.hint ? ` (Conseil: ${e.hint})` : '';
+  const prefix = step ? `[Étape: ${step}] ` : '';
+  return `${prefix}${msg}${code}${details}${hint}`;
+}
+
 interface LicenseForm {
   school_id: string;
   status: string;
@@ -134,6 +144,7 @@ export default function LicencesSuperAdmin() {
   const setF = (patch: Partial<LicenseForm>) => setForm((f) => ({ ...f, ...patch }));
 
   const save = async () => {
+    if (saving) return;
     if (!form.school_id) { setError('Sélectionnez un établissement.'); return; }
     setSaving(true); setError('');
     try {
@@ -145,8 +156,11 @@ export default function LicencesSuperAdmin() {
         license_key: previewKey,
       } as LicenseInput);
       setFormOpen(false); await load();
-    } catch (e: any) { setError(e.message ?? String(e)); }
-    finally { setSaving(false); }
+    } catch (e: any) {
+      setError(formatPgError(e, 'Création de licence'));
+    } finally {
+      setSaving(false);
+    }
   };
 
   // ─── Helpers modification ────────────────────────────────────────
@@ -179,7 +193,7 @@ export default function LicencesSuperAdmin() {
   }
 
   const saveEdit = async () => {
-    if (!editTarget) return;
+    if (editSaving || !editTarget) return;
     setEditSaving(true); setError('');
     try {
       await updateLicense(editTarget.id, {
@@ -189,8 +203,11 @@ export default function LicencesSuperAdmin() {
       });
       setEditTarget(null);
       await load();
-    } catch (e: any) { setError(e.message ?? String(e)); }
-    finally { setEditSaving(false); }
+    } catch (e: any) {
+      setError(formatPgError(e, 'Mise à jour de licence'));
+    } finally {
+      setEditSaving(false);
+    }
   };
 
   // ─── Autres actions ──────────────────────────────────────────────
@@ -237,6 +254,7 @@ export default function LicencesSuperAdmin() {
   };
 
   const handleArchive = async () => {
+    if (archiving) return;
     const target = archiveTarget;
     if (!target) return;
     setArchiving(true); setError('');
@@ -247,8 +265,11 @@ export default function LicencesSuperAdmin() {
       setView('archive');
       await load();
       await purgeWithFeedback(target);
-    } catch (e: any) { setError(e.message ?? String(e)); }
-    finally { setArchiving(false); }
+    } catch (e: any) {
+      setError(formatPgError(e, 'Archivage de licence'));
+    } finally {
+      setArchiving(false);
+    }
   };
 
   const grouped = useMemo(() => groupLicensesByView(licenses), [licenses]);
@@ -293,7 +314,24 @@ export default function LicencesSuperAdmin() {
         </>
       }
     >
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">{error}</div>}
+      {error && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-[13px] text-red-800 shadow-sm">
+          <div className="space-y-1">
+            <p className="font-semibold flex items-center gap-1.5 text-red-900">
+              <span className="inline-block w-2 h-2 rounded-full bg-red-600" />
+              Erreur sur l'opération de licence
+            </p>
+            <p className="font-mono text-[12px] text-red-700 break-all">{error}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setError('')}
+            className="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded border border-red-200 hover:bg-red-100 transition-colors shrink-0"
+          >
+            Fermer
+          </button>
+        </div>
+      )}
 
       {!loading && licenses.length > 0 && (
         <>

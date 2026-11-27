@@ -304,3 +304,39 @@ test('RLS licenses : lecture administrative et périmètre établissement', () =
   }
   assert.match(sqlTest, /ROLLBACK;/);
 });
+
+test('RÉPARATION COMPLÈTE LICENCES : RPC renew_license text, archive_license text, casts stricts et création auto atomique', () => {
+  // 1. Migration SQL de réparation complète
+  const rpcFix = read('../../supabase/migrations/20261127100000_fix_license_rpc_and_text_uuid.sql');
+  assert.match(rpcFix, /DROP FUNCTION IF EXISTS public\.renew_license\(uuid,/);
+  assert.match(rpcFix, /CREATE OR REPLACE FUNCTION public\.renew_license\(\s*p_school_id text,/);
+  assert.match(rpcFix, /WHERE id::text = p_school_id::text/);
+  assert.match(rpcFix, /WHERE school_id::text = p_school_id::text AND is_current = true/);
+  assert.match(rpcFix, /l\.id::text = d\.license_id::text/);
+  assert.match(rpcFix, /l\.school_id::text = p_school_id::text/);
+  assert.match(rpcFix, /d\.school_id::text = p_school_id::text/);
+  assert.match(rpcFix, /DROP FUNCTION IF EXISTS public\.archive_license\(uuid\);/);
+  assert.match(rpcFix, /CREATE OR REPLACE FUNCTION public\.archive_license\(p_license_id text\)/);
+  assert.match(rpcFix, /WHERE id::text = p_license_id::text/);
+  assert.match(rpcFix, /CREATE OR REPLACE FUNCTION public\.is_super_admin\(\)/);
+  assert.match(rpcFix, /ur\.user_id::text = auth\.uid\(\)::text/);
+  assert.match(rpcFix, /r\.id::text = ur\.role_id::text/);
+  assert.match(rpcFix, /u\.id::text = ur\.user_id::text/);
+  assert.match(rpcFix, /p\.user_id::text = ur\.user_id::text/);
+
+  // 2. superAdminApi.ts : createSchoolWithAdmin appelle createLicense et ne fait plus d'INSERT direct non vérifié
+  const api = read('../../src/lib/superAdminApi.ts');
+  assert.match(api, /await createLicense\(\{/);
+  assert.doesNotMatch(api, /supabase\.from\('licenses'\)\.insert/);
+  assert.match(api, /échec de génération de la licence/);
+  assert.match(api, /p_school_id:\s*schoolId/);
+  assert.match(api, /p_license_id:\s*id/);
+
+  // 3. LicencesSuperAdmin.tsx : formatPgError et protection double-clic
+  const page = read('../../src/pages/superadmin/LicencesSuperAdmin.tsx');
+  assert.match(page, /formatPgError/);
+  assert.match(page, /if \(saving\) return;/);
+  assert.match(page, /if \(editSaving/);
+  assert.match(page, /if \(archiving\) return;/);
+  assert.match(page, /Erreur sur l'opération de licence/);
+});
